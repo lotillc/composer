@@ -1,0 +1,100 @@
+{
+  "name": "@lotiai/composer",
+  "version": "0.2.1",
+  "description": "A framework for building type-safe, DAG-based workflows with optional Temporal integration.",
+  "license": "MIT",
+  "keywords": [
+    "temporal",
+    "workflow",
+    "dag",
+    "typescript",
+    "type-safe",
+    "orchestration"
+  ],
+  "homepage": "https://github.com/lotillc/composer#readme",
+  "bugs": {
+    "url": "https://github.com/lotillc/composer/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lotillc/composer.git"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "composer": "bin/composer.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "!dist/**/*.vitest.*",
+    "!dist/**/__tests__",
+    "docker-compose.temporal.yml"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./build-config": {
+      "types": "./dist/build-config/index.d.ts",
+      "default": "./dist/build-config/index.js"
+    },
+    "./temporal-naming": {
+      "types": "./dist/temporal-naming.d.ts",
+      "default": "./dist/temporal-naming.js"
+    },
+    "./schedule-sync": {
+      "types": "./dist/schedule-sync.d.ts",
+      "default": "./dist/schedule-sync.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "scripts": {
+    "compile": "tsc --build",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "prepack": "pnpm clean && pnpm compile",
+    "test": "pnpm test:vitest",
+    "test:vitest": "vitest run --config vitest.config.mts --typecheck",
+    "test:vitest:watch": "vitest --config vitest.config.mts",
+    "test:watch": "pnpm test:vitest:watch",
+    "test:coverage": "vitest run --config vitest.config.mts --coverage",
+    "dev:temporal:up": "docker-compose -f docker-compose.temporal.yml up -d",
+    "dev:temporal:down": "docker-compose -f docker-compose.temporal.yml down",
+    "dev:temporal:logs": "docker-compose -f docker-compose.temporal.yml logs -f",
+    "cli": "node dist/cli/index.js",
+    "cli:dev": "node dist/cli/index.js dev"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cloudwatch": "^3.946.0",
+    "@aws-sdk/client-lambda": "^3.658.1",
+    "@lifeomic/attempt": "^3.0.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@temporalio/activity": "^1.15.0",
+    "@temporalio/client": "^1.15.0",
+    "@temporalio/common": "^1.15.0",
+    "@temporalio/worker": "^1.15.0",
+    "@temporalio/workflow": "^1.15.0",
+    "chokidar": "^3.5.3",
+    "es-toolkit": "^1.43.0",
+    "glob": "^13.0.0",
+    "jiti": "^2.6.1",
+    "long": "^5.0.0",
+    "typescript": "^5.9.2",
+    "uuid": "^11.1.0",
+    "yargs": "^17.7.2",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/yargs": "^17.0.24",
+    "@vitest/coverage-v8": "^4.1.4",
+    "vitest": "^4.1.4"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.28.2"
+}

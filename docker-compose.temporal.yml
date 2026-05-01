@@ -1,0 +1,144 @@
+# Temporal Server for local development
+#
+# temporalio/auto-setup was removed after 1.24.x. Local dev now uses
+# temporalio/admin-tools to initialise the schema, then starts the bare
+# temporalio/server image -- the same split used in production (ECS).
+#
+# Usage (from any directory):
+#   docker compose -f <path-to>/docker-compose.temporal.yml up -d
+
+services:
+  postgresql:
+    image: postgres:14
+    container_name: temporal-postgresql
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    ports:
+      # TEMPORAL_DB_PORT controls the host-side port only; containers always
+      # talk to postgresql:5432 over the Docker network.
+      - "${TEMPORAL_DB_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - temporal-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # One-shot init container: creates the visibility database and runs
+  # schema setup for both the main and visibility databases, then exits.
+  temporal-schema-init:
+    image: temporalio/admin-tools:1.30.1
+    container_name: temporal-schema-init
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      # temporal-sql-tool reads these env vars natively
+      - SQL_PLUGIN=postgres12
+      - SQL_HOST=postgresql
+      - SQL_PORT=5432
+      - SQL_USER=temporal
+      - SQL_PASSWORD=temporal
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -eu
+
+        # Create the visibility database (the main 'temporal' db is created by PostgreSQL's POSTGRES_DB)
+        temporal-sql-tool --database temporal_visibility create-database || true
+
+        # Set up or update the main temporal database schema
+        temporal-sql-tool --database temporal setup-schema -v 0.0
+        temporal-sql-tool --database temporal \
+          update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
+
+        # Set up or update the visibility database schema
+        temporal-sql-tool --database temporal_visibility setup-schema -v 0.0
+        temporal-sql-tool --database temporal_visibility \
+          update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
+
+        echo "Temporal schema initialisation complete."
+    networks:
+      - temporal-network
+
+  temporal:
+    image: temporalio/server:1.30.1
+    container_name: temporal-dev
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      temporal-schema-init:
+        condition: service_completed_successfully
+    ports:
+      - "7233:7233"  # Temporal Server (gRPC)
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=postgresql
+    # The bare server image does not ship a dynamic config file but requires
+    # one to exist. Run as root so we can create it, then exec the entrypoint.
+    user: root
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        mkdir -p /etc/temporal/config/dynamicconfig
+        echo '{}' > /etc/temporal/config/dynamicconfig/docker.yaml
+        exec /etc/temporal/entrypoint.sh
+    networks:
+      - temporal-network
+
+  temporal-namespace-init:
+    image: temporalio/admin-tools:1.30.1
+    container_name: temporal-namespace-init
+    depends_on:
+      - temporal
+    entrypoint: ["sh", "-c"]
+    # Uses the `temporal` CLI; `tctl` was removed from temporalio/admin-tools and would block forever in the health-wait loop.
+    command:
+      - |
+        set -eu
+
+        until temporal operator cluster health --address temporal:7233 >/dev/null 2>&1; do
+          sleep 2
+        done
+
+        # Keep local namespaces aligned with the canonical shared constants.
+        for namespace in interchange outpost josu; do
+          if temporal operator namespace describe -n "$namespace" --address temporal:7233 >/dev/null 2>&1; then
+            echo "Temporal namespace '$namespace' already exists."
+          else
+            temporal operator namespace create -n "$namespace" --retention 90d --address temporal:7233
+            echo "Temporal namespace '$namespace' created."
+          fi
+        done
+    networks:
+      - temporal-network
+
+  temporal-ui:
+    image: temporalio/ui:2.47.3
+    container_name: temporal-ui
+    depends_on:
+      - temporal
+      - temporal-namespace-init
+    ports:
+      - "8080:8080"  # Temporal Web UI
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    networks:
+      - temporal-network
+
+volumes:
+  postgres-data:
+    driver: local
+
+networks:
+  temporal-network:
+    driver: bridge
