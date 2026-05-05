@@ -1,6 +1,6 @@
 {
   "name": "@lotiai/composer",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A framework for building type-safe, DAG-based workflows with optional Temporal integration.",
   "license": "MIT",
   "keywords": [
@@ -21,6 +21,13 @@
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "build-config": ["dist/build-config/index.d.ts"],
+      "temporal-naming": ["dist/temporal-naming.d.ts"],
+      "schedule-sync": ["dist/schedule-sync.d.ts"]
+    }
+  },
   "bin": {
     "composer": "bin/composer.js"
   },
