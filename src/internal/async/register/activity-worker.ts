@@ -42,6 +42,127 @@ import { startTaskQueueMetrics, type TaskQueueMetricsHandle } from "../metrics/t
 import { isComposerError } from "../utils/is-composer-error";
 import { collectAllWorkflows } from "./generate-workflow-source";
 
+interface ActiveActivitySummary {
+  activityName: string;
+  stepName: string;
+  workflowId: string;
+  runId: string;
+  activityId: string;
+  attempt: number;
+  startedAt: string;
+  runningForMs: number;
+}
+
+interface ActiveActivityTracker {
+  start: (activity: Omit<ActiveActivitySummary, "runningForMs">) => string;
+  finish: (key: string) => void;
+  snapshot: () => ActiveActivitySummary[];
+  count: () => number;
+}
+
+interface EcsTaskMetadata {
+  cluster?: string;
+  taskArn?: string;
+  family?: string;
+  revision?: string;
+  availabilityZone?: string;
+  desiredStatus?: string;
+  knownStatus?: string;
+  containers: Array<{
+    name?: string;
+    image?: string;
+    imageId?: string;
+    desiredStatus?: string;
+    knownStatus?: string;
+    exitCode?: number;
+  }>;
+}
+
+function createActiveActivityTracker(): ActiveActivityTracker {
+  const activeActivities = new Map<string, Omit<ActiveActivitySummary, "runningForMs">>();
+
+  return {
+    start: (activity) => {
+      const key = `${activity.workflowId}/${activity.runId}/${activity.activityId}/${activity.attempt}`;
+      activeActivities.set(key, activity);
+      return key;
+    },
+    finish: (key) => {
+      activeActivities.delete(key);
+    },
+    snapshot: () => {
+      const now = Date.now();
+      return [...activeActivities.values()].map((activity) => ({
+        ...activity,
+        runningForMs: now - Date.parse(activity.startedAt),
+      }));
+    },
+    count: () => activeActivities.size,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+function optionalString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function optionalNumber(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" ? value : undefined;
+}
+
+function parseEcsTaskMetadata(raw: unknown): EcsTaskMetadata | undefined {
+  if (!isRecord(raw)) return undefined;
+
+  const rawContainers = raw.Containers;
+  const containers = Array.isArray(rawContainers)
+    ? rawContainers.filter(isRecord).map((container) => ({
+        name: optionalString(container, "Name"),
+        image: optionalString(container, "Image"),
+        imageId: optionalString(container, "ImageID"),
+        desiredStatus: optionalString(container, "DesiredStatus"),
+        knownStatus: optionalString(container, "KnownStatus"),
+        exitCode: optionalNumber(container, "ExitCode"),
+      }))
+    : [];
+
+  return {
+    cluster: optionalString(raw, "Cluster"),
+    taskArn: optionalString(raw, "TaskARN"),
+    family: optionalString(raw, "Family"),
+    revision: optionalString(raw, "Revision"),
+    availabilityZone: optionalString(raw, "AvailabilityZone"),
+    desiredStatus: optionalString(raw, "DesiredStatus"),
+    knownStatus: optionalString(raw, "KnownStatus"),
+    containers,
+  };
+}
+
+async function fetchEcsTaskMetadata(logger: ComposerLogger): Promise<EcsTaskMetadata | undefined> {
+  const metadataUri = process.env.ECS_CONTAINER_METADATA_URI_V4;
+  if (!metadataUri) return undefined;
+
+  try {
+    const response = await fetch(`${metadataUri.replace(/\/$/, "")}/task`, {
+      signal: AbortSignal.timeout(1_000),
+    });
+    if (!response.ok) {
+      logger.debug("Failed to fetch ECS task metadata", { status: response.status });
+      return undefined;
+    }
+    return parseEcsTaskMetadata(await response.json());
+  } catch (error) {
+    logger.debug("Failed to fetch ECS task metadata", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+}
+
 /**
  * Converts a structured error (with code + parentCodes) to a Temporal ApplicationFailure,
  * preserving the error code as the `type` field which survives serialization.
@@ -153,6 +274,7 @@ function createActivitiesFromWorkflows<TContext>(
   workflows: Workflow<any, any, any>[],
   contextProvider: StepContextProvider<TContext> | undefined,
   logger: ComposerLogger,
+  activeActivityTracker: ActiveActivityTracker,
   metricsHandle?: TaskQueueMetricsHandle,
 ): Record<string, (...args: unknown[]) => Promise<unknown>> {
   const activities: Record<string, (...args: unknown[]) => Promise<unknown>> = {};
@@ -178,9 +300,21 @@ function createActivitiesFromWorkflows<TContext>(
       // Get workflowId from Temporal's activity execution context for logging
       const activityInfo = ActivityContext.current().info;
       const workflowId = activityInfo.workflowExecution?.workflowId ?? "unknown";
+      const runId = activityInfo.workflowExecution?.runId ?? "unknown";
+      const activityId = activityInfo.activityId ?? "unknown";
+      const attempt = activityInfo.attempt ?? 0;
 
       let ctx: TContext | undefined;
       let stepError: Error | undefined;
+      const activeActivityKey = activeActivityTracker.start({
+        activityName,
+        stepName,
+        workflowId,
+        runId,
+        activityId,
+        attempt,
+        startedAt: new Date().toISOString(),
+      });
       metricsHandle?.activityStarted();
 
       try {
@@ -249,6 +383,7 @@ function createActivitiesFromWorkflows<TContext>(
             });
           }
         }
+        activeActivityTracker.finish(activeActivityKey);
       }
     };
   }
@@ -338,6 +473,7 @@ export async function createActivityWorkers<TContext = unknown>(
   workers: Worker[];
   connection: NativeConnection;
   metricsHandle?: TaskQueueMetricsHandle;
+  activeActivityTracker: ActiveActivityTracker;
 }> {
   const logger = config.logger ?? defaultLogger;
 
@@ -367,10 +503,12 @@ export async function createActivityWorkers<TContext = unknown>(
     logger,
   });
 
+  const activeActivityTracker = createActiveActivityTracker();
   const activities = createActivitiesFromWorkflows(
     config.workflows,
     config.contextProvider,
     logger,
+    activeActivityTracker,
     metricsHandle,
   );
   const activityCount = Object.keys(activities).length;
@@ -418,7 +556,7 @@ export async function createActivityWorkers<TContext = unknown>(
     workerCount: workers.length,
   });
 
-  return { workers, connection, metricsHandle };
+  return { workers, connection, metricsHandle, activeActivityTracker };
 }
 
 /**
@@ -448,14 +586,38 @@ export async function runActivityWorkers<TContext = unknown>(
   const logger = config.logger ?? defaultLogger;
 
   // Create workers (connection is created internally)
-  const { workers, connection, metricsHandle } = await createActivityWorkers(config);
+  const { workers, connection, metricsHandle, activeActivityTracker } =
+    await createActivityWorkers(config);
   const runPromises = workers.map((worker) => worker.run());
+  const ecsTaskMetadata = await fetchEcsTaskMetadata(logger);
+  logger.info("Activity Workers runtime diagnostics initialized", {
+    pid: process.pid,
+    uptimeMs: Math.round(process.uptime() * 1000),
+    taskQueues: config.taskQueues,
+    deploymentSeriesName: config.deploymentSeriesName,
+    buildId: config.buildId,
+    ecsTaskMetadata,
+  });
 
   // Setup graceful shutdown for all workers
   let isShuttingDown = false;
-  const shutdown = async () => {
+  const shutdown = async (signal: NodeJS.Signals) => {
     if (isShuttingDown) return; // Prevent duplicate shutdown
     isShuttingDown = true;
+
+    const shutdownEcsTaskMetadata = (await fetchEcsTaskMetadata(logger)) ?? ecsTaskMetadata;
+    logger.info("Activity Workers shutdown signal received", {
+      signal,
+      pid: process.pid,
+      uptimeMs: Math.round(process.uptime() * 1000),
+      workerCount: workers.length,
+      taskQueues: config.taskQueues,
+      deploymentSeriesName: config.deploymentSeriesName,
+      buildId: config.buildId,
+      activeActivityCount: activeActivityTracker.count(),
+      activeActivities: activeActivityTracker.snapshot(),
+      ecsTaskMetadata: shutdownEcsTaskMetadata,
+    });
 
     logger.info("Shutting down Activity Workers", { workerCount: workers.length });
     for (const worker of workers) {
@@ -467,9 +629,17 @@ export async function runActivityWorkers<TContext = unknown>(
         });
       }
     }
+    logger.info("Activity Worker shutdown requested", {
+      workerCount: workers.length,
+      activeActivityCount: activeActivityTracker.count(),
+    });
 
     await Promise.allSettled(runPromises);
+    logger.info("Activity Worker run loops settled", {
+      activeActivityCount: activeActivityTracker.count(),
+    });
     await metricsHandle?.stop();
+    logger.info("Activity Worker metrics stopped");
     await connection.close();
     logger.info("Activity Workers shutdown complete");
     // TODO: process.exit(0) here makes this function non-composable when multiple
@@ -482,8 +652,8 @@ export async function runActivityWorkers<TContext = unknown>(
     process.exit(0);
   };
 
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
   // Run all workers in parallel
   try {

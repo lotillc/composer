@@ -34,9 +34,17 @@ type MockActivityContext = {
       workflowId: string;
       runId: string;
     };
+    activityId: string;
+    attempt: number;
   };
 };
 type MockStepContext = { em: Record<string, unknown> };
+type MockLogger = {
+  info: ReturnType<typeof vi.fn>;
+  warn: ReturnType<typeof vi.fn>;
+  error: ReturnType<typeof vi.fn>;
+  debug: ReturnType<typeof vi.fn>;
+};
 
 const mockActivityCurrent = vi.hoisted(() => vi.fn<[], MockActivityContext>());
 const mockConnect = vi.hoisted(() => vi.fn<[ConnectionOptions], Promise<MockConnection>>());
@@ -108,11 +116,19 @@ const createTestConfig = (
 ) => ({
   serverAddress: "localhost:7233",
   namespace: "default",
+  deploymentSeriesName: "test-activities",
   taskQueues: ["fast-tasks", "standard-tasks", "heavy-tasks"],
   maxConcurrentActivityTaskExecutions: 100,
   workflows: mockWorkflows,
   contextProvider: createMockContextProvider(),
   ...overrides,
+});
+
+const makeLogger = (): MockLogger => ({
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
 });
 
 describe("Activity Worker", () => {
@@ -137,6 +153,8 @@ describe("Activity Worker", () => {
           workflowId: "test-workflow-id",
           runId: "test-run-id",
         },
+        activityId: "test-activity-id",
+        attempt: 2,
       },
     });
 
@@ -358,6 +376,60 @@ describe("Activity Worker", () => {
       expect(mockMetricsHandle.stop).toHaveBeenCalledTimes(1);
       expect(mockConnection.close).toHaveBeenCalledTimes(1);
       expect(process.exit).toHaveBeenCalledWith(0);
+    });
+
+    it("should log active activities when receiving SIGTERM", async () => {
+      const logger = makeLogger();
+      let resolveRun: (() => void) | undefined;
+      let resolveStep: ((value: { output: string }) => void) | undefined;
+      mockWorkerInstance.run.mockReturnValue(
+        new Promise<void>((resolve) => {
+          resolveRun = resolve;
+        }),
+      );
+      mockStepRun.mockReturnValueOnce(
+        new Promise<{ output: string }>((resolve) => {
+          resolveStep = resolve;
+        }),
+      );
+
+      void runActivityWorkers(createTestConfig({ logger }));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const createCall = mockWorkerCreate.mock.calls[0]?.[0];
+      expect(createCall).toBeDefined();
+      const activityFn = createCall!.activities.testStep as (
+        workflowInput: unknown,
+        stepInput: unknown,
+      ) => Promise<unknown>;
+      const activityPromise = activityFn({}, { input: "test" });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      process.emit("SIGTERM");
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(logger.info).toHaveBeenCalledWith(
+        "Activity Workers shutdown signal received",
+        expect.objectContaining({
+          signal: "SIGTERM",
+          activeActivityCount: 1,
+          activeActivities: [
+            expect.objectContaining({
+              activityName: "testStep",
+              stepName: "testStep",
+              workflowId: "test-workflow-id",
+              runId: "test-run-id",
+              activityId: "test-activity-id",
+              attempt: 2,
+            }),
+          ],
+        }),
+      );
+
+      resolveStep?.({ output: "test-result" });
+      await activityPromise;
+      resolveRun?.();
+      await new Promise((resolve) => setImmediate(resolve));
     });
   });
 });
