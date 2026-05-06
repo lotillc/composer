@@ -52,6 +52,17 @@ import type { ComposerLogger } from "../../types";
 
 const DEFAULT_CLOUDWATCH_NAMESPACE = "Composer";
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
+const DEFAULT_TASK_PROTECTION_EXPIRES_IN_MINUTES = 360;
+const DEFAULT_TASK_PROTECTION_RENEW_INTERVAL_MS = 30 * 60 * 1000;
+
+type TaskProtectionFetch = (
+  input: string,
+  init: {
+    method: "PUT";
+    headers: { "Content-Type": "application/json" };
+    body: string;
+  },
+) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
 
 function getNextPublishTimestampMs(nowMs: number, intervalMs: number): number {
   const remainder = nowMs % intervalMs;
@@ -71,15 +82,138 @@ export interface TaskQueueMetricsConfig {
   cloudWatchNamespace?: string;
   /** Injected for testing. Defaults to a real CloudWatchClient. */
   cloudWatchClient?: CloudWatchClient;
+  /** Injected for testing. Defaults to ECS_AGENT_URI when running in ECS. */
+  taskProtectionAgentUri?: string;
+  /** Injected for testing. Defaults to global fetch. */
+  taskProtectionFetch?: TaskProtectionFetch;
+  /** Task protection lease duration. Defaults to 6 hours. */
+  taskProtectionExpiresInMinutes?: number;
+  /** How often to renew task protection while activities are running. Defaults to 30 minutes. */
+  taskProtectionRenewIntervalMs?: number;
 }
 
 export interface TaskQueueMetricsHandle {
   /** Stop the polling loop and clean up. */
-  stop: () => void;
+  stop: () => Promise<void>;
   /** Report that an activity started on this container. */
   activityStarted: () => void;
   /** Report that an activity finished on this container. */
   activityFinished: () => void;
+}
+
+function buildTaskProtectionUrl(agentUri: string): string {
+  return `${agentUri.replace(/\/$/, "")}/task-protection/v1/state`;
+}
+
+function startTaskScaleInProtection(config: {
+  agentUri?: string;
+  fetchFn?: TaskProtectionFetch;
+  logger: ComposerLogger;
+  expiresInMinutes: number;
+  renewIntervalMs: number;
+}): { protect: () => void; unprotect: () => void; stop: () => Promise<void> } {
+  const {
+    agentUri = process.env.ECS_AGENT_URI,
+    logger,
+    expiresInMinutes,
+    renewIntervalMs,
+  } = config;
+  const fetchFn = config.fetchFn ?? globalThis.fetch;
+
+  let renewTimer: ReturnType<typeof setTimeout> | undefined;
+  let missingEndpointLogged = false;
+  let isProtected = false;
+  let updatePromise: Promise<void> = Promise.resolve();
+
+  const clearRenewTimer = () => {
+    if (renewTimer) {
+      clearTimeout(renewTimer);
+      renewTimer = undefined;
+    }
+  };
+
+  const updateProtection = async (protectedState: boolean): Promise<void> => {
+    if (!agentUri || !fetchFn) {
+      if (!missingEndpointLogged) {
+        missingEndpointLogged = true;
+        logger.warn("ECS task scale-in protection unavailable", {
+          hasAgentUri: !!agentUri,
+          hasFetch: !!fetchFn,
+        });
+      }
+      return;
+    }
+
+    const body = protectedState
+      ? { ProtectionEnabled: true, ExpiresInMinutes: expiresInMinutes }
+      : { ProtectionEnabled: false };
+
+    try {
+      const response = await fetchFn(buildTaskProtectionUrl(agentUri), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        logger.warn("Failed to update ECS task scale-in protection", {
+          protected: protectedState,
+          status: response.status,
+          body: await response.text(),
+        });
+        return;
+      }
+
+      logger.info("Updated ECS task scale-in protection", { protected: protectedState });
+    } catch (error) {
+      logger.warn("Failed to update ECS task scale-in protection", {
+        protected: protectedState,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const enqueueProtectionUpdate = (protectedState: boolean): Promise<void> => {
+    updatePromise = updatePromise.then(
+      () => updateProtection(protectedState),
+      () => updateProtection(protectedState),
+    );
+    return updatePromise;
+  };
+
+  const scheduleRenewal = () => {
+    clearRenewTimer();
+    renewTimer = setTimeout(() => {
+      if (!isProtected) return;
+      void enqueueProtectionUpdate(true);
+      scheduleRenewal();
+    }, renewIntervalMs);
+    renewTimer.unref();
+  };
+
+  return {
+    protect: () => {
+      if (isProtected) return;
+      isProtected = true;
+      void enqueueProtectionUpdate(true);
+      scheduleRenewal();
+    },
+    unprotect: () => {
+      if (!isProtected) return;
+      isProtected = false;
+      clearRenewTimer();
+      void enqueueProtectionUpdate(false);
+    },
+    stop: async () => {
+      clearRenewTimer();
+      if (isProtected) {
+        isProtected = false;
+        await enqueueProtectionUpdate(false);
+        return;
+      }
+      await updatePromise;
+    },
+  };
 }
 
 /**
@@ -97,12 +231,23 @@ export function startTaskQueueMetrics(config: TaskQueueMetricsConfig): TaskQueue
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
     cloudWatchNamespace = DEFAULT_CLOUDWATCH_NAMESPACE,
     cloudWatchClient = new CloudWatchClient({}),
+    taskProtectionAgentUri,
+    taskProtectionFetch,
+    taskProtectionExpiresInMinutes = DEFAULT_TASK_PROTECTION_EXPIRES_IN_MINUTES,
+    taskProtectionRenewIntervalMs = DEFAULT_TASK_PROTECTION_RENEW_INTERVAL_MS,
   } = config;
 
   let runningActivities = 0;
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let nextPublishTimestampMs = getNextPublishTimestampMs(Date.now(), pollIntervalMs);
+  const taskProtection = startTaskScaleInProtection({
+    agentUri: taskProtectionAgentUri,
+    fetchFn: taskProtectionFetch,
+    logger,
+    expiresInMinutes: taskProtectionExpiresInMinutes,
+    renewIntervalMs: taskProtectionRenewIntervalMs,
+  });
 
   const scheduleNextPublish = () => {
     if (stopped) return;
@@ -194,18 +339,27 @@ export function startTaskQueueMetrics(config: TaskQueueMetricsConfig): TaskQueue
   });
 
   return {
-    stop: () => {
+    stop: async () => {
       stopped = true;
       if (timer) {
         clearTimeout(timer);
       }
+      await taskProtection.stop();
       logger.info("Task queue metrics poller stopped");
     },
     activityStarted: () => {
+      const wasIdle = runningActivities === 0;
       runningActivities++;
+      if (wasIdle) {
+        taskProtection.protect();
+      }
     },
     activityFinished: () => {
+      const wasRunning = runningActivities > 0;
       runningActivities = Math.max(0, runningActivities - 1);
+      if (wasRunning && runningActivities === 0) {
+        taskProtection.unprotect();
+      }
     },
   };
 }
