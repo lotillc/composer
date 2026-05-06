@@ -1,6 +1,6 @@
 {
   "name": "@lotiai/composer",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "A framework for building type-safe, DAG-based workflows with optional Temporal integration.",
   "license": "MIT",
   "keywords": [
