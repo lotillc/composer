@@ -449,6 +449,7 @@ export async function runActivityWorkers<TContext = unknown>(
 
   // Create workers (connection is created internally)
   const { workers, connection, metricsHandle } = await createActivityWorkers(config);
+  const runPromises = workers.map((worker) => worker.run());
 
   // Setup graceful shutdown for all workers
   let isShuttingDown = false;
@@ -456,9 +457,19 @@ export async function runActivityWorkers<TContext = unknown>(
     if (isShuttingDown) return; // Prevent duplicate shutdown
     isShuttingDown = true;
 
-    metricsHandle?.stop();
     logger.info("Shutting down Activity Workers", { workerCount: workers.length });
-    await Promise.all(workers.map((worker) => worker.shutdown()));
+    for (const worker of workers) {
+      try {
+        worker.shutdown();
+      } catch (error) {
+        logger.debug("Activity Worker shutdown request ignored", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    await Promise.allSettled(runPromises);
+    await metricsHandle?.stop();
     await connection.close();
     logger.info("Activity Workers shutdown complete");
     // TODO: process.exit(0) here makes this function non-composable when multiple
@@ -476,8 +487,11 @@ export async function runActivityWorkers<TContext = unknown>(
 
   // Run all workers in parallel
   try {
-    await Promise.all(workers.map((worker) => worker.run()));
+    await Promise.all(runPromises);
   } catch (error) {
+    if (isShuttingDown) {
+      return;
+    }
     logger.error("Activity Workers error", {
       error: error instanceof Error ? error.message : String(error),
     });
