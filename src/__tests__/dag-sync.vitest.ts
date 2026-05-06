@@ -711,6 +711,23 @@ describe("dag-sync", () => {
       );
     });
 
+    it("should handle mixed initial fields and configuration when requires comes first", async () => {
+      // step needs both "configured" (from configuration) and "input" (from initial)
+      const step = createTestStep("step", ["configured", "input"], ["result"], (bag) => ({
+        result: `got: configured=${bag.configured}, input=${bag.input}`,
+      }));
+
+      const workflow = createWorkflow<TestBag>("test-workflow")
+        .requires("input")
+        .configure({ configured: "configured-input" })
+        .build([step]);
+      const { bag } = await testComposer.runSyncWorkflow(workflow, { input: "initial-input" });
+
+      expect((bag as Record<string, unknown>).result).toBe(
+        "got: configured=configured-input, input=initial-input",
+      );
+    });
+
     it("should prioritize configured values over initial data", async () => {
       const step = createTestStep("step", ["input"], ["result"], (bag) => ({
         result: `got: ${bag.input}`,

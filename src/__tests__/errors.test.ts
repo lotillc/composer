@@ -325,4 +325,27 @@ describe("WorkflowBuilder.onError()", () => {
     expect(wf.errorHandler).toBe(handler);
     expect(wf.configuredValues).toEqual({ config: "PREFIX" });
   });
+
+  it("works with requires().configure() pattern", () => {
+    type ConfigBag = TestBag & { config: string };
+
+    const configStep = step<ConfigBag>()({
+      name: "configStep",
+      needs: ["config", "input"],
+      provides: ["output"],
+      run: async (_ctx, bag) => ({ output: `${bag.config}: ${bag.input}` }),
+    });
+
+    const handler = async () => undefined;
+    const wf = createWorkflow<ConfigBag>("configured-wf")
+      .requires("input")
+      .configure({ config: "PREFIX" })
+      .build([configStep])
+      .onError(handler);
+
+    expect(wf.name).toBe("configured-wf");
+    expect(wf.errorHandler).toBe(handler);
+    expect(wf.requiredInitial).toEqual(["input"]);
+    expect(wf.configuredValues).toEqual({ config: "PREFIX" });
+  });
 });
