@@ -88,10 +88,10 @@ const configuredWorkflow = createWorkflow<MyBag>("configured")
   .configure({ userId: "default-user" })
   .build([fetchUser, greet]);
 
-// Configure + require (configure provides defaults, requires demands runtime values)
+// Configure + require in either order
 const hybridWorkflow = createWorkflow<MyBag>("hybrid")
-  .configure({ someDefault: "value" })
   .requires("userId")
+  .configure({ someDefault: "value" })
   .build([fetchUser, greet]);
 ```
 

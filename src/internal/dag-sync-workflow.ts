@@ -800,10 +800,12 @@ function flattenSteps<Bag extends Record<string, any>>(
 /**
  * Creates a workflow builder with compile-time dependency validation.
  *
- * This builder provides three modes:
+ * This builder provides four setup modes:
  * 1. build() - for workflows that don't require initial data
  * 2. requires(fields).build() - for workflows that need the caller to provide specific fields
- * 3. configure(configuration).requires(fields).build() - for workflows that need the bag
+ * 3. configure(configuration).build() - for workflows with pre-configured values
+ * 4. configure(configuration).requires(fields).build() or
+ *    requires(fields).configure(configuration).build() - for workflows that need the bag
  *    configured with specific values, as well as initial values provided at runtime
  *
  * The compile-time validation works by:
@@ -818,11 +820,10 @@ function flattenSteps<Bag extends Record<string, any>>(
  *   // Requires 'promptText' to be provided at runtime
  *   const wf2 = createWorkflow<Bag>("prompt-workflow").requires("promptText").build([stepA, stepB]);
  *
- *   // Sets lotiContentType to "prompt_media" and requires 'promptText' to be
- *   provided at runtime.
+ *   // Requires 'promptText' at runtime and sets lotiContentType to "prompt_media".
  *   const wf3 = createWorkflow<Bag>("configured-prompt-workflow")
- *     .configure({ lotiContentType: "prompt_media" })
  *     .requires("promptText")
+ *     .configure({ lotiContentType: "prompt_media" })
  *     .build([stepA, stepB]);
  */
 export function createWorkflow<Bag extends Record<string, any>>(name: string) {
@@ -876,6 +877,44 @@ export function createWorkflow<Bag extends Record<string, any>>(name: string) {
             flattenedSteps,
             fields,
           ) as unknown as WorkflowBuilder<Bag, Initial, never, FlattenStepsType<Bag, Steps>, never>;
+        },
+        configure<Configuration extends Partial<Bag>>(
+          configuration: Configuration & Record<Extract<keyof Configuration, Initial>, never>,
+        ) {
+          type ConfigKeys = Extract<keyof Configuration, keyof Bag>;
+          type Combined = Initial | ConfigKeys;
+
+          return {
+            build<
+              const Steps extends readonly (
+                | Step<Bag, any, any, any, any>
+                | ComposedWorkflow<Bag, any, any>
+              )[],
+            >(
+              steps: Steps &
+                (ValidateWorkflowDepsWithInitial<Bag, Steps, Combined> extends string
+                  ? {
+                      __WORKFLOW_ERROR__: ValidateWorkflowDepsWithInitial<Bag, Steps, Combined>;
+                    }
+                  : unknown),
+            ): WorkflowBuilder<Bag, Initial, Configuration, FlattenStepsType<Bag, Steps>, never> {
+              const flattenedSteps = flattenSteps(steps, [name]);
+              assertUniqueStepNames(flattenedSteps);
+              assertNoDuplicatesInStepArrays(flattenedSteps);
+              return workflow(
+                name,
+                flattenedSteps,
+                fields,
+                configuration as Configuration,
+              ) as WorkflowBuilder<
+                Bag,
+                Initial,
+                Configuration,
+                FlattenStepsType<Bag, Steps>,
+                never
+              >;
+            },
+          };
         },
       };
     },

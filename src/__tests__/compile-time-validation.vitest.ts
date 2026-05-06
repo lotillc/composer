@@ -28,6 +28,15 @@ const testStepD = createTestStep("testStepD", ["input"], ["count"], (bag) => ({
   count: bag.input.length,
 }));
 
+const configuredAndInputStep = createTestStep(
+  "configuredAndInputStep",
+  ["configured", "input"],
+  ["result"],
+  (bag) => ({
+    result: `configured=${bag.configured}; input=${bag.input}`,
+  }),
+);
+
 describe("Compile-time Validation", () => {
   describe("Missing Dependencies", () => {
     it("should catch missing dependencies in single-step workflows", () => {
@@ -89,6 +98,17 @@ describe("Compile-time Validation", () => {
       void invalidWorkflow;
     });
 
+    it("should prevent configuring a field that is already required", () => {
+      // This should fail: cannot configure a field that's already required
+      const invalidWorkflow = createWorkflow<TestBag>("test-workflow")
+        .requires("input")
+        // @ts-expect-error - Type constraint prevents configuring required fields
+        .configure({ input: "configured-value" })
+        .build([]);
+
+      void invalidWorkflow;
+    });
+
     it("should allow requiring fields that are NOT configured", () => {
       // This should work: requiring different fields than configured
       // Configure "processed" but require "input" (no overlap)
@@ -100,6 +120,19 @@ describe("Compile-time Validation", () => {
       expect(validWorkflow).toBeDefined();
     });
 
+    it("should allow configuring fields that are NOT required", () => {
+      // This should work: requiring different fields than configured
+      // Require "input" but configure "count" (no overlap)
+      const validWorkflow = createWorkflow<TestBag>("test-workflow")
+        .requires("input")
+        .configure({ count: 42 })
+        .build([testStepB]);
+
+      expect(validWorkflow).toBeDefined();
+      expect(validWorkflow.requiredInitial).toEqual(["input"]);
+      expect(validWorkflow.configuredValues).toEqual({ count: 42 });
+    });
+
     it("should allow configuring fields without requiring any", () => {
       // This should work: configure without requires
       const validWorkflow = createWorkflow<TestBag>("test-workflow")
@@ -107,6 +140,29 @@ describe("Compile-time Validation", () => {
         .build([testStepB, testStepC]);
 
       expect(validWorkflow).toBeDefined();
+    });
+  });
+
+  describe("Configure and Requires Order Independence", () => {
+    it("should validate dependencies when requires comes before configure", () => {
+      const validWorkflow = createWorkflow<TestBag>("test-workflow")
+        .requires("input")
+        .configure({ configured: "configured-value" })
+        .build([configuredAndInputStep]);
+
+      expect(validWorkflow).toBeDefined();
+      expect(validWorkflow.requiredInitial).toEqual(["input"]);
+      expect(validWorkflow.configuredValues).toEqual({ configured: "configured-value" });
+    });
+
+    it("should still catch missing dependencies when requires comes before configure", () => {
+      const invalidWorkflow = createWorkflow<TestBag>("test-workflow")
+        .requires("input")
+        .configure({ count: 42 })
+        // @ts-expect-error - configuredAndInputStep also needs "configured"
+        .build([configuredAndInputStep]);
+
+      void invalidWorkflow;
     });
   });
 
@@ -172,6 +228,27 @@ describe("Compile-time Validation", () => {
       // @ts-expect-error - Property 'doubled' does not exist on type
       bag.doubled;
 
+      // @ts-expect-error - Property 'count' does not exist on type
+      bag.count;
+
+      // @ts-expect-error - Property 'result' does not exist on type
+      bag.result;
+    });
+
+    it("should infer required, configured, and provided fields when requires comes before configure", async () => {
+      const workflow = createWorkflow<TestBag>("test-workflow")
+        .requires("input")
+        .configure({ configured: "configured-value" })
+        .build([testStepB]); // provides "processed"
+
+      const { bag } = await testComposer.runSyncWorkflow(workflow, { input: "test" });
+
+      // These should work - required, configured, and provided fields are all known
+      expect(bag.input).toBe("test");
+      expect(bag.configured).toBe("configured-value");
+      expect(bag.processed).toBe("TEST");
+
+      // These should cause TypeScript errors - fields not provided by this workflow
       // @ts-expect-error - Property 'count' does not exist on type
       bag.count;
 
