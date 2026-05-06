@@ -6,17 +6,17 @@
  */
 
 import type { MockedFunction } from "vitest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createActivityWorkers, runActivityWorkers } from "../activity-worker";
 
 type AsyncVoidFn = () => Promise<void>;
 type MockConnection = { close: MockedFunction<AsyncVoidFn> };
 type MockWorkerInstance = {
   run: MockedFunction<AsyncVoidFn>;
-  shutdown: MockedFunction<AsyncVoidFn>;
+  shutdown: MockedFunction<() => void>;
 };
 type MockMetricsHandle = {
-  stop: MockedFunction<() => void>;
+  stop: MockedFunction<AsyncVoidFn>;
   activityStarted: MockedFunction<() => void>;
   activityFinished: MockedFunction<() => void>;
 };
@@ -147,16 +147,24 @@ describe("Activity Worker", () => {
 
     mockWorkerInstance = {
       run: vi.fn<[], Promise<void>>().mockResolvedValue(undefined),
-      shutdown: vi.fn<[], Promise<void>>().mockResolvedValue(undefined),
+      shutdown: vi.fn<[], void>(),
     };
     mockWorkerCreate.mockResolvedValue(mockWorkerInstance);
 
     mockMetricsHandle = {
-      stop: vi.fn<[], void>(),
+      stop: vi.fn<[], Promise<void>>().mockResolvedValue(undefined),
       activityStarted: vi.fn<[], void>(),
       activityFinished: vi.fn<[], void>(),
     };
     mockStartTaskQueueMetrics.mockReturnValue(mockMetricsHandle);
+
+    vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+  });
+
+  afterEach(() => {
+    process.removeAllListeners("SIGINT");
+    process.removeAllListeners("SIGTERM");
+    vi.restoreAllMocks();
   });
 
   describe("createActivityWorkers", () => {
@@ -324,6 +332,32 @@ describe("Activity Worker", () => {
     it("should throw error if worker run fails", async () => {
       mockWorkerInstance.run.mockRejectedValue(new Error("Worker failed"));
       await expect(runActivityWorkers(createTestConfig())).rejects.toThrow("Worker failed");
+    });
+
+    it("should wait for workers to stop before closing the connection on SIGTERM", async () => {
+      let resolveRun: (() => void) | undefined;
+      mockWorkerInstance.run.mockReturnValue(
+        new Promise<void>((resolve) => {
+          resolveRun = resolve;
+        }),
+      );
+
+      void runActivityWorkers(createTestConfig());
+      await new Promise((resolve) => setImmediate(resolve));
+
+      process.emit("SIGTERM");
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(mockWorkerInstance.shutdown).toHaveBeenCalledTimes(3);
+      expect(mockConnection.close).not.toHaveBeenCalled();
+      expect(mockMetricsHandle.stop).not.toHaveBeenCalled();
+
+      resolveRun?.();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(mockMetricsHandle.stop).toHaveBeenCalledTimes(1);
+      expect(mockConnection.close).toHaveBeenCalledTimes(1);
+      expect(process.exit).toHaveBeenCalledWith(0);
     });
   });
 });
