@@ -42,8 +42,17 @@ async function runWorkflowExpectingResult(
 type LogFn = (...args: unknown[]) => void;
 type ActivityFn = (
   workflowInput: WorkflowInput,
-  stepInput: any,
-) => Promise<any>;
+  stepInput: unknown,
+  ...extraArgs: unknown[]
+) => Promise<unknown>;
+
+function mockActivity<const Args extends readonly unknown[], Result>(
+  implementation: (workflowInput: WorkflowInput, ...args: Args) => Promise<Result>,
+): MockedFunction<ActivityFn> {
+  return vi.fn((workflowInput, ...args) =>
+    implementation(workflowInput, ...(args as unknown as Args)),
+  );
+}
 
 // Use vi.hoisted() to ensure mock state is available before module import
 const mocks = vi.hoisted(() => ({
@@ -1558,9 +1567,9 @@ describe("WorkflowFactory", () => {
 
       it("should call mapInput, executeChild for each input, and aggregateResults", async () => {
         const mapInputActivity = vi.fn(async () => [{ item: "a" }, { item: "b" }, { item: "c" }]);
-        const aggregateResultsActivity = vi.fn(
-          async (_wfInput: unknown, results: Record<string, unknown>[]) => ({
-            results: (results as Array<{ processed: string }>).map((r) => r.processed),
+        const aggregateResultsActivity = mockActivity(
+          async (_wfInput, results: Array<{ processed: string }>) => ({
+            results: results.map((r) => r.processed),
           }),
         );
         mocks.activityFunctions[baseFanOut.mapInputActivityName] = mapInputActivity;
@@ -1812,9 +1821,9 @@ describe("WorkflowFactory", () => {
         };
 
         const mapInputActivity = vi.fn(async () => [{ item: "a" }, { item: "b" }]);
-        const aggregateResultsActivity = vi.fn(
-          async (_wfInput: unknown, results: Record<string, unknown>[]) => ({
-            results: (results as Array<{ processed: string }>).map((r) => r.processed),
+        const aggregateResultsActivity = mockActivity(
+          async (_wfInput, results: Array<{ processed: string }>) => ({
+            results: results.map((r) => r.processed),
           }),
         );
         mocks.activityFunctions[fanOutWithNull.mapInputActivityName] = mapInputActivity;
@@ -1849,8 +1858,8 @@ describe("WorkflowFactory", () => {
         }));
 
         // Second batch step reads "results" produced by the fan-out
-        const summarizeActivity = vi.fn(async (_wfInput: unknown, input: Record<string, any>) => ({
-          summary: (input.results as string[]).join(", "),
+        const summarizeActivity = mockActivity(async (_wfInput, input: { results: string[] }) => ({
+          summary: input.results.join(", "),
         }));
         mocks.activityFunctions["summarize-abc123"] = summarizeActivity;
 

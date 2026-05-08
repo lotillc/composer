@@ -48,6 +48,14 @@ export type TestBag = {
 
 type NonSerializableTestBagKey = "timestamp" | "nested" | "callback";
 type SerializableTestBagKey = Exclude<keyof TestBag, NonSerializableTestBagKey>;
+type TestStepInput<Needs extends readonly (keyof TestBag)[]> = Pick<TestBag, Needs[number]>;
+type TestStepOutput<Provides extends readonly SerializableTestBagKey[]> = AssertSerializable<
+  StrictStepReturn<TestBag, Provides[number]>
+>;
+type TestStepRun<
+  Needs extends readonly (keyof TestBag)[],
+  Provides extends readonly SerializableTestBagKey[],
+> = (bag: TestStepInput<Needs>) => TestStepOutput<Provides> | Promise<TestStepOutput<Provides>>;
 
 // Helper function to create test steps (supports both sync and async run functions)
 // The Name type parameter preserves the literal type for compile-time step identity
@@ -59,19 +67,13 @@ export const createTestStep = <
   name: Name,
   needs: Needs,
   provides: Provides,
-  run:
-    | ((bag: Pick<TestBag, Needs[number]>) => Pick<TestBag, Provides[number]>)
-    | ((bag: Pick<TestBag, Needs[number]>) => Promise<Pick<TestBag, Provides[number]>>),
+  run: TestStepRun<Needs, Provides>,
 ) =>
   step<TestBag, unknown>()({
     name,
     needs,
     provides,
     run: async (_context, bag) => {
-      // Handle both sync and async implementations
-      const result = await Promise.resolve(run(bag));
-      // Cast the result to satisfy the ExactReturn type
-      // This is safe because we know the implementation returns exactly the right shape
-      return result as AssertSerializable<StrictStepReturn<TestBag, Provides[number]>>;
+      return run(bag);
     },
   });
