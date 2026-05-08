@@ -14,6 +14,10 @@ type PutMetricDataCommandLike = {
   };
 };
 type TaskProtectionFetch = Parameters<typeof startTaskQueueMetrics>[0]["taskProtectionFetch"];
+type SendMetricData = (command: PutMetricDataCommandLike) => Promise<void>;
+type DescribeTaskQueue = (
+  request: unknown,
+) => Promise<{ stats: { approximateBacklogCount: number } }>;
 
 const makeLogger = () =>
   ({
@@ -32,9 +36,9 @@ describe("startTaskQueueMetrics", () => {
   });
 
   it("publishes on aligned interval boundaries without drifting after publish work completes", async () => {
-    const send = vi.fn<[PutMetricDataCommandLike], Promise<void>>().mockResolvedValue(undefined);
+    const send = vi.fn<SendMetricData>().mockResolvedValue(undefined);
     const describeTaskQueue = vi
-      .fn<[unknown], Promise<{ stats: { approximateBacklogCount: number } }>>()
+      .fn<DescribeTaskQueue>()
       .mockImplementation(
         () =>
           new Promise((resolve) => {
@@ -84,9 +88,9 @@ describe("startTaskQueueMetrics", () => {
   });
 
   it("protects the local ECS task while activities are running", async () => {
-    const send = vi.fn<[PutMetricDataCommandLike], Promise<void>>().mockResolvedValue(undefined);
+    const send = vi.fn<SendMetricData>().mockResolvedValue(undefined);
     const describeTaskQueue = vi
-      .fn<[unknown], Promise<{ stats: { approximateBacklogCount: number } }>>()
+      .fn<DescribeTaskQueue>()
       .mockResolvedValue({ stats: { approximateBacklogCount: 0 } });
     const taskProtectionFetch = vi.fn<NonNullable<TaskProtectionFetch>>().mockResolvedValue({
       ok: true,
@@ -136,9 +140,9 @@ describe("startTaskQueueMetrics", () => {
   });
 
   it("releases task protection when stopped while activities are still running", async () => {
-    const send = vi.fn<[PutMetricDataCommandLike], Promise<void>>().mockResolvedValue(undefined);
+    const send = vi.fn<SendMetricData>().mockResolvedValue(undefined);
     const describeTaskQueue = vi
-      .fn<[unknown], Promise<{ stats: { approximateBacklogCount: number } }>>()
+      .fn<DescribeTaskQueue>()
       .mockResolvedValue({ stats: { approximateBacklogCount: 0 } });
     const taskProtectionFetch = vi.fn<NonNullable<TaskProtectionFetch>>().mockResolvedValue({
       ok: true,
@@ -178,9 +182,9 @@ describe("startTaskQueueMetrics", () => {
   });
 
   it("renews task protection while activities continue running", async () => {
-    const send = vi.fn<[PutMetricDataCommandLike], Promise<void>>().mockResolvedValue(undefined);
+    const send = vi.fn<SendMetricData>().mockResolvedValue(undefined);
     const describeTaskQueue = vi
-      .fn<[unknown], Promise<{ stats: { approximateBacklogCount: number } }>>()
+      .fn<DescribeTaskQueue>()
       .mockResolvedValue({ stats: { approximateBacklogCount: 0 } });
     const taskProtectionFetch = vi.fn<NonNullable<TaskProtectionFetch>>().mockResolvedValue({
       ok: true,

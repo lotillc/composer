@@ -168,7 +168,7 @@ describe("defineSchedule", () => {
     expect(() =>
       defineSchedule({
         scheduleId: "test",
-        workflow: {} as never,
+        workflow: {} as unknown as ReturnType<typeof makeWorkflow>,
         initialData: {},
         spec: { intervals: [{ every: "1h" }] },
         environments: ["prod"],

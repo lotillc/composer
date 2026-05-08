@@ -5,9 +5,8 @@
  * a temporary CJS file that Temporal's Webpack can bundle for the deterministic
  * sandbox.
  *
- * The generated file imports `createWorkflowFunction` from the framework's
- * `workflow-factory.js` using an absolute path (resolved at runtime), ensuring
- * it works in both local development and Docker containers.
+ * The generated file imports `createWorkflowFunction` from the adjacent
+ * workflow-factory module using an absolute path resolved at runtime.
  *
  * @module generate-workflow-source
  */
@@ -15,7 +14,7 @@
 import { realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { DurationString, Step, StepRetryPolicy } from "../../dag-sync-step";
 import { DEFAULT_CHECKPOINT_TIMEOUT_MS, type Workflow } from "../../dag-sync-workflow";
 import { planWorkflowBatches } from "../../workflow-planning";
@@ -161,13 +160,19 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
 /**
  * Resolves the absolute path to the framework's workflow-factory.js file.
  *
- * Uses require.resolve to find @lotiai/composer's main entry and navigates
- * to the internal workflow-factory module. Works in both pnpm workspace
- * (local dev) and Docker container environments.
+ * Resolves relative to this module instead of the package main entry so source
+ * checkout tests and compiled package runtime both work.
  */
 function resolveWorkflowFactoryPath(): string {
-  const composerMain = require.resolve("@lotiai/composer");
-  return join(dirname(composerMain), "internal", "async", "build", "workflow-factory.js");
+  try {
+    return require.resolve("../build/workflow-factory");
+  } catch (error) {
+    try {
+      return require.resolve("../build/workflow-factory.ts");
+    } catch {
+      throw error;
+    }
+  }
 }
 
 /**

@@ -96,6 +96,7 @@
     "zod": "^4.1.13"
   },
   "devDependencies": {
+    "@types/node": "^22.19.18",
     "@types/yargs": "^17.0.24",
     "@vitest/coverage-v8": "^4.1.4",
     "vitest": "^4.1.4"

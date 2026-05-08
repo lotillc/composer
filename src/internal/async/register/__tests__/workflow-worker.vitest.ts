@@ -7,7 +7,11 @@
 
 import type { MockedFunction } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createWorkflowWorkers, runWorkflowWorkers } from "../workflow-worker";
+import {
+  createWorkflowWorkers,
+  runWorkflowWorkers,
+  type WorkflowWorkerConfig,
+} from "../workflow-worker";
 
 type AsyncVoidFn = () => Promise<void>;
 type MockConnection = { close: MockedFunction<AsyncVoidFn> };
@@ -24,9 +28,9 @@ type WorkerCreateOptions = {
   maxConcurrentWorkflowTaskExecutions: number;
 };
 
-const mockConnect = vi.hoisted(() => vi.fn<[ConnectionOptions], Promise<MockConnection>>());
+const mockConnect = vi.hoisted(() => vi.fn<(options: ConnectionOptions) => Promise<MockConnection>>());
 const mockWorkerCreate = vi.hoisted(() =>
-  vi.fn<[WorkerCreateOptions], Promise<MockWorkerInstance>>(),
+  vi.fn<(options: WorkerCreateOptions) => Promise<MockWorkerInstance>>(),
 );
 const mockWriteWorkflowSourceFile = vi.hoisted(() => vi.fn());
 
@@ -42,16 +46,19 @@ vi.mock("../generate-workflow-source", () => ({
   writeWorkflowSourceFile: mockWriteWorkflowSourceFile,
 }));
 
-const mockWorkflows = [{ name: "test-workflow", steps: [] }];
+const mockWorkflows = [
+  { name: "test-workflow", steps: [] },
+] as unknown as WorkflowWorkerConfig["workflows"];
 
 describe("Workflow Workers", () => {
   let mockConnection: MockConnection;
   let mockWorkerInstance: MockWorkerInstance;
 
   const createTestConfig = (
-    overrides: Partial<Parameters<typeof createWorkflowWorkers>[0]> = {},
-  ) => ({
+    overrides: Partial<WorkflowWorkerConfig> = {},
+  ): WorkflowWorkerConfig => ({
     workflows: mockWorkflows,
+    deploymentSeriesName: "test-workflows",
     ...overrides,
   });
 
@@ -67,13 +74,13 @@ describe("Workflow Workers", () => {
     mockWriteWorkflowSourceFile.mockResolvedValue("/tmp/__workflow-source.js");
 
     mockConnection = {
-      close: vi.fn<[], Promise<void>>().mockResolvedValue(undefined),
+      close: vi.fn<AsyncVoidFn>().mockResolvedValue(undefined),
     };
     mockConnect.mockResolvedValue(mockConnection);
 
     mockWorkerInstance = {
-      run: vi.fn<[], Promise<void>>().mockResolvedValue(undefined),
-      shutdown: vi.fn<[], Promise<void>>().mockResolvedValue(undefined),
+      run: vi.fn<AsyncVoidFn>().mockResolvedValue(undefined),
+      shutdown: vi.fn<AsyncVoidFn>().mockResolvedValue(undefined),
     };
     mockWorkerCreate.mockResolvedValue(mockWorkerInstance);
   });

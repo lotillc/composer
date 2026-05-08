@@ -1,10 +1,13 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "incremental": false,
     "module": "es2022",
+    "declaration": false,
+    "declarationMap": false,
     "noEmit": true,
     "types": ["node"]
   },
-  "files": [],
-  "include": []
+  "include": ["src/**/*.vitest.ts"],
+  "exclude": ["node_modules", "dist"]
 }

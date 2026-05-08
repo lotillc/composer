@@ -54,12 +54,15 @@ function createMockComposer(): Composer<unknown> {
     temporal: {
       serverAddress: "localhost:7233",
       namespace: "test-namespace",
+      serviceName: "test-service",
     },
     runSyncWorkflow: vi.fn() as Composer<unknown>["runSyncWorkflow"],
     runAsyncWorkflow: vi.fn() as Composer<unknown>["runAsyncWorkflow"],
+    startAsyncWorkflow: vi.fn() as Composer<unknown>["startAsyncWorkflow"],
     runActivityWorkers: vi.fn().mockResolvedValue(undefined),
     runWorkflowWorkers: vi.fn().mockResolvedValue(undefined),
-  };
+    syncSchedules: vi.fn() as Composer<unknown>["syncSchedules"],
+  } as unknown as Composer<unknown>;
 }
 
 function encodePayload(value: unknown): Uint8Array {

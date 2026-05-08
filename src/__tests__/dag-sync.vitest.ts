@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createWorkflow, fanOut, step, use, type Workflow } from "../internal";
 import { WorkflowBatchError } from "../internal/errors";
-import { createTestStep, type TestBag, testComposer } from "./test-utils";
+import { createTestStep, testAsyncStepRuntime, type TestBag, testComposer } from "./test-utils";
 
 describe("dag-sync", () => {
   describe("step creation", () => {
@@ -21,7 +21,7 @@ describe("dag-sync", () => {
         processed: bag.input.toUpperCase(),
       }));
 
-      const result = await testStep.run(undefined, { input: "hello" });
+      const result = await testStep.run(testAsyncStepRuntime, { input: "hello" });
       expect(result).toEqual({ processed: "HELLO" });
     });
   });
@@ -463,19 +463,21 @@ describe("dag-sync", () => {
     it("should execute workflows with many parallel steps", async () => {
       // Create a workflow with 10 parallel steps to verify the engine
       // handles batches with many steps without errors or degradation
-      const parallelSteps = Array.from({ length: 10 }, (_, i) =>
-        createTestStep(
-          `parallel${i}`,
-          ["input"],
-          [`result${i}` as keyof TestBag],
-          (bag) =>
+      type ParallelBag = { input: string } & Record<`result${number}`, string>;
+      const parallelSteps = Array.from({ length: 10 }, (_, i) => {
+        const resultKey = `result${i}` as `result${number}`;
+        return step<ParallelBag>()({
+          name: `parallel${i}`,
+          needs: ["input"] as const,
+          provides: [resultKey] as const,
+          run: async (_ctx, bag) =>
             ({
-              [`result${i}`]: `${bag.input}-${i}`,
-            }) as unknown as Pick<TestBag, keyof TestBag>,
-        ),
-      );
+              [resultKey]: `${bag.input}-${i}`,
+            }) as Pick<ParallelBag, typeof resultKey>,
+        });
+      });
 
-      const workflow = createWorkflow<TestBag>("test-workflow")
+      const workflow = createWorkflow<ParallelBag>("test-workflow")
         .requires("input")
         .build(parallelSteps);
 

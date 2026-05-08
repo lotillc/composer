@@ -301,13 +301,13 @@ describe("Observability End-to-End Component Tests", () => {
       const spanCalls = vi.mocked(mockTracer.startSpan).mock.calls;
 
       // Find the workflow, batch, and step span calls
-      const workflowSpanCall = spanCalls.find(([name]: [string]) =>
+      const workflowSpanCall = spanCalls.find(([name]) =>
         name.includes("workflow.hierarchy-test-workflow"),
       );
-      const batchSpanCall = spanCalls.find(([name]: [string]) =>
+      const batchSpanCall = spanCalls.find(([name]) =>
         name.includes("workflow.hierarchy-test-workflow.batch.1"),
       );
-      const stepSpanCall = spanCalls.find(([name]: [string]) =>
+      const stepSpanCall = spanCalls.find(([name]) =>
         name.includes("workflow.hierarchy-test-workflow.step.parentStep"),
       );
 

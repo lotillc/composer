@@ -4,6 +4,11 @@ import { fanOut, isFanOutStep } from "../dag-sync-fanout";
 import { step } from "../dag-sync-step";
 import { createWorkflow } from "../dag-sync-workflow";
 
+const testAsyncStepRuntime = {
+  heartbeat: () => {},
+  getHeartbeatDetails: () => undefined,
+};
+
 interface ItemBag {
   item: string;
   processed: string;
@@ -52,7 +57,7 @@ describe("dag-sync-fanout", () => {
     });
 
     it("run() throws a descriptive error", async () => {
-      await expect(fo.run(undefined, {})).rejects.toThrow(
+      await expect(fo.run(testAsyncStepRuntime, { items: [] })).rejects.toThrow(
         'FanOut "processAll" cannot be executed directly',
       );
     });
