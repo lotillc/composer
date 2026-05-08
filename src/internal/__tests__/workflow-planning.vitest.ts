@@ -39,11 +39,9 @@ function createMockStep<
     needs,
     provides,
     run: async (_ctx, _bag) => {
-      const result = {} as Pick<TestBag, Provides[number]>;
-      for (const key of provides) {
-        result[key] = `mock-${String(key)}` as unknown as TestBag[Provides[number]];
-      }
-      return result;
+      return Object.fromEntries(
+        provides.map((key) => [key, `mock-${String(key)}`]),
+      ) as Pick<TestBag, Provides[number]>;
     },
   };
 }

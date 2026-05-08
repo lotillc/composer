@@ -3,14 +3,23 @@
  */
 
 import { describe, expect, it } from "vitest";
+import type { Step } from "../../../../dag-sync-step";
 import { denamespaceSyntheticSteps } from "../common";
 
-type TestStep = {
+type TestStep = Step<Record<string, unknown>, string[], string[]>;
+type TestStepInput = {
   name: string;
   needs: string[];
   provides: string[];
   workflowPath?: string[];
 };
+
+function makeStep(input: TestStepInput): TestStep {
+  return {
+    ...input,
+    run: async () => ({}),
+  };
+}
 
 // Type for the dynamically added properties from denamespaceSyntheticSteps
 interface FlattenedStep {
@@ -24,8 +33,8 @@ interface FlattenedStep {
 describe("denamespaceSyntheticSteps", () => {
   it("returns steps unchanged when no workflowPath", () => {
     const steps: TestStep[] = [
-      { name: "step1", needs: ["a"], provides: ["b"] },
-      { name: "step2", needs: ["b"], provides: ["c"] },
+      makeStep({ name: "step1", needs: ["a"], provides: ["b"] }),
+      makeStep({ name: "step2", needs: ["b"], provides: ["c"] }),
     ];
 
     const result = denamespaceSyntheticSteps(steps) as FlattenedStep[];
@@ -39,12 +48,12 @@ describe("denamespaceSyntheticSteps", () => {
 
   it("extracts real step name from namespaced name with single-level workflowPath", () => {
     const steps: TestStep[] = [
-      {
+      makeStep({
         name: "childWorkflow.actualStep",
         needs: ["input"],
         provides: ["output"],
         workflowPath: ["childWorkflow"],
-      },
+      }),
     ];
 
     const result = denamespaceSyntheticSteps(steps) as FlattenedStep[];
@@ -57,12 +66,12 @@ describe("denamespaceSyntheticSteps", () => {
 
   it("extracts real step name from deeply nested workflowPath", () => {
     const steps: TestStep[] = [
-      {
+      makeStep({
         name: "parent.child.grandchild.deepStep",
         needs: ["a"],
         provides: ["b"],
         workflowPath: ["parent", "child", "grandchild"],
-      },
+      }),
     ];
 
     const result = denamespaceSyntheticSteps(steps) as FlattenedStep[];
@@ -74,14 +83,14 @@ describe("denamespaceSyntheticSteps", () => {
 
   it("handles mixed steps (with and without workflowPath)", () => {
     const steps: TestStep[] = [
-      { name: "regularStep", needs: [], provides: ["a"] },
-      {
+      makeStep({ name: "regularStep", needs: [], provides: ["a"] }),
+      makeStep({
         name: "composed.nestedStep",
         needs: ["a"],
         provides: ["b"],
         workflowPath: ["composed"],
-      },
-      { name: "anotherRegular", needs: ["b"], provides: ["c"] },
+      }),
+      makeStep({ name: "anotherRegular", needs: ["b"], provides: ["c"] }),
     ];
 
     const result = denamespaceSyntheticSteps(steps) as FlattenedStep[];
@@ -97,12 +106,12 @@ describe("denamespaceSyntheticSteps", () => {
 
   it("preserves needs and provides arrays", () => {
     const steps: TestStep[] = [
-      {
+      makeStep({
         name: "workflow.step",
         needs: ["input1", "input2"],
         provides: ["output1", "output2"],
         workflowPath: ["workflow"],
-      },
+      }),
     ];
 
     const result = denamespaceSyntheticSteps(steps) as FlattenedStep[];
@@ -113,12 +122,12 @@ describe("denamespaceSyntheticSteps", () => {
 
   it("handles empty workflowPath array", () => {
     const steps: TestStep[] = [
-      {
+      makeStep({
         name: "stepWithEmptyPath",
         needs: [],
         provides: ["output"],
         workflowPath: [],
-      },
+      }),
     ];
 
     const result = denamespaceSyntheticSteps(steps) as FlattenedStep[];

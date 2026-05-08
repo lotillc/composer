@@ -87,7 +87,7 @@ describe("scheduleDefinitionSchema", () => {
             calendars: [{ hour: 9, minute: 0 }],
             cronExpressions: ["0 9 * * *"],
             timezoneName: "UTC",
-          },
+          } as unknown as ReturnType<typeof makeDefinition>["spec"],
         }),
       );
 

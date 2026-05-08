@@ -5,6 +5,28 @@ import { WorkflowBatchError, WorkflowStepError } from "../internal/errors";
 import { mockLogger, mockTracer } from "./observability-mocks";
 import { createTestStep, noOpContextProvider, type TestBag } from "./test-utils";
 
+type WorkflowFailureLog = {
+  duration: number;
+  error: {
+    name: string;
+    message: string;
+  };
+  failureContext: {
+    stepName?: string;
+    stepNumber?: number;
+    batchNumber: number;
+    stepStartTime?: number;
+    stepDuration?: number;
+  };
+  bagState?: unknown;
+};
+
+function firstWorkflowFailureLog(): WorkflowFailureLog {
+  const metadata = vi.mocked(mockLogger.error).mock.calls[0]?.[1];
+  expect(metadata).toBeDefined();
+  return metadata as unknown as WorkflowFailureLog;
+}
+
 // Mock @opentelemetry/api so trace.getTracer() returns our mockTracer
 vi.mock("@opentelemetry/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@opentelemetry/api")>();
@@ -126,7 +148,7 @@ describe("Observability Error Logging", () => {
         const { error } = await workflowPromise;
         expect(error).toBeInstanceOf(WorkflowBatchError);
 
-        const logCall = vi.mocked(mockLogger.error).mock.calls[0][1];
+        const logCall = firstWorkflowFailureLog();
         // stepStartTime might not be available in failureContext, check if it exists
         if (logCall.failureContext.stepStartTime) {
           expect(logCall.failureContext.stepDuration).toBeCloseTo(0.01, 2); // ~10ms ±5ms
@@ -181,14 +203,14 @@ describe("Observability Error Logging", () => {
       const workflow = {
         name: "test-workflow",
         steps: [step1],
-      } as Workflow<TestBag>;
+      } as unknown as Workflow<TestBag>;
 
       try {
         await composerWithMockLogger.runSyncWorkflow(workflow, { input: "test" }); // Missing 'result'
         throw new Error("Expected workflow to throw a validation error");
       } catch (_error) {
         // Validation errors should not include step duration
-        const logCall = vi.mocked(mockLogger.error).mock.calls[0][1];
+        const logCall = firstWorkflowFailureLog();
         expect(logCall.failureContext.stepDuration).toBeUndefined();
         expect(logCall.failureContext.stepName).toBeUndefined();
         expect(logCall.failureContext.stepNumber).toBeUndefined();
@@ -207,7 +229,7 @@ describe("Observability Error Logging", () => {
       const { error } = await composerWithMockLogger.runSyncWorkflow(workflow, { input: "test" });
       expect(error).toBeInstanceOf(WorkflowBatchError);
 
-      const logCall = vi.mocked(mockLogger.error).mock.calls[0][1];
+      const logCall = firstWorkflowFailureLog();
       expect(logCall.bagState).toEqual({ input: "test" });
     });
   });
@@ -221,13 +243,13 @@ describe("Observability Error Logging", () => {
       const workflow = {
         name: "validation-error-workflow",
         steps: [step1],
-      } as Workflow<TestBag>;
+      } as unknown as Workflow<TestBag>;
 
       try {
         await composerWithMockLogger.runSyncWorkflow(workflow, { input: "test" });
         throw new Error("Expected workflow to throw a validation error");
       } catch (_error) {
-        const logCall = vi.mocked(mockLogger.error).mock.calls[0][1];
+        const logCall = firstWorkflowFailureLog();
         expect(logCall.error.message).toContain(
           'requires field "result" but no previous step provides it',
         );
@@ -245,13 +267,13 @@ describe("Observability Error Logging", () => {
         name: "overwrite-error-workflow",
         steps: [step1],
         requiredInitial: ["input"],
-      } as Workflow<TestBag>;
+      } as unknown as Workflow<TestBag>;
 
       try {
         await composerWithMockLogger.runSyncWorkflow(workflow, { input: "test" });
         throw new Error("Expected workflow to throw an overwrite error");
       } catch (_error) {
-        const logCall = vi.mocked(mockLogger.error).mock.calls[0][1];
+        const logCall = firstWorkflowFailureLog();
         expect(logCall.error.message).toContain(
           'Step "step1" cannot overwrite initial field "input"',
         );
@@ -278,7 +300,7 @@ describe("Observability Error Logging", () => {
       const { error } = await composerWithMockLogger.runSyncWorkflow(workflow, { input: "test" });
       expect(error).toBeInstanceOf(WorkflowBatchError);
 
-      const logCall = vi.mocked(mockLogger.error).mock.calls[0][1];
+      const logCall = firstWorkflowFailureLog();
       expect(logCall.error.message).toContain("failingStep");
       expect(logCall.failureContext.stepName).toBe("failingStep"); // The failing step
       expect(logCall.failureContext.batchNumber).toBe(1); // First batch
@@ -333,7 +355,7 @@ describe("Observability Error Logging", () => {
       expect(stepError.originalError).toBe(originalError);
       expect(stepError.cause).toBe(originalError);
 
-      const logCall = vi.mocked(mockLogger.error).mock.calls[0][1];
+      const logCall = firstWorkflowFailureLog();
       // Logged error is the WorkflowBatchError
       expect(logCall.error.name).toBe("WorkflowBatchError");
       expect(logCall.error.message).toContain("failingStep");
@@ -361,7 +383,7 @@ describe("Observability Error Logging", () => {
       expect(stepError.message).toContain("[object Object]");
       expect(stepError.originalError.message).toContain("[object Object]");
 
-      const logCall = vi.mocked(mockLogger.error).mock.calls[0][1];
+      const logCall = firstWorkflowFailureLog();
       expect(logCall.error.name).toBe("WorkflowBatchError");
       expect(logCall.error.message).toContain("failingStep");
     });
@@ -390,7 +412,7 @@ describe("Observability Error Logging", () => {
         const endTime = Date.now();
         const actualDuration = (endTime - startTime) / 1000; // in seconds
 
-        const logCall = vi.mocked(mockLogger.error).mock.calls[0][1];
+        const logCall = firstWorkflowFailureLog();
         const loggedDuration = logCall.duration;
 
         expect(loggedDuration).toBeCloseTo(actualDuration, 1); // Within 100ms of actual
@@ -417,7 +439,7 @@ describe("Observability Error Logging", () => {
         const { error } = await workflowPromise;
         expect(error).toBeInstanceOf(WorkflowBatchError);
 
-        const logCall = vi.mocked(mockLogger.error).mock.calls[0][1];
+        const logCall = firstWorkflowFailureLog();
         expect(logCall.failureContext.stepDuration).toBeCloseTo(0.02, 1); // ~20ms ±50ms
       } finally {
         vi.useRealTimers();
@@ -447,7 +469,7 @@ describe("Observability Error Logging", () => {
       const { error } = await composerWithMockLogger.runSyncWorkflow(workflow, { input: "test" });
       expect(error).toBeInstanceOf(WorkflowBatchError);
 
-      const logCall = vi.mocked(mockLogger.error).mock.calls[0][1];
+      const logCall = firstWorkflowFailureLog();
       expect(logCall.error.message).toContain("step2");
       expect(logCall.failureContext.stepName).toBe("step2");
       expect(logCall.failureContext.stepNumber).toBe(2);
@@ -476,7 +498,7 @@ describe("Observability Error Logging", () => {
       const { error } = await composerWithMockLogger.runSyncWorkflow(workflow, { input: "hello" });
       expect(error).toBeInstanceOf(WorkflowBatchError);
 
-      const logCall = vi.mocked(mockLogger.error).mock.calls[0][1];
+      const logCall = firstWorkflowFailureLog();
       expect(logCall.error.message).toContain("step2");
       expect(logCall.failureContext.stepName).toBe("step2");
       expect(logCall.bagState).toEqual({ input: "hello", processed: "HELLO" }); // Bag state at failure

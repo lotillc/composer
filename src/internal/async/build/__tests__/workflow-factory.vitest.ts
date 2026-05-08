@@ -42,8 +42,8 @@ async function runWorkflowExpectingResult(
 type LogFn = (...args: unknown[]) => void;
 type ActivityFn = (
   workflowInput: WorkflowInput,
-  stepInput: Record<string, unknown>,
-) => Promise<Record<string, unknown>>;
+  stepInput: any,
+) => Promise<any>;
 
 // Use vi.hoisted() to ensure mock state is available before module import
 const mocks = vi.hoisted(() => ({
@@ -1657,15 +1657,13 @@ describe("WorkflowFactory", () => {
                 },
               ],
             });
-            throw new ChildWorkflowFailure(
-              "child execution failed",
-              0,
-              0,
-              "child-wf-abc123",
-              "child-run-id",
-              "child-wf-abc123",
-              appFailure,
-            );
+          throw new ChildWorkflowFailure(
+            "default",
+            { workflowId: "child-wf-abc123", runId: "child-run-id" },
+            "child-wf-abc123",
+            "NON_RETRYABLE_FAILURE",
+            appFailure,
+          );
           }
           return { bag: { item: "a", processed: "A" }, error: undefined };
         });
@@ -1710,15 +1708,13 @@ describe("WorkflowFactory", () => {
               },
             ],
           });
-          throw new ChildWorkflowFailure(
-            "child failed",
-            0,
-            0,
-            "child-wf",
-            "run-id",
-            "child-wf",
-            appFailure,
-          );
+        throw new ChildWorkflowFailure(
+          "default",
+          { workflowId: "child-wf", runId: "run-id" },
+          "child-wf",
+          "NON_RETRYABLE_FAILURE",
+          appFailure,
+        );
         });
 
         const plan = planWithFanOut(baseFanOut);
@@ -1734,7 +1730,7 @@ describe("WorkflowFactory", () => {
         expect(error?.message).toContain("processBatch");
 
         // The error details should be preserved (via the errors array on the result)
-        const resultError = error as Error & { errors?: Array<{ stepName: string }> };
+        const resultError = error as unknown as Error & { errors?: Array<{ stepName: string }> };
         expect(resultError.errors).toBeDefined();
         expect(resultError.errors).toHaveLength(1);
         expect(resultError.errors![0]!.stepName).toBe("processBatch");

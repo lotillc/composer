@@ -1,4 +1,5 @@
-import { createComposer, type StepContextProvider, step } from "../internal";
+import { createComposer, type AsyncStepRuntime, type StepContextProvider, step } from "../internal";
+import type { AssertSerializable, StrictStepReturn } from "../internal/dag-sync-step";
 
 /**
  * No-op context provider for tests that don't need database access.
@@ -7,6 +8,11 @@ import { createComposer, type StepContextProvider, step } from "../internal";
 export const noOpContextProvider: StepContextProvider<undefined> = {
   beforeStep: async () => undefined,
   afterStep: async () => {},
+};
+
+export const testAsyncStepRuntime: AsyncStepRuntime = {
+  heartbeat: () => {},
+  getHeartbeatDetails: () => undefined,
 };
 
 /**
@@ -22,7 +28,7 @@ export const testComposer = createComposer({ contextProvider: noOpContextProvide
  */
 export const testAsyncComposer = createComposer({
   contextProvider: noOpContextProvider,
-  temporal: { serverAddress: "localhost:7233", namespace: "test" },
+  temporal: { serverAddress: "localhost:7233", namespace: "test", serviceName: "test-service" },
 });
 
 // Test bag type for all tests
@@ -40,12 +46,15 @@ export type TestBag = {
   callback: () => void;
 };
 
+type NonSerializableTestBagKey = "timestamp" | "nested" | "callback";
+type SerializableTestBagKey = Exclude<keyof TestBag, NonSerializableTestBagKey>;
+
 // Helper function to create test steps (supports both sync and async run functions)
 // The Name type parameter preserves the literal type for compile-time step identity
 export const createTestStep = <
   const Name extends string,
   const Needs extends readonly (keyof TestBag)[],
-  const Provides extends readonly (keyof TestBag)[],
+  const Provides extends readonly SerializableTestBagKey[],
 >(
   name: Name,
   needs: Needs,
@@ -63,6 +72,6 @@ export const createTestStep = <
       const result = await Promise.resolve(run(bag));
       // Cast the result to satisfy the ExactReturn type
       // This is safe because we know the implementation returns exactly the right shape
-      return result as Pick<TestBag, Provides[number]>;
+      return result as AssertSerializable<StrictStepReturn<TestBag, Provides[number]>>;
     },
   });

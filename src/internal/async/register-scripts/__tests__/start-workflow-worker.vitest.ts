@@ -31,13 +31,16 @@ function createMockComposer(overrides?: Partial<Composer<unknown>>): Composer<un
     temporal: {
       serverAddress: "localhost:7233",
       namespace: "default",
+      serviceName: "test-service",
     },
     runSyncWorkflow: vi.fn() as Composer<unknown>["runSyncWorkflow"],
     runAsyncWorkflow: vi.fn() as Composer<unknown>["runAsyncWorkflow"],
+    startAsyncWorkflow: vi.fn() as Composer<unknown>["startAsyncWorkflow"],
     runActivityWorkers: vi.fn().mockResolvedValue(undefined),
     runWorkflowWorkers: vi.fn().mockResolvedValue(undefined),
+    syncSchedules: vi.fn() as Composer<unknown>["syncSchedules"],
     ...overrides,
-  };
+  } as unknown as Composer<unknown>;
 }
 
 const mockWorkflows: Workflow<any, any, any>[] = [{ name: "test-workflow", steps: [] }];
@@ -73,6 +76,7 @@ describe("startWorkflowWorker", () => {
         temporal: {
           serverAddress: "prod.temporal.io:7233",
           namespace: "production",
+          serviceName: "prod-service",
         },
       });
 

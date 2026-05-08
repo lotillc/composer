@@ -13,8 +13,24 @@ import {
   startWorkflowObservability,
   type WorkflowObservabilityHandle,
 } from "../internal/observability";
+import type { UUIDV7 } from "../internal/types";
 import { createMockSpan, mockLogger, mockMetrics, mockTracer } from "./observability-mocks";
 import { createTestStep, type TestBag } from "./test-utils";
+
+type WorkflowFailureLog = {
+  failureContext: {
+    stepDuration?: number;
+  };
+  bagState?: unknown;
+};
+
+const workflowId = (id: string) => id as UUIDV7;
+
+function firstWorkflowFailureLog(): WorkflowFailureLog {
+  const metadata = vi.mocked(mockLogger.error).mock.calls[0]?.[1];
+  expect(metadata).toBeDefined();
+  return metadata as unknown as WorkflowFailureLog;
+}
 
 // Mock @opentelemetry/api so trace.getTracer() returns our mockTracer
 vi.mock("@opentelemetry/api", async (importOriginal) => {
@@ -59,7 +75,7 @@ describe("Observability Functions", () => {
     describe("startWorkflowObservability", () => {
       it("should create workflow span with correct attributes", () => {
         const handle = startWorkflowObservability(
-          "test-workflow-id",
+          workflowId("test-workflow-id"),
           mockWorkflow,
           {
             input: "test",
@@ -89,7 +105,7 @@ describe("Observability Functions", () => {
       });
 
       it("should initialize all required metrics", () => {
-        startWorkflowObservability("test-wf-id", mockWorkflow, {}, mockLogger);
+        startWorkflowObservability(workflowId("test-wf-id"), mockWorkflow, {}, mockLogger);
 
         expect(mockMetrics.counter).toHaveBeenCalledWith(
           "workflow_executions_total",
@@ -114,7 +130,7 @@ describe("Observability Functions", () => {
       });
 
       it("should handle empty initial data", () => {
-        startWorkflowObservability("test-wf-id", mockWorkflow, {}, mockLogger);
+        startWorkflowObservability(workflowId("test-wf-id"), mockWorkflow, {}, mockLogger);
 
         expect(mockTracer.startSpan).toHaveBeenCalledWith("workflow.test-workflow", {
           attributes: {
@@ -136,7 +152,7 @@ describe("Observability Functions", () => {
         mockTracer.startSpan.mockImplementation(() => createMockSpan());
 
         handle = startWorkflowObservability(
-          "test-wf-id",
+          workflowId("test-wf-id"),
           mockWorkflow,
           {
             input: "test",
@@ -260,7 +276,7 @@ describe("Observability Functions", () => {
           executionContext,
         );
 
-        const logCall = vi.mocked(mockLogger.error).mock.calls[0][1];
+        const logCall = firstWorkflowFailureLog();
         expect(logCall.failureContext.stepDuration).toBeCloseTo(1, 0); // ~1 second
       });
 
@@ -284,7 +300,7 @@ describe("Observability Functions", () => {
           executionContextWithoutStartTime,
         );
 
-        const logCall = vi.mocked(mockLogger.error).mock.calls[0][1];
+        const logCall = firstWorkflowFailureLog();
         expect(logCall.failureContext.stepDuration).toBeUndefined();
       });
 
@@ -302,7 +318,7 @@ describe("Observability Functions", () => {
           bagState,
         );
 
-        const logCall = vi.mocked(mockLogger.error).mock.calls[0][1];
+        const logCall = firstWorkflowFailureLog();
         expect(logCall.bagState).toEqual(bagState);
       });
 
@@ -352,7 +368,12 @@ describe("Observability Functions", () => {
 
     beforeEach(() => {
       mockTracer.startSpan.mockImplementation(() => createMockSpan());
-      workflowHandle = startWorkflowObservability("test-wf-id", mockWorkflow, {}, mockLogger);
+      workflowHandle = startWorkflowObservability(
+        workflowId("test-wf-id"),
+        mockWorkflow,
+        {},
+        mockLogger,
+      );
     });
 
     describe("startBatchObservability", () => {
@@ -436,7 +457,12 @@ describe("Observability Functions", () => {
 
     beforeEach(() => {
       mockTracer.startSpan.mockImplementation(() => createMockSpan());
-      workflowHandle = startWorkflowObservability("test-wf-id", mockWorkflow, {}, mockLogger);
+      workflowHandle = startWorkflowObservability(
+        workflowId("test-wf-id"),
+        mockWorkflow,
+        {},
+        mockLogger,
+      );
       batchHandle = startBatchObservability(workflowHandle, 2, ["testStep"]);
     });
 
@@ -584,7 +610,8 @@ describe("Observability Functions", () => {
         });
 
         const recordCall = vi.mocked(handle.stepDurationHistogram.record).mock.calls[0];
-        const duration = recordCall[0];
+        expect(recordCall).toBeDefined();
+        const duration = recordCall![0];
 
         expect(duration).toBeGreaterThanOrEqual(0);
         expect(duration).toBeLessThan(1); // Should be less than 1 second for this test
@@ -598,7 +625,12 @@ describe("Observability Functions", () => {
     });
 
     it("should maintain handle object references correctly", () => {
-      const workflowHandle = startWorkflowObservability("test-wf-id", mockWorkflow, {}, mockLogger);
+      const workflowHandle = startWorkflowObservability(
+        workflowId("test-wf-id"),
+        mockWorkflow,
+        {},
+        mockLogger,
+      );
       const batchHandle = startBatchObservability(workflowHandle, 1, ["step1"]);
       const stepHandle = startStepObservability(workflowHandle, batchHandle, mockStep);
 
@@ -613,8 +645,8 @@ describe("Observability Functions", () => {
       const workflow1 = createWorkflow<TestBag>("workflow-1").build([]);
       const workflow2 = createWorkflow<TestBag>("workflow-2").build([]);
 
-      const handle1 = startWorkflowObservability("wf-id-1", workflow1, {}, mockLogger);
-      const handle2 = startWorkflowObservability("wf-id-2", workflow2, {}, mockLogger);
+      const handle1 = startWorkflowObservability(workflowId("wf-id-1"), workflow1, {}, mockLogger);
+      const handle2 = startWorkflowObservability(workflowId("wf-id-2"), workflow2, {}, mockLogger);
 
       expect(handle1.workflowName).toBe("workflow-1");
       expect(handle2.workflowName).toBe("workflow-2");

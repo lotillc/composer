@@ -4,7 +4,7 @@
 
 import { ApplicationFailure, WorkflowFailedError } from "@temporalio/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { UUIDV7 } from "../../../../types";
+import type { UUIDV7 } from "../../../types";
 import type { Workflow } from "../../../dag-sync-workflow";
 import * as temporalClient from "../temporal-client";
 import { executeWorkflowTemporal, startWorkflowTemporal } from "../workflow-execution";
@@ -243,7 +243,7 @@ describe("executeWorkflowTemporal", () => {
 
       mockExecuteWorkflow.mockResolvedValue({
         workflowId: mockWorkflowId,
-      } as Awaited<ReturnType<typeof temporalClient.executeWorkflow>>);
+      } as unknown as Awaited<ReturnType<typeof temporalClient.executeWorkflow>>);
 
       const result = await executeWorkflowTemporal(
         workflow,
@@ -378,9 +378,10 @@ describe("executeWorkflowTemporal", () => {
       expect(result.bag).toEqual(partialBag);
       expect(result.error).toBeInstanceOf(Error);
       expect(result.error?.message).toBe(errorDetail.message);
-      expect((result.error as Record<string, unknown>).code).toBe("WORKFLOW_BATCH_ERROR");
-      expect((result.error as Record<string, unknown>).type).toBe("WorkflowBatchError");
-      expect((result.error as Record<string, unknown>).batchNumber).toBe(1);
+      const structuredError = result.error as unknown as Record<string, unknown>;
+      expect(structuredError.code).toBe("WORKFLOW_BATCH_ERROR");
+      expect(structuredError.type).toBe("WorkflowBatchError");
+      expect(structuredError.batchNumber).toBe(1);
     });
 
     it("should fall back to initial data when ApplicationFailure has no details", async () => {
@@ -705,7 +706,9 @@ describe("startWorkflowTemporal", () => {
   const mockClientConfig = { address: "localhost:7233", namespace: "default" };
 
   beforeEach(() => {
-    mockExecuteWorkflow.mockResolvedValue(undefined);
+    mockExecuteWorkflow.mockResolvedValue(
+      {} as Awaited<ReturnType<typeof temporalClient.executeWorkflow>>,
+    );
   });
 
   it("should call executeWorkflow (fire-and-forget), not executeWorkflowAndWait", async () => {

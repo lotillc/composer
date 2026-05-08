@@ -29,6 +29,9 @@ export interface WorkflowInput {
 
   /** Additional metadata */
   metadata?: Record<string, string>;
+
+  /** Deployment environment for activities that need environment-aware behavior */
+  environment?: string;
 }
 
 /**

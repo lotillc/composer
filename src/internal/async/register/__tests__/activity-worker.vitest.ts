@@ -7,7 +7,13 @@
 
 import type { MockedFunction } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createActivityWorkers, runActivityWorkers } from "../activity-worker";
+import {
+  createActivityWorkers,
+  runActivityWorkers,
+  type ActivityWorkerConfig,
+} from "../activity-worker";
+import type { StepContextProvider } from "../../../context-provider";
+import type { ComposerLogger } from "../../../types";
 
 type AsyncVoidFn = () => Promise<void>;
 type MockConnection = { close: MockedFunction<AsyncVoidFn> };
@@ -39,29 +45,30 @@ type MockActivityContext = {
   };
 };
 type MockStepContext = { em: Record<string, unknown> };
+type MockContextProvider = StepContextProvider<MockStepContext> & {
+  beforeStep: MockedFunction<(stepName: string) => Promise<MockStepContext>>;
+  afterStep: MockedFunction<(ctx: MockStepContext, error?: Error) => Promise<void>>;
+};
 type MockLogger = {
-  info: ReturnType<typeof vi.fn>;
-  warn: ReturnType<typeof vi.fn>;
-  error: ReturnType<typeof vi.fn>;
-  debug: ReturnType<typeof vi.fn>;
+  info: MockedFunction<ComposerLogger["info"]>;
+  warn: MockedFunction<ComposerLogger["warn"]>;
+  error: MockedFunction<ComposerLogger["error"]>;
+  debug: MockedFunction<ComposerLogger["debug"]>;
 };
 
-const mockActivityCurrent = vi.hoisted(() => vi.fn<[], MockActivityContext>());
-const mockConnect = vi.hoisted(() => vi.fn<[ConnectionOptions], Promise<MockConnection>>());
+const mockActivityCurrent = vi.hoisted(() => vi.fn<() => MockActivityContext>());
+const mockConnect = vi.hoisted(() => vi.fn<(options: ConnectionOptions) => Promise<MockConnection>>());
 const mockWorkerCreate = vi.hoisted(() =>
-  vi.fn<[WorkerCreateOptions], Promise<MockWorkerInstance>>(),
+  vi.fn<(options: WorkerCreateOptions) => Promise<MockWorkerInstance>>(),
 );
 const mockStartTaskQueueMetrics = vi.hoisted(() =>
   vi.fn<
-    [
-      {
-        connection: MockConnection;
-        taskQueues: string[];
-        temporalNamespace: string;
-        logger: unknown;
-      },
-    ],
-    MockMetricsHandle
+    (options: {
+      connection: MockConnection;
+      taskQueues: string[];
+      temporalNamespace: string;
+      logger: unknown;
+    }) => MockMetricsHandle
   >(),
 );
 
@@ -79,10 +86,10 @@ vi.mock("../../metrics/task-queue-metrics", () => ({
   startTaskQueueMetrics: mockStartTaskQueueMetrics,
 }));
 
-const createMockContextProvider = () => ({
-  beforeStep: vi.fn<[string], Promise<MockStepContext>>().mockResolvedValue({ em: {} }),
+const createMockContextProvider = (): MockContextProvider => ({
+  beforeStep: vi.fn<(stepName: string) => Promise<MockStepContext>>().mockResolvedValue({ em: {} }),
   afterStep: vi
-    .fn<[MockStepContext, Error | undefined], Promise<void>>()
+    .fn<(context: MockStepContext, error?: Error) => Promise<void>>()
     .mockResolvedValue(undefined),
 });
 
@@ -109,11 +116,11 @@ const mockWorkflows = [
     ],
     errorHandler: mockErrorHandler,
   },
-];
+] as unknown as ActivityWorkerConfig<MockStepContext>["workflows"];
 
 const createTestConfig = (
-  overrides: Partial<Parameters<typeof createActivityWorkers>[0]> = {},
-) => ({
+  overrides: Partial<ActivityWorkerConfig<MockStepContext>> = {},
+): ActivityWorkerConfig<MockStepContext> => ({
   serverAddress: "localhost:7233",
   namespace: "default",
   deploymentSeriesName: "test-activities",
@@ -125,10 +132,10 @@ const createTestConfig = (
 });
 
 const makeLogger = (): MockLogger => ({
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-  debug: vi.fn(),
+  info: vi.fn<ComposerLogger["info"]>(),
+  warn: vi.fn<ComposerLogger["warn"]>(),
+  error: vi.fn<ComposerLogger["error"]>(),
+  debug: vi.fn<ComposerLogger["debug"]>(),
 });
 
 describe("Activity Worker", () => {
@@ -159,20 +166,20 @@ describe("Activity Worker", () => {
     });
 
     mockConnection = {
-      close: vi.fn<[], Promise<void>>().mockResolvedValue(undefined),
+      close: vi.fn<AsyncVoidFn>().mockResolvedValue(undefined),
     };
     mockConnect.mockResolvedValue(mockConnection);
 
     mockWorkerInstance = {
-      run: vi.fn<[], Promise<void>>().mockResolvedValue(undefined),
-      shutdown: vi.fn<[], void>(),
+      run: vi.fn<AsyncVoidFn>().mockResolvedValue(undefined),
+      shutdown: vi.fn<() => void>(),
     };
     mockWorkerCreate.mockResolvedValue(mockWorkerInstance);
 
     mockMetricsHandle = {
-      stop: vi.fn<[], Promise<void>>().mockResolvedValue(undefined),
-      activityStarted: vi.fn<[], void>(),
-      activityFinished: vi.fn<[], void>(),
+      stop: vi.fn<AsyncVoidFn>().mockResolvedValue(undefined),
+      activityStarted: vi.fn<() => void>(),
+      activityFinished: vi.fn<() => void>(),
     };
     mockStartTaskQueueMetrics.mockReturnValue(mockMetricsHandle);
 

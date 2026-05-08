@@ -13,6 +13,9 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
+import type { Composer } from "../../../context-provider";
+import type { Workflow } from "../../../dag-sync-workflow";
+import type { StartAllWorkersOptions } from "../start-all-workers";
 
 vi.mock("../../utils/ensure-namespace", () => ({
   ensureNamespaceExists: vi.fn().mockResolvedValue(undefined),
@@ -27,6 +30,10 @@ vi.mock("../start-activity-worker", () => ({
 }));
 
 describe("startAllWorkers", () => {
+  const mockWorkflows = [
+    { name: "test-workflow", steps: [] },
+  ] as unknown as Workflow<any, any, any>[];
+
   const mockComposer = {
     logger: {
       info: vi.fn(),
@@ -37,10 +44,12 @@ describe("startAllWorkers", () => {
     temporal: {
       serverAddress: "localhost:7233",
       namespace: "test-namespace",
+      serviceName: "test-service",
     },
-  } as never;
+  } as unknown as Composer<unknown>;
 
-  const defaultOptions = {
+  const defaultOptions: StartAllWorkersOptions = {
+    workflows: mockWorkflows,
     workflow: {
       taskQueues: ["workflow-tasks"],
       maxConcurrentWorkflowTaskExecutions: 100,
@@ -109,11 +118,13 @@ describe("startAllWorkers", () => {
       await startAllWorkers(mockComposer, defaultOptions);
 
       expect(startWorkflowWorker).toHaveBeenCalledWith(mockComposer, {
+        workflows: mockWorkflows,
         taskQueues: ["workflow-tasks"],
         maxConcurrentWorkflowTaskExecutions: 100,
         ensureNamespace: false,
       });
       expect(startActivityWorker).toHaveBeenCalledWith(mockComposer, {
+        workflows: mockWorkflows,
         taskQueues: ["activity-tasks"],
         maxConcurrentActivityTaskExecutions: 15,
         ensureNamespace: false,
