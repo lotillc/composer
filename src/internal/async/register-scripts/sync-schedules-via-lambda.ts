@@ -8,7 +8,7 @@
  *
  * This is the intended deploy-time path: CI assumes an AWS role with
  * `lambda:InvokeFunction` permission and runs this helper from a
- * composer-instance script (e.g. `@loti/composer-ix` `sync-schedules`).
+ * composer-instance's `sync-schedules` script.
  *
  * Supports two modes:
  * - `"invoke"` (default): invokes the Lambda synchronously, logs tail logs
@@ -27,7 +27,7 @@
  *
  * await syncSchedulesViaLambda(composer, {
  *   schedules: Object.values(schedules).filter(isScheduleDefinition),
- *   lambdaFunctionName: "loti-ic-prod-temporalschedulesync",
+ *   lambdaFunctionName: "my-schedule-sync-function",
  * });
  * ```
  *
@@ -61,7 +61,7 @@ export interface SyncSchedulesViaLambdaOptions {
 
   /**
    * Name of the schedule-sync Lambda to invoke (e.g.
-   * `"loti-ic-prod-temporalschedulesync"`).
+   * `"my-schedule-sync-function"`).
    *
    * Ignored in `"emit"` mode but still required for type-safety.
    */

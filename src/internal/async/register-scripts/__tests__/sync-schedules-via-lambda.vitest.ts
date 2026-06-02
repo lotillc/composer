@@ -108,7 +108,7 @@ describe("syncSchedulesViaLambda", () => {
           makeDefinition({ scheduleId: "preview-only", environments: ["preview"] }),
           makeDefinition({ scheduleId: "both", environments: ["preview", "prod"] }),
         ],
-        lambdaFunctionName: "loti-ic-preview-temporalschedulesync",
+        lambdaFunctionName: "test-schedule-sync",
         currentEnvironment: "preview",
       });
 
@@ -125,7 +125,7 @@ describe("syncSchedulesViaLambda", () => {
 
       await syncSchedulesViaLambda(createMockComposer(), {
         schedules: [makeDefinition({ environments: ["prod"] })],
-        lambdaFunctionName: "loti-ic-preview-temporalschedulesync",
+        lambdaFunctionName: "test-schedule-sync",
         currentEnvironment: "preview",
       });
 
@@ -138,7 +138,7 @@ describe("syncSchedulesViaLambda", () => {
       await expect(
         syncSchedulesViaLambda(createMockComposer(), {
           schedules: [makeDefinition()],
-          lambdaFunctionName: "loti-ic-preview-temporalschedulesync",
+          lambdaFunctionName: "test-schedule-sync",
           currentEnvironment: null,
         }),
       ).rejects.toThrow("process.exit(1)");
@@ -154,7 +154,7 @@ describe("syncSchedulesViaLambda", () => {
 
       await syncSchedulesViaLambda(createMockComposer(), {
         schedules: [makeDefinition({ scheduleId: "emitted", environments: ["prod"] })],
-        lambdaFunctionName: "loti-ic-prod-temporalschedulesync",
+        lambdaFunctionName: "test-schedule-sync",
         currentEnvironment: "prod",
         mode: "emit",
       });
@@ -189,11 +189,11 @@ describe("syncSchedulesViaLambda", () => {
       const composer = createMockComposer();
       await syncSchedulesViaLambda(composer, {
         schedules: [makeDefinition({ scheduleId: "a", environments: ["prod"] })],
-        lambdaFunctionName: "loti-ic-prod-temporalschedulesync",
+        lambdaFunctionName: "test-schedule-sync",
         currentEnvironment: "prod",
       });
 
-      expect(getInvokeInput().FunctionName).toBe("loti-ic-prod-temporalschedulesync");
+      expect(getInvokeInput().FunctionName).toBe("test-schedule-sync");
       expect(mockExit).not.toHaveBeenCalled();
       expect(composer.logger.info).toHaveBeenCalledWith(
         "Schedule sync complete",
@@ -219,7 +219,7 @@ describe("syncSchedulesViaLambda", () => {
       await expect(
         syncSchedulesViaLambda(composer, {
           schedules: [makeDefinition({ environments: ["prod"] })],
-          lambdaFunctionName: "loti-ic-prod-temporalschedulesync",
+          lambdaFunctionName: "test-schedule-sync",
           currentEnvironment: "prod",
         }),
       ).rejects.toThrow("process.exit(1)");
@@ -246,7 +246,7 @@ describe("syncSchedulesViaLambda", () => {
       await expect(
         syncSchedulesViaLambda(composer, {
           schedules: [makeDefinition({ environments: ["prod"] })],
-          lambdaFunctionName: "loti-ic-prod-temporalschedulesync",
+          lambdaFunctionName: "test-schedule-sync",
           currentEnvironment: "prod",
         }),
       ).rejects.toThrow("process.exit(1)");
@@ -266,7 +266,7 @@ describe("syncSchedulesViaLambda", () => {
       await expect(
         syncSchedulesViaLambda(composer, {
           schedules: [makeDefinition({ environments: ["prod"] })],
-          lambdaFunctionName: "loti-ic-prod-temporalschedulesync",
+          lambdaFunctionName: "test-schedule-sync",
           currentEnvironment: "prod",
         }),
       ).rejects.toThrow("process.exit(1)");
@@ -275,7 +275,7 @@ describe("syncSchedulesViaLambda", () => {
       expect(composer.logger.error).toHaveBeenCalledWith(
         "Failed to invoke schedule-sync Lambda",
         expect.objectContaining({
-          lambdaFunctionName: "loti-ic-prod-temporalschedulesync",
+          lambdaFunctionName: "test-schedule-sync",
           error: "network unreachable",
         }),
       );
@@ -291,7 +291,7 @@ describe("syncSchedulesViaLambda", () => {
 
       await syncSchedulesViaLambda(createMockComposer(), {
         schedules: [makeDefinition({ scheduleId: "s1", environments: ["prod"] })],
-        lambdaFunctionName: "loti-ic-prod-temporalschedulesync",
+        lambdaFunctionName: "test-schedule-sync",
       });
 
       expect(decodeSentPayload().schedules.map((s) => s.scheduleId)).toEqual(["s1"]);
@@ -305,7 +305,7 @@ describe("syncSchedulesViaLambda", () => {
 
       await syncSchedulesViaLambda(createMockComposer(), {
         schedules: [makeDefinition({ environments: ["prod"] })],
-        lambdaFunctionName: "loti-ic-prod-temporalschedulesync",
+        lambdaFunctionName: "test-schedule-sync",
         currentEnvironment: "prod",
       });
 

@@ -109,13 +109,18 @@ services:
           sleep 2
         done
 
-        # Keep local namespaces aligned with the canonical shared constants.
-        for namespace in interchange outpost josu; do
-          if temporal operator namespace describe -n "$namespace" --address temporal:7233 >/dev/null 2>&1; then
-            echo "Temporal namespace '$namespace' already exists."
+        # Namespaces to ensure exist. Defaults to a single "default" namespace;
+        # override TEMPORAL_NAMESPACES with a space-separated list (Docker
+        # Compose interpolates it from the host environment at parse time).
+        # The loop variable below is written with a doubled dollar sign so
+        # Compose passes it through to the shell literally instead of
+        # interpolating it to an empty string.
+        for namespace in ${TEMPORAL_NAMESPACES:-default}; do
+          if temporal operator namespace describe -n "$$namespace" --address temporal:7233 >/dev/null 2>&1; then
+            echo "Temporal namespace '$$namespace' already exists."
           else
-            temporal operator namespace create -n "$namespace" --retention 90d --address temporal:7233
-            echo "Temporal namespace '$namespace' created."
+            temporal operator namespace create -n "$$namespace" --retention 90d --address temporal:7233
+            echo "Temporal namespace '$$namespace' created."
           fi
         done
     networks:

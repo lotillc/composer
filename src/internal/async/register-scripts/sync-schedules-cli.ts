@@ -3,7 +3,7 @@
  *
  * Framework helper that implements the complete command-line entrypoint for
  * a composer-instance's `sync-schedules` script. Each composer instance
- * (interchange, josu, etc.) needs exactly one thin wrapper that:
+ * needs exactly one thin wrapper that:
  *
  * ```typescript
  * import { isScheduleDefinition, runSyncSchedulesCli } from "@lotiai/composer";
@@ -48,9 +48,9 @@ import { syncSchedulesViaLambda } from "./sync-schedules-via-lambda";
 
 /**
  * Builds the default schedule-sync Lambda function name for the current
- * environment. Mirrors `createResourceName(taggingConfig,
- * "temporal-schedule-sync")` in `infrastructure/shared`: `loti-ic` prefix +
- * environment + resource slug with hyphens stripped.
+ * environment: an infra resource prefix + environment + resource slug with
+ * hyphens stripped. Must match the name the schedule-sync Lambda is deployed
+ * under; override with `--lambda` if your deployment uses a different name.
  */
 function defaultLambdaFunctionName(environment: string): string {
   return `loti-ic-${environment}-temporalschedulesync`;
