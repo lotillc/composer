@@ -20,7 +20,13 @@ services:
       # talk to postgresql:5432 over the Docker network.
       - "${TEMPORAL_DB_PORT:-5432}:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      # The volume name is pinned to the Postgres major version. A major bump
+      # (e.g. 14 -> 17) therefore renames it, so Compose provisions a fresh
+      # volume instead of mounting an older major's data directory into the new
+      # server -- Postgres refuses to start on a data dir from a previous major.
+      # The old volume is left orphaned (harmless; `docker volume prune` clears
+      # it). This is throwaway local Temporal metadata, so a reset is expected.
+      - temporal-postgres17-data:/var/lib/postgresql/data
     networks:
       - temporal-network
     healthcheck:
@@ -141,7 +147,7 @@ services:
       - temporal-network
 
 volumes:
-  postgres-data:
+  temporal-postgres17-data:
     driver: local
 
 networks:
