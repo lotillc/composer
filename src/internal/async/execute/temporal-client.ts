@@ -28,8 +28,8 @@
  * @module temporal-client
  */
 
-import type { WorkflowHandle } from "@temporalio/client";
-import { Client, Connection } from "@temporalio/client";
+import type { WorkflowExecutionStatusName, WorkflowHandle } from "@temporalio/client";
+import { Client, Connection, WorkflowNotFoundError } from "@temporalio/client";
 import type { VersioningOverride } from "@temporalio/common";
 import type { UUIDV7 } from "../../types";
 import type { WorkflowInput } from "../build/workflow-factory";
@@ -194,6 +194,31 @@ export async function getWorkflowHandle(
 ): Promise<WorkflowHandle<any>> {
   const client = await createTemporalClient(config);
   return client.workflow.getHandle(workflowId);
+}
+
+/**
+ * Describes an existing workflow execution's current status, reusing the
+ * cached client connection.
+ *
+ * @param workflowId - The workflow execution ID
+ * @param config - Client configuration
+ * @returns The current status, or `null` if the workflow does not exist
+ *   (`WorkflowNotFoundError`). Other errors are rethrown.
+ */
+export async function describeWorkflow(
+  workflowId: UUIDV7,
+  config: TemporalClientConfig,
+): Promise<{ status: WorkflowExecutionStatusName } | null> {
+  const handle = await getWorkflowHandle(workflowId, config);
+  try {
+    const description = await handle.describe();
+    return { status: description.status.name };
+  } catch (error) {
+    if (error instanceof WorkflowNotFoundError) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**
