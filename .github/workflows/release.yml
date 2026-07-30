@@ -80,6 +80,16 @@ jobs:
         # check before publishing: if this version is older than what's
         # already `latest`, publish it under a non-latest tag so it doesn't
         # move `latest` backwards.
+        #
+        # Known residual gap: this check-then-publish isn't atomic, so two
+        # releases approved within moments of each other can both read the
+        # old `latest` before either finishes, and the older one can still
+        # win. Accepted as a low-probability edge case (near-simultaneous
+        # manual approvals) rather than adding a custom cross-run lock. If
+        # `latest` ever does end up on the wrong version, fix it by hand:
+        #   npm dist-tag add @lotiai/composer@<correct-version> latest
+        # (run locally with your own npm login -- OIDC trusted publishing
+        # doesn't cover dist-tag operations, only publish).
         run: |
           CURRENT_LATEST=$(npm view @lotiai/composer version 2>/dev/null || echo "0.0.0")
           PKG_VERSION=$(node -p "require('./package.json').version")
