@@ -8,6 +8,7 @@
  * for both sync and async workflow execution.
  */
 
+import type { WorkflowExecutionStatusName } from "@temporalio/client";
 import type { ScheduleDefinition } from "./async/schedule/define-schedule";
 import type { SyncSchedulesResult } from "./async/schedule/sync-schedules";
 import type {
@@ -366,6 +367,30 @@ export interface Composer<TContext> extends SyncComposer<TContext> {
    * Available on full Composer instances (created with temporal config).
    */
   readonly temporal: TemporalConfig;
+
+  /**
+   * Describe a workflow execution's current status, reusing Composer's own
+   * Temporal connection.
+   *
+   * Useful for reconciliation/reaper sweeps that need to check whether a
+   * previously-launched workflow is still alive before acting on stranded
+   * resources. Returns `null` if no workflow with that id exists. Connection
+   * or other errors are thrown rather than reported as "not found".
+   *
+   * @param workflowId - The workflow execution ID
+   * @returns The current status, or `null` if the workflow does not exist
+   */
+  describeWorkflow(
+    workflowId: string,
+  ): Promise<{ status: WorkflowExecutionStatusName } | null>;
+
+  /**
+   * Coarse liveness check: resolves to `true` only if the workflow currently
+   * exists and is running. Unknown or not-found workflows resolve to `false`.
+   *
+   * @param workflowId - The workflow execution ID
+   */
+  isWorkflowRunning(workflowId: string): Promise<boolean>;
 
   /**
    * Start activity workers for Temporal execution.

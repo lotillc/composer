@@ -10,6 +10,7 @@
 
 import { v7 as uuidv7 } from "uuid";
 import { getDeploymentSeriesNames } from "../temporal-naming";
+import { describeWorkflow as describeWorkflowTemporal } from "./async/execute/temporal-client";
 import { executeWorkflowTemporal, startWorkflowTemporal } from "./async/execute/workflow-execution";
 import { runActivityWorkers as runActivityWorkersInternal } from "./async/register/activity-worker";
 import { runWorkflowWorkers as runWorkflowWorkersInternal } from "./async/register/workflow-worker";
@@ -267,6 +268,21 @@ export function createComposer<TContext>(
     temporal: temporalConfig,
     runAsyncWorkflow: runAsyncWorkflowImpl,
     startAsyncWorkflow: startAsyncWorkflowImpl,
+
+    async describeWorkflow(workflowId: string) {
+      return describeWorkflowTemporal(workflowId as UUIDV7, {
+        address: temporalConfig.serverAddress,
+        namespace: temporalConfig.namespace,
+      });
+    },
+
+    async isWorkflowRunning(workflowId: string) {
+      const description = await describeWorkflowTemporal(workflowId as UUIDV7, {
+        address: temporalConfig.serverAddress,
+        namespace: temporalConfig.namespace,
+      });
+      return description?.status === "RUNNING";
+    },
 
     async runActivityWorkers(config: {
       taskQueues: string[];

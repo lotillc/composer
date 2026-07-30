@@ -104,3 +104,4 @@ export {
   WorkflowStepError,
 } from "./internal/errors";
 export type { ComposerLogger } from "./internal/types";
+export type { WorkflowExecutionStatusName } from "@temporalio/client";
