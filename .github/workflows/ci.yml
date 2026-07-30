@@ -93,17 +93,27 @@ jobs:
           PKG_VERSION=$(node -p "require('./package.json').version")
           TAG="v$PKG_VERSION"
 
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "$TAG already exists — this version was already released. Nothing to do."
+          # Ground truth is the npm registry, not git tag existence: if a
+          # prior run died between pushing the tag and dispatching
+          # release.yml, the tag would exist forever with no release ever
+          # having actually published, permanently stranding that version.
+          if npm view "@lotiai/composer@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "$PKG_VERSION is already published on npm. Nothing to do."
             exit 0
           fi
 
-          BUMP_COMMIT=$(git log -1 --format=%H -S"\"version\": \"$PKG_VERSION\"" -- package.json)
-          if [ -z "$BUMP_COMMIT" ]; then
-            echo "Could not locate the commit that introduced version $PKG_VERSION — nothing to tag."
-            exit 0
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            BUMP_COMMIT=$(git log -1 --format=%H -S"\"version\": \"$PKG_VERSION\"" -- package.json)
+            if [ -z "$BUMP_COMMIT" ]; then
+              echo "Could not locate the commit that introduced version $PKG_VERSION — nothing to tag."
+              exit 0
+            fi
+            git tag "$TAG" "$BUMP_COMMIT"
+            git push origin "refs/tags/$TAG"
           fi
 
-          git tag "$TAG" "$BUMP_COMMIT"
-          git push origin "refs/tags/$TAG"
+          # Always (re-)dispatch once we know the version isn't published yet
+          # -- safe to repeat even if an earlier dispatch is still in flight
+          # or already failed, and the npm check above stops this from
+          # firing again once a release actually succeeds.
           gh workflow run release.yml --ref "$TAG"
