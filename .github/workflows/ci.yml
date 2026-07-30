@@ -114,6 +114,11 @@ jobs:
             exit 0
           fi
 
+          # TODO: SECURITY.md requires signed release tags. No signing key is
+          # configured yet -- the tag created below is unsigned. Add a
+          # GPG/SSH key as a repo secret and wire it into `git tag` (e.g.
+          # `git tag -s`, with `user.signingkey` configured from the secret)
+          # to close this gap.
           if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             BUMP_COMMIT=$(git log -1 --format=%H -S"\"version\": \"$PKG_VERSION\"" -- package.json)
             if [ -z "$BUMP_COMMIT" ]; then
