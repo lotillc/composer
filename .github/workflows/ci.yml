@@ -50,6 +50,14 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: npm-publish
+    # Two pushes to main landing close together must not run this job
+    # concurrently: both would race to push to the changeset-release/main
+    # branch, and one could publish mid-way through the other's run. Queue
+    # rather than cancel-in-progress, since cancelling mid-publish is worse
+    # than waiting.
+    concurrency:
+      group: release-${{ github.workflow }}
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write
