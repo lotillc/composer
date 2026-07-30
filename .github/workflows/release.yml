@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Dispatched by ci.yml's `version` job once it tags an automated release
+  # (see ci.yml for why a dispatch is needed instead of relying on the tag
+  # push itself). Also usable to manually re-run a publish against an
+  # existing tag. Dispatching with --ref <tag> sets github.ref/ref_name to
+  # that tag, identically to a real tag push, so nothing below needs to
+  # branch on which trigger fired.
+  workflow_dispatch:
+
+# id-token: write is required for npm Trusted Publishing (OIDC).
+# The short-lived token is minted at publish time; no NPM_TOKEN secret is stored.
+#
+# This filename is load-bearing: npm's Trusted Publisher configuration for
+# this package is registered against `release.yml` specifically. Renaming or
+# merging this file into another workflow breaks OIDC authentication on the
+# next publish unless the npm registration is updated to match.
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: release-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # The "npm-publish" GitHub Environment must exist on this repo and match the
+    # environment name configured in the package's npmjs.com Trusted Publisher
+    # settings. Reviewers configured on this environment act as a human gate
+    # before each publish.
+    environment: npm-publish
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.28.2
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm compile
+
+      - run: pnpm test
+
+      - name: Verify tag matches package version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION" >&2
+            exit 1
+          fi
+
+      - run: pnpm publish --no-git-checks --access public --provenance

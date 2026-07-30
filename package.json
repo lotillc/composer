@@ -79,8 +79,7 @@
     "dev:temporal:down": "docker-compose -f docker-compose.temporal.yml down",
     "dev:temporal:logs": "docker-compose -f docker-compose.temporal.yml logs -f",
     "cli": "node dist/cli/index.js",
-    "cli:dev": "node dist/cli/index.js dev",
-    "release": "pnpm publish --no-git-checks --access public --provenance && pnpm changeset tag"
+    "cli:dev": "node dist/cli/index.js dev"
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.1057.0",
