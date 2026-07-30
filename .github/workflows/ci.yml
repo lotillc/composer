@@ -76,6 +76,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Restore the main checkout
+        # Whenever changesets are still pending, changesets/action checks out
+        # changeset-release/main locally to commit the version bump there,
+        # and leaves it checked out -- it never switches back. Everything
+        # below must read package.json from main's actual state, not
+        # whatever the action left checked out, or it will tag and publish
+        # an unreviewed, unmerged future version on every such push.
+        run: |
+          git fetch origin ${{ github.ref_name }}
+          git checkout ${{ github.ref_name }}
+          git reset --hard origin/${{ github.ref_name }}
+
       - name: Tag the release and hand off to release.yml
         # Runs unconditionally, not gated on hasChangesets: GitHub's
         # concurrency queue keeps only the latest pending run per group and

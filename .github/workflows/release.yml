@@ -32,6 +32,8 @@ jobs:
     environment: npm-publish
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v6
         with:
@@ -50,6 +52,16 @@ jobs:
 
       - run: pnpm test
 
+      - name: Verify the tag is reachable from main
+        # A hand-pushed or dispatched vX.Y.Z tag could point at a commit off
+        # main entirely; SECURITY.md requires release tags to be on main.
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not reachable from main -- refusing to publish." >&2
+            exit 1
+          fi
+
       - name: Verify tag matches package version
         run: |
           case "$GITHUB_REF_NAME" in
@@ -64,6 +76,19 @@ jobs:
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
             echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION" >&2
             exit 1
+          fi
+
+      - name: Skip if this version is already published
+        # A duplicate dispatch for the same tag (e.g. ci.yml's retry-safe
+        # handoff racing an earlier one) queues behind the per-ref
+        # concurrency group rather than running concurrently, and would
+        # otherwise fail here trying to republish an immutable version.
+        id: already-published
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "@lotiai/composer@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "$PKG_VERSION is already published on npm. Nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Publish
@@ -90,8 +115,18 @@ jobs:
         #   npm dist-tag add @lotiai/composer@<correct-version> latest
         # (run locally with your own npm login -- OIDC trusted publishing
         # doesn't cover dist-tag operations, only publish).
+        if: steps.already-published.outputs.skip != 'true'
         run: |
-          CURRENT_LATEST=$(npm view @lotiai/composer version 2>/dev/null || echo "0.0.0")
+          if ! LOOKUP=$(npm view @lotiai/composer version 2>&1); then
+            if echo "$LOOKUP" | grep -q "E404"; then
+              CURRENT_LATEST="0.0.0" # package has no published versions yet
+            else
+              echo "::error::Could not look up the current npm 'latest' version, refusing to guess: $LOOKUP" >&2
+              exit 1
+            fi
+          else
+            CURRENT_LATEST="$LOOKUP"
+          fi
           PKG_VERSION=$(node -p "require('./package.json').version")
           if [ "$(printf '%s\n%s\n' "$CURRENT_LATEST" "$PKG_VERSION" | sort -V | tail -1)" = "$PKG_VERSION" ]; then
             pnpm publish --no-git-checks --access public --provenance
