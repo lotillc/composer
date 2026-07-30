@@ -81,7 +81,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Create Version Packages PR, or publish to npm
-        uses: changesets/action@v1
+        # Pinned to a commit, not the `v1` tag: this job holds contents:write,
+        # pull-requests:write, and an npm-publish-capable OIDC token, so a
+        # compromised/re-pointed moving ref here has outsized blast radius.
+        # `v1` is actually a force-pushed branch upstream (not an immutable
+        # tag), so pinning matters even more than usual. v1 branch head as of
+        # 2026-07-30.
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
         with:
           publish: pnpm run release
         env:
