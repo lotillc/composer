@@ -52,6 +52,13 @@ jobs:
 
       - name: Verify tag matches package version
         run: |
+          case "$GITHUB_REF_NAME" in
+            v*) ;;
+            *)
+              echo "Tag $GITHUB_REF_NAME does not start with 'v' -- refusing to publish." >&2
+              exit 1
+              ;;
+          esac
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           PKG_VERSION=$(node -p "require('./package.json').version")
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then

@@ -79,22 +79,31 @@ jobs:
       - name: Tag the release and hand off to release.yml
         # Runs unconditionally, not gated on hasChangesets: GitHub's
         # concurrency queue keeps only the latest pending run per group and
-        # drops the rest (not a FIFO queue), so the specific run for a
-        # Version-PR-merge commit can be cancelled before it executes. Any
-        # later run reaching this step will still see that commit's version
-        # bump in its checkout and can catch up. `changeset tag` is
-        # idempotent — a no-op if the current version is already tagged — so
-        # this is safe to run on every push; `git describe` then finds no tag
-        # to act on, which we treat as "nothing to release" rather than an
-        # error (bash's default -e would otherwise fail the step).
+        # drops the rest (not a FIFO queue), so the run for a Version-PR-merge
+        # commit can be cancelled before it executes; a later run must still
+        # be able to catch up. That later run's HEAD may have moved past the
+        # actual bump commit (more commits landed on top), so we can't just
+        # tag HEAD -- `changeset tag` does exactly that and would tag/publish
+        # unrelated later changes under this version. Instead, use git's
+        # pickaxe search to find the exact commit that introduced the current
+        # version string in package.json, and tag that commit specifically.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          pnpm changeset tag
-          TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)
-          if [ -z "$TAG" ]; then
-            echo "No new tag at HEAD — this version was already released. Nothing to do."
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG="v$PKG_VERSION"
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG already exists — this version was already released. Nothing to do."
             exit 0
           fi
+
+          BUMP_COMMIT=$(git log -1 --format=%H -S"\"version\": \"$PKG_VERSION\"" -- package.json)
+          if [ -z "$BUMP_COMMIT" ]; then
+            echo "Could not locate the commit that introduced version $PKG_VERSION — nothing to tag."
+            exit 0
+          fi
+
+          git tag "$TAG" "$BUMP_COMMIT"
           git push origin "refs/tags/$TAG"
           gh workflow run release.yml --ref "$TAG"
