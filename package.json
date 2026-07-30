@@ -23,9 +23,15 @@
   "types": "dist/index.d.ts",
   "typesVersions": {
     "*": {
-      "build-config": ["dist/build-config/index.d.ts"],
-      "temporal-naming": ["dist/temporal-naming.d.ts"],
-      "schedule-sync": ["dist/schedule-sync.d.ts"]
+      "build-config": [
+        "dist/build-config/index.d.ts"
+      ],
+      "temporal-naming": [
+        "dist/temporal-naming.d.ts"
+      ],
+      "schedule-sync": [
+        "dist/schedule-sync.d.ts"
+      ]
     }
   },
   "bin": {
@@ -73,7 +79,9 @@
     "dev:temporal:down": "docker-compose -f docker-compose.temporal.yml down",
     "dev:temporal:logs": "docker-compose -f docker-compose.temporal.yml logs -f",
     "cli": "node dist/cli/index.js",
-    "cli:dev": "node dist/cli/index.js dev"
+    "cli:dev": "node dist/cli/index.js dev",
+    "changeset": "changeset",
+    "release": "pnpm publish --no-git-checks --access public --provenance && pnpm changeset tag"
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.1057.0",
@@ -96,6 +104,8 @@
     "zod": "^4.1.13"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^0.7.0",
+    "@changesets/cli": "^2.31.1",
     "@types/node": "^22.19.18",
     "@types/yargs": "^17.0.24",
     "@vitest/coverage-v8": "^4.1.4",
