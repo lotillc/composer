@@ -33,27 +33,18 @@ jobs:
 
       - run: pnpm test
 
-  # Runs after `test` passes on a push to main. Only maintains the Version
-  # Packages PR (bump + changelog) — it never touches npm or the OIDC token,
-  # so it stays ungated. The actual publish lives entirely in release.yml,
-  # kept as its own tag-triggered workflow because npm's Trusted Publisher
-  # registration is bound to that exact filename (see release.yml for why).
-  #
-  # Once the Version Packages PR is merged (no changesets left to consume),
-  # this job tags the release and dispatches release.yml against that tag.
-  # `git push` here uses GITHUB_TOKEN, and GitHub does not let GITHUB_TOKEN-
-  # authored pushes trigger downstream workflows (to prevent infinite
-  # recursion) — so the plain tag push alone would never fire release.yml.
-  # workflow_dispatch is the documented exception to that restriction, hence
-  # the explicit `gh workflow run` below instead of relying on the tag push.
+  # Maintains the Version Packages PR only — no npm access, so it stays
+  # ungated. Publishing itself lives in release.yml (see there for why it's a
+  # separate file). Once merged, this job tags the release and dispatches
+  # release.yml via workflow_dispatch, since GITHUB_TOKEN-authored pushes
+  # don't trigger other workflows.
   version:
     name: Version
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    # Two pushes to main landing close together must not run this job
-    # concurrently: both would race to push to the changeset-release/main
-    # branch or to tag the same release twice.
+    # Serialize runs so overlapping pushes to main can't race on the
+    # Version PR branch or double-tag.
     concurrency:
       group: version-${{ github.workflow }}
       cancel-in-progress: false
@@ -79,25 +70,23 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Create or update the Version Packages PR
-        id: changesets
-        # Pinned to a commit, not the `v1` tag: this job holds contents:write
-        # and pull-requests:write, so a compromised/re-pointed moving ref here
-        # has outsized blast radius. `v1` is actually a force-pushed branch
-        # upstream (not an immutable tag), so pinning matters even more than
-        # usual. v1 branch head as of 2026-07-30.
+        # Pinned to a commit: this job holds contents/pull-requests write, and
+        # `v1` is a force-pushed branch upstream, not an immutable tag.
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Tag the release and hand off to release.yml
-        # hasChangesets is false both right after the Version Packages PR is
-        # merged (something new to release) AND on any ordinary changeset-less
-        # merge (nothing new — this version is already tagged). `changeset tag`
-        # is idempotent and no-ops in the latter case, so `git describe` finds
-        # no tag at HEAD; treat that as "nothing to release" rather than an
-        # error (bash's default -e would otherwise fail this step, and the
-        # whole job, on every ordinary merge).
-        if: steps.changesets.outputs.hasChangesets == 'false'
+        # Runs unconditionally, not gated on hasChangesets: GitHub's
+        # concurrency queue keeps only the latest pending run per group and
+        # drops the rest (not a FIFO queue), so the specific run for a
+        # Version-PR-merge commit can be cancelled before it executes. Any
+        # later run reaching this step will still see that commit's version
+        # bump in its checkout and can catch up. `changeset tag` is
+        # idempotent — a no-op if the current version is already tagged — so
+        # this is safe to run on every push; `git describe` then finds no tag
+        # to act on, which we treat as "nothing to release" rather than an
+        # error (bash's default -e would otherwise fail the step).
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

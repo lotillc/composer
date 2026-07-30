@@ -4,21 +4,15 @@ on:
   push:
     tags:
       - "v*"
-  # Dispatched by ci.yml's `version` job once it tags an automated release
-  # (see ci.yml for why a dispatch is needed instead of relying on the tag
-  # push itself). Also usable to manually re-run a publish against an
-  # existing tag. Dispatching with --ref <tag> sets github.ref/ref_name to
-  # that tag, identically to a real tag push, so nothing below needs to
-  # branch on which trigger fired.
+  # Dispatched by ci.yml's `version` job (GITHUB_TOKEN pushes don't trigger
+  # other workflows) or manually against an existing tag. --ref <tag> makes
+  # github.ref resolve exactly like a real tag push.
   workflow_dispatch:
 
-# id-token: write is required for npm Trusted Publishing (OIDC).
-# The short-lived token is minted at publish time; no NPM_TOKEN secret is stored.
-#
-# This filename is load-bearing: npm's Trusted Publisher configuration for
-# this package is registered against `release.yml` specifically. Renaming or
-# merging this file into another workflow breaks OIDC authentication on the
-# next publish unless the npm registration is updated to match.
+# id-token: write is for npm Trusted Publishing (OIDC); no NPM_TOKEN stored.
+# This filename is load-bearing — npm's Trusted Publisher is registered
+# against it specifically. Don't rename or merge into another workflow
+# without updating that registration.
 permissions:
   contents: read
   id-token: write
@@ -30,10 +24,11 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # The "npm-publish" GitHub Environment must exist on this repo and match the
-    # environment name configured in the package's npmjs.com Trusted Publisher
-    # settings. Reviewers configured on this environment act as a human gate
-    # before each publish.
+    # workflow_dispatch's --ref accepts a branch too; reject anything that
+    # isn't an actual tag before it can reach the publish step below.
+    if: github.ref_type == 'tag'
+    # Must match the environment name in npm's Trusted Publisher config;
+    # its required reviewers gate every publish.
     environment: npm-publish
     steps:
       - uses: actions/checkout@v6
@@ -64,4 +59,26 @@ jobs:
             exit 1
           fi
 
-      - run: pnpm publish --no-git-checks --access public --provenance
+      - name: Publish
+        # Per-ref concurrency (above) only stops the *same* tag racing
+        # itself. Two different tags can still reach this step out of order
+        # (e.g. two releases waiting on environment approval, approved out of
+        # sequence) -- and `pnpm publish` unconditionally moves the `latest`
+        # dist-tag to whatever it just published. A shared concurrency group
+        # across all tags won't fix this either: GitHub's queue keeps only
+        # the latest pending run per group and drops the rest (see ci.yml),
+        # so it could drop an entire release rather than just reorder it.
+        # OIDC trusted publishing only covers the `publish` command -- a
+        # follow-up `npm dist-tag add` wouldn't authenticate -- so instead,
+        # check before publishing: if this version is older than what's
+        # already `latest`, publish it under a non-latest tag so it doesn't
+        # move `latest` backwards.
+        run: |
+          CURRENT_LATEST=$(npm view @lotiai/composer version 2>/dev/null || echo "0.0.0")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$(printf '%s\n%s\n' "$CURRENT_LATEST" "$PKG_VERSION" | sort -V | tail -1)" = "$PKG_VERSION" ]; then
+            pnpm publish --no-git-checks --access public --provenance
+          else
+            echo "::warning::$PKG_VERSION is older than the published latest ($CURRENT_LATEST) -- publishing without moving the 'latest' dist-tag."
+            pnpm publish --no-git-checks --access public --provenance --tag superseded
+          fi
