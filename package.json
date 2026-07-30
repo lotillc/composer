@@ -80,7 +80,6 @@
     "dev:temporal:logs": "docker-compose -f docker-compose.temporal.yml logs -f",
     "cli": "node dist/cli/index.js",
     "cli:dev": "node dist/cli/index.js dev",
-    "changeset": "changeset",
     "release": "pnpm publish --no-git-checks --access public --provenance && pnpm changeset tag"
   },
   "dependencies": {
