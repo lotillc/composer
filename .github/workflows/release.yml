@@ -25,7 +25,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     # workflow_dispatch's --ref accepts a branch too; reject anything that
-    # isn't an actual tag before it can reach the publish step below.
+    # isn't an actual tag before it can reach anything below.
     if: github.ref_type == 'tag'
     # Must match the environment name in npm's Trusted Publisher config;
     # its required reviewers gate every publish.
@@ -35,22 +35,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10.28.2
-          run_install: false
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-          registry-url: https://registry.npmjs.org
-
-      - run: pnpm install --frozen-lockfile
-
-      - run: pnpm compile
-
-      - run: pnpm test
+      # Validation runs before any dependency install or repository-defined
+      # script (compile, test, install lifecycle scripts): this job already
+      # holds id-token: write and a human's environment approval by this
+      # point, so an invalid/malicious tag must be rejected before its code
+      # gets to execute with that access, not just before the publish step.
 
       - name: Verify the tag is reachable from main
         # A hand-pushed or dispatched vX.Y.Z tag could point at a commit off
@@ -78,6 +67,36 @@ jobs:
             exit 1
           fi
 
+          # Ancestry alone only proves the tag is somewhere in main's
+          # history, not that it's the exact commit that introduced this
+          # version -- a tag hand-placed on a later commit (before the next
+          # bump, package.json still reading the same version) would still
+          # pass both checks and publish unreviewed, intervening source
+          # under the older version's tag. Require HEAD to be that exact
+          # commit, same as ci.yml's automated tagging.
+          BUMP_COMMIT=$(git log -1 --format=%H -S"\"version\": \"$PKG_VERSION\"" -- package.json)
+          if [ "$BUMP_COMMIT" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::HEAD is not the commit that introduced version $PKG_VERSION in package.json -- refusing to publish." >&2
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.28.2
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm compile
+
+      - run: pnpm test
+
       - name: Skip if this version is already published
         # A duplicate dispatch for the same tag (e.g. ci.yml's retry-safe
         # handoff racing an earlier one) queues behind the per-ref
@@ -102,9 +121,11 @@ jobs:
         # so it could drop an entire release rather than just reorder it.
         # OIDC trusted publishing only covers the `publish` command -- a
         # follow-up `npm dist-tag add` wouldn't authenticate -- so instead,
-        # check before publishing: if this version is older than what's
-        # already `latest`, publish it under a non-latest tag so it doesn't
-        # move `latest` backwards.
+        # check before publishing: if this version isn't newer than what's
+        # already `latest` (per real SemVer precedence, not lexical/GNU
+        # version sort -- a prerelease like 1.0.0-beta.1 must count as older
+        # than 1.0.0), publish it under a non-latest tag so it doesn't move
+        # `latest` backwards.
         #
         # Known residual gap: this check-then-publish isn't atomic, so two
         # releases approved within moments of each other can both read the
@@ -128,9 +149,9 @@ jobs:
             CURRENT_LATEST="$LOOKUP"
           fi
           PKG_VERSION=$(node -p "require('./package.json').version")
-          if [ "$(printf '%s\n%s\n' "$CURRENT_LATEST" "$PKG_VERSION" | sort -V | tail -1)" = "$PKG_VERSION" ]; then
+          if node -e "process.exit(require('semver').gt(process.argv[1], process.argv[2]) ? 0 : 1)" "$PKG_VERSION" "$CURRENT_LATEST"; then
             pnpm publish --no-git-checks --access public --provenance
           else
-            echo "::warning::$PKG_VERSION is older than the published latest ($CURRENT_LATEST) -- publishing without moving the 'latest' dist-tag."
+            echo "::warning::$PKG_VERSION is not newer than the published latest ($CURRENT_LATEST) -- publishing without moving the 'latest' dist-tag."
             pnpm publish --no-git-checks --access public --provenance --tag superseded
           fi

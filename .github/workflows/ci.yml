@@ -69,12 +69,29 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Resolve the current tip of main
+        # GitHub doesn't guarantee execution order within a concurrency
+        # group -- an older push's job can run after a newer one. The action
+        # below always resets its release branch to whatever commit
+        # ($GITHUB_SHA) originally triggered THIS job, fixed at trigger
+        # time; if this job's own trigger commit is older, it would
+        # force-push a stale, incomplete version calculation over a newer
+        # job's already-correct one. Overriding GITHUB_SHA for that step
+        # (below) to the actual current tip of main makes every run
+        # converge on the same, freshest state regardless of execution
+        # order.
+        id: refresh-main
+        run: |
+          git fetch origin ${{ github.ref_name }}
+          echo "sha=$(git rev-parse origin/${{ github.ref_name }})" >> "$GITHUB_OUTPUT"
+
       - name: Create or update the Version Packages PR
         # Pinned to a commit: this job holds contents/pull-requests write, and
         # `v1` is a force-pushed branch upstream, not an immutable tag.
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_SHA: ${{ steps.refresh-main.outputs.sha }}
 
       - name: Restore the main checkout
         # Whenever changesets are still pending, changesets/action checks out
