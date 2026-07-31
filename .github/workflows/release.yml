@@ -149,21 +149,36 @@ jobs:
             const pre = require('semver').prerelease(process.argv[1]);
             process.stdout.write(pre ? String(pre[0]) : '');
           " "$PKG_VERSION")
+          # A purely numeric prerelease identifier (e.g. from
+          # `changeset pre enter 0`) parses as a SemVer range, which npm
+          # rejects as a dist-tag name outright -- fall back to a fixed name.
+          case "$PRERELEASE_ID" in
+            ''|*[!0-9]*) ;;
+            *) PRERELEASE_ID="prerelease" ;;
+          esac
           if [ -n "$PRERELEASE_ID" ]; then
             echo "::notice::$PKG_VERSION is a prerelease -- publishing under the '$PRERELEASE_ID' dist-tag, not 'latest'."
             pnpm publish --no-git-checks --access public --provenance --tag "$PRERELEASE_ID"
             exit 0
           fi
 
-          if ! LOOKUP=$(npm view @lotiai/composer version 2>&1); then
-            if echo "$LOOKUP" | grep -q "E404"; then
-              CURRENT_LATEST="0.0.0" # package has no published versions yet
-            else
-              echo "::error::Could not look up the current npm 'latest' version, refusing to guess: $LOOKUP" >&2
-              exit 1
-            fi
-          else
+          # Redirecting stderr into the captured value (2>&1) would corrupt
+          # it on a *successful* lookup too -- npm can print warnings (e.g. a
+          # transient registry retry) to stderr on exit 0, and that garbage
+          # would flow straight into the version comparison below. Keep
+          # stdout and stderr separate; only inspect stderr on failure.
+          if LOOKUP=$(npm view @lotiai/composer version 2>"$RUNNER_TEMP/npm-view-err.log"); then
             CURRENT_LATEST="$LOOKUP"
+          elif grep -q "E404" "$RUNNER_TEMP/npm-view-err.log"; then
+            CURRENT_LATEST="0.0.0" # package has no published versions yet
+          else
+            echo "::error::Could not look up the current npm 'latest' version, refusing to guess:" >&2
+            cat "$RUNNER_TEMP/npm-view-err.log" >&2
+            exit 1
+          fi
+          if ! node -e "process.exit(require('semver').valid(process.argv[1]) ? 0 : 1)" "$CURRENT_LATEST"; then
+            echo "::error::Looked-up 'latest' version ($CURRENT_LATEST) is not valid SemVer -- refusing to compare." >&2
+            exit 1
           fi
           if node -e "process.exit(require('semver').gt(process.argv[1], process.argv[2]) ? 0 : 1)" "$PKG_VERSION" "$CURRENT_LATEST"; then
             pnpm publish --no-git-checks --access public --provenance
