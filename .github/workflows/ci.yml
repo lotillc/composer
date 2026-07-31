@@ -138,8 +138,9 @@ jobs:
             exit 0
           fi
 
-          # TODO: SECURITY.md requires signed release tags. No signing key is
-          # configured yet -- the tag created below is unsigned. Add a
+          # TODO: SECURITY.md documents signed release tags as the goal. No
+          # signing key is configured yet -- the tag created below is
+          # unsigned (SECURITY.md's wording currently reflects this). Add a
           # GPG/SSH key as a repo secret and wire it into `git tag` (e.g.
           # `git tag -s`, with `user.signingkey` configured from the secret)
           # to close this gap.
