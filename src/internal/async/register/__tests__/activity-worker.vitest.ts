@@ -5,6 +5,7 @@
  * are passed directly and steps are extracted from them.
  */
 
+import { ApplicationFailure } from "@temporalio/activity";
 import type { MockedFunction } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -76,7 +77,10 @@ vi.mock("@temporalio/worker", () => ({
   NativeConnection: { connect: mockConnect },
   Worker: { create: mockWorkerCreate },
 }));
-vi.mock("@temporalio/activity", () => ({
+// importOriginal keeps the real ApplicationFailure, which the worker uses to
+// wrap coded step errors; only the activity Context is replaced.
+vi.mock("@temporalio/activity", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
   Context: { current: mockActivityCurrent },
 }));
 vi.mock("@temporalio/common", () => ({
@@ -341,6 +345,39 @@ describe("Activity Worker", () => {
         await expect(
           (activityFn as (a: unknown, b: unknown) => Promise<unknown>)({}, { input: "test" }),
         ).rejects.toThrow("Step business logic failed");
+      });
+
+      // The error code has to land in ApplicationFailure.type: that is the only
+      // field Temporal compares against RetryPolicy.nonRetryableErrorTypes, so
+      // this mapping is what makes `asyncRetry.nonRetryableErrorTypes` match.
+      it("should map a coded step error's code onto ApplicationFailure.type", async () => {
+        const codedError = Object.assign(new Error("Reference image was rejected"), {
+          code: "CONTENT_REJECTED",
+          parentCodes: ["POLICY_ERROR"],
+        });
+        mockStepRun.mockRejectedValueOnce(codedError);
+
+        await createActivityWorkers(createTestConfig());
+
+        const createCall = mockWorkerCreate.mock.calls[0]?.[0];
+        expect(createCall).toBeDefined();
+        const activityFn = createCall!.activities.testStep;
+
+        let failure: ApplicationFailure | undefined;
+        try {
+          await (activityFn as (a: unknown, b: unknown) => Promise<unknown>)(
+            {},
+            { input: "test" },
+          );
+        } catch (err) {
+          failure = err as ApplicationFailure;
+        }
+
+        expect(failure).toBeInstanceOf(ApplicationFailure);
+        expect(failure?.type).toBe("CONTENT_REJECTED");
+        // Existing errors stay retryable unless a step lists their code in
+        // asyncRetry.nonRetryableErrorTypes.
+        expect(failure?.nonRetryable).toBe(false);
       });
     });
   });

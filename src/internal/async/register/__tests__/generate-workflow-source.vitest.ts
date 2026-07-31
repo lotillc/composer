@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { createWorkflow, fanOut, step } from "../../../../index";
-import { writeWorkflowSourceFile } from "../generate-workflow-source";
+import { generateWorkflowPlan, writeWorkflowSourceFile } from "../generate-workflow-source";
 
 interface ChildBag {
   input: string;
@@ -90,5 +90,56 @@ describe("writeWorkflowSourceFile", () => {
     await expect(writeWorkflowSourceFile([parentWorkflow, conflicting])).rejects.toThrow(
       'Workflow name collision: "test-child-workflow"',
     );
+  });
+});
+
+describe("generateWorkflowPlan activity config", () => {
+  it("should carry asyncRetry.nonRetryableErrorTypes into the step's activity config", () => {
+    const rejectableStep = step<ChildBag>()({
+      name: "rejectableStep",
+      needs: ["input"] as const,
+      provides: ["output"] as const,
+      asyncRetry: {
+        maximumAttempts: 2,
+        nonRetryableErrorTypes: ["CONTENT_REJECTED", "VALIDATION_FAILED"],
+      },
+      run: async () => ({ output: "done" }),
+    });
+
+    const workflow = createWorkflow<ChildBag>("test-non-retryable-workflow")
+      .requires("input")
+      .build([rejectableStep]);
+
+    const plan = generateWorkflowPlan(workflow);
+
+    expect(plan.batches[0]?.steps[0]?.activityConfig?.retry).toEqual({
+      maximumAttempts: 2,
+      nonRetryableErrorTypes: ["CONTENT_REJECTED", "VALIDATION_FAILED"],
+    });
+  });
+
+  it("should survive JSON serialization into the generated workflow source", async () => {
+    const rejectableStep = step<ChildBag>()({
+      name: "rejectableStep",
+      needs: ["input"] as const,
+      provides: ["output"] as const,
+      asyncRetry: { nonRetryableErrorTypes: ["CONTENT_REJECTED"] },
+      run: async () => ({ output: "done" }),
+    });
+
+    const workflow = createWorkflow<ChildBag>("test-non-retryable-source-workflow")
+      .requires("input")
+      .build([rejectableStep]);
+
+    const outputPath = await writeWorkflowSourceFile([workflow]);
+    const code = await readFile(outputPath, "utf-8");
+
+    expect(code).toContain('"nonRetryableErrorTypes":["CONTENT_REJECTED"]');
+  });
+
+  it("should leave activityConfig undefined for steps with no async overrides", () => {
+    const plan = generateWorkflowPlan(childWorkflow);
+
+    expect(plan.batches[0]?.steps[0]?.activityConfig).toBeUndefined();
   });
 });

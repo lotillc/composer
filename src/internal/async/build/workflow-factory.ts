@@ -214,6 +214,11 @@ export interface StepActivityConfig {
     backoffCoefficient?: number;
     initialInterval?: DurationString;
     maximumInterval?: DurationString;
+    /**
+     * Error codes that must not be retried, matched against
+     * `ApplicationFailure.type`. Mirrors `StepRetryPolicy.nonRetryableErrorTypes`.
+     */
+    nonRetryableErrorTypes?: string[];
   };
 }
 
@@ -409,6 +414,7 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
       const ensureActivityProxy = (taskQueue: string, config?: StepActivityConfig) => {
         const key = getProxyKey(taskQueue, config);
         if (!activityProxiesByKey.has(key)) {
+          const nonRetryableErrorTypes = config?.retry?.nonRetryableErrorTypes;
           const activities = wf.proxyActivities<{
             [key: string]: (...args: any[]) => Promise<any>;
           }>({
@@ -420,6 +426,10 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
               backoffCoefficient: config?.retry?.backoffCoefficient ?? 2,
               initialInterval: config?.retry?.initialInterval ?? "1s",
               maximumInterval: config?.retry?.maximumInterval ?? "60s",
+              // Omitted entirely when unset or empty, so steps that don't use it
+              // get the same retry policy they got before this field existed.
+              ...(nonRetryableErrorTypes &&
+                nonRetryableErrorTypes.length > 0 && { nonRetryableErrorTypes }),
             },
           });
           activityProxiesByKey.set(key, activities);

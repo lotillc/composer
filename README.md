@@ -67,6 +67,31 @@ export const greet = step<MyBag, MyContext>()({
 - Return values must be JSON-serializable (enforced at compile-time and runtime)
 - Excess or missing return properties are caught at both compile-time and runtime
 
+#### Retry and Timeout Overrides (Async Only)
+
+Steps can override the Temporal activity timeouts and retry policy. These fields are ignored by sync execution.
+
+```typescript
+export const generateImage = step<MyBag, MyContext>()({
+  name: "generateImage",
+  needs: ["prompt"],
+  provides: ["imageUrl"],
+  asyncStartToCloseTimeout: "30 minutes",
+  asyncHeartbeatTimeout: "2 minutes",
+  asyncRetry: {
+    maximumAttempts: 3,
+    // Deterministic failures: fail fast instead of burning the retry budget
+    // on work that is guaranteed to fail identically.
+    nonRetryableErrorTypes: ["CONTENT_REJECTED", "VALIDATION_FAILED"],
+  },
+  run: async (ctx, bag) => ({ imageUrl: await ctx.images.generate(bag.prompt) }),
+});
+```
+
+`asyncRetry` defaults, applied per unset field: `maximumAttempts: 3`, `backoffCoefficient: 2`, `initialInterval: "1s"`, `maximumInterval: "60s"`, and no non-retryable error types.
+
+`nonRetryableErrorTypes` is matched by exact string against the thrown error's `code` property. When a step throws an error carrying a `code`, the framework maps that code onto `ApplicationFailure.type`, which is the field Temporal compares against the policy — so an error with `code: "CONTENT_REJECTED"` fails the activity on its first attempt when `"CONTENT_REJECTED"` is listed. Errors without a `code` are never matched and stay retryable.
+
 ### Workflow
 
 A **workflow** is a collection of steps with automatic dependency resolution. The framework builds a DAG, plans parallel execution batches, and validates all dependencies at compile-time.
