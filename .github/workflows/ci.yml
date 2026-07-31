@@ -32,3 +32,49 @@ jobs:
       - run: pnpm compile
 
       - run: pnpm test
+
+  # Runs after `test` passes on a push to main. If there are pending changesets,
+  # it opens/updates a "Version Packages" PR. If that PR was just merged (no
+  # changesets left, version already bumped), it runs the `release` script
+  # below to publish to npm instead.
+  #
+  # id-token: write is required for npm Trusted Publishing (OIDC) in the
+  # `release` script. The short-lived token is minted at publish time; no
+  # NPM_TOKEN secret is stored. The "npm-publish" GitHub Environment must exist
+  # on this repo and match the environment name configured in the package's
+  # npmjs.com Trusted Publisher settings. Reviewers configured on this
+  # environment act as a human gate before this job runs.
+  release:
+    name: Release
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.28.2
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Create Version Packages PR, or publish to npm
+        uses: changesets/action@v1
+        with:
+          publish: pnpm run release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
