@@ -1,0 +1,188 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Dispatched by ci.yml's `version` job (GITHUB_TOKEN pushes don't trigger
+  # other workflows) or manually against an existing tag. --ref <tag> makes
+  # github.ref resolve exactly like a real tag push.
+  workflow_dispatch:
+
+# id-token: write is for npm Trusted Publishing (OIDC); no NPM_TOKEN stored.
+# This filename is load-bearing — npm's Trusted Publisher is registered
+# against it specifically. Don't rename or merge into another workflow
+# without updating that registration.
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: release-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # workflow_dispatch's --ref accepts a branch too; reject anything that
+    # isn't an actual tag before it can reach anything below.
+    if: github.ref_type == 'tag'
+    # Must match the environment name in npm's Trusted Publisher config;
+    # its required reviewers gate every publish.
+    environment: npm-publish
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # Validation runs before any dependency install or repository-defined
+      # script (compile, test, install lifecycle scripts): this job already
+      # holds id-token: write and a human's environment approval by this
+      # point, so an invalid/malicious tag must be rejected before its code
+      # gets to execute with that access, not just before the publish step.
+
+      - name: Verify the tag is reachable from main
+        # A hand-pushed or dispatched vX.Y.Z tag could point at a commit off
+        # main entirely; SECURITY.md requires release tags to be on main.
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not reachable from main -- refusing to publish." >&2
+            exit 1
+          fi
+
+      - name: Verify tag matches package version
+        run: |
+          case "$GITHUB_REF_NAME" in
+            v*) ;;
+            *)
+              echo "Tag $GITHUB_REF_NAME does not start with 'v' -- refusing to publish." >&2
+              exit 1
+              ;;
+          esac
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION" >&2
+            exit 1
+          fi
+
+          # Ancestry alone only proves the tag is somewhere in main's
+          # history, not that it's the exact commit that introduced this
+          # version -- a tag hand-placed on a later commit (before the next
+          # bump, package.json still reading the same version) would still
+          # pass both checks and publish unreviewed, intervening source
+          # under the older version's tag. Require HEAD to be that exact
+          # commit, same as ci.yml's automated tagging.
+          BUMP_COMMIT=$(git log -1 --format=%H -S"\"version\": \"$PKG_VERSION\"" -- package.json)
+          if [ "$BUMP_COMMIT" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::HEAD is not the commit that introduced version $PKG_VERSION in package.json -- refusing to publish." >&2
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.28.2
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm compile
+
+      - run: pnpm test
+
+      - name: Skip if this version is already published
+        # A duplicate dispatch for the same tag (e.g. ci.yml's retry-safe
+        # handoff racing an earlier one) queues behind the per-ref
+        # concurrency group rather than running concurrently, and would
+        # otherwise fail here trying to republish an immutable version.
+        id: already-published
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "@lotiai/composer@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "$PKG_VERSION is already published on npm. Nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        # Per-ref concurrency (above) only stops the *same* tag racing
+        # itself. Two different tags can still reach this step out of order
+        # (e.g. two releases waiting on environment approval, approved out of
+        # sequence) -- and `pnpm publish` unconditionally moves the `latest`
+        # dist-tag to whatever it just published. A shared concurrency group
+        # across all tags won't fix this either: GitHub's queue keeps only
+        # the latest pending run per group and drops the rest (see ci.yml),
+        # so it could drop an entire release rather than just reorder it.
+        # OIDC trusted publishing only covers the `publish` command -- a
+        # follow-up `npm dist-tag add` wouldn't authenticate -- so instead,
+        # check before publishing: if this version isn't newer than what's
+        # already `latest` (per real SemVer precedence, not lexical/GNU
+        # version sort -- a prerelease like 1.0.0-beta.1 must count as older
+        # than 1.0.0), publish it under a non-latest tag so it doesn't move
+        # `latest` backwards.
+        #
+        # Known residual gap: this check-then-publish isn't atomic, so two
+        # releases approved within moments of each other can both read the
+        # old `latest` before either finishes, and the older one can still
+        # win. Accepted as a low-probability edge case (near-simultaneous
+        # manual approvals) rather than adding a custom cross-run lock. If
+        # `latest` ever does end up on the wrong version, fix it by hand:
+        #   npm dist-tag add @lotiai/composer@<correct-version> latest
+        # (run locally with your own npm login -- OIDC trusted publishing
+        # doesn't cover dist-tag operations, only publish).
+        if: steps.already-published.outputs.skip != 'true'
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+
+          # A prerelease must never become `latest`, full stop -- not just
+          # when it's older than the current latest. semver.gt() alone
+          # would let a *next*-version prerelease (e.g. 0.3.0-beta.1 when
+          # latest is 0.2.5) through, since it genuinely outranks 0.2.5;
+          # 'latest' should never point at unstable code regardless.
+          PRERELEASE_ID=$(node -e "
+            const pre = require('semver').prerelease(process.argv[1]);
+            process.stdout.write(pre ? String(pre[0]) : '');
+          " "$PKG_VERSION")
+          # A purely numeric prerelease identifier (e.g. from
+          # `changeset pre enter 0`) parses as a SemVer range, which npm
+          # rejects as a dist-tag name outright -- fall back to a fixed name.
+          case "$PRERELEASE_ID" in
+            ''|*[!0-9]*) ;;
+            *) PRERELEASE_ID="prerelease" ;;
+          esac
+          if [ -n "$PRERELEASE_ID" ]; then
+            echo "::notice::$PKG_VERSION is a prerelease -- publishing under the '$PRERELEASE_ID' dist-tag, not 'latest'."
+            pnpm publish --no-git-checks --access public --provenance --tag "$PRERELEASE_ID"
+            exit 0
+          fi
+
+          # Redirecting stderr into the captured value (2>&1) would corrupt
+          # it on a *successful* lookup too -- npm can print warnings (e.g. a
+          # transient registry retry) to stderr on exit 0, and that garbage
+          # would flow straight into the version comparison below. Keep
+          # stdout and stderr separate; only inspect stderr on failure.
+          if LOOKUP=$(npm view @lotiai/composer version 2>"$RUNNER_TEMP/npm-view-err.log"); then
+            CURRENT_LATEST="$LOOKUP"
+          elif grep -q "E404" "$RUNNER_TEMP/npm-view-err.log"; then
+            CURRENT_LATEST="0.0.0" # package has no published versions yet
+          else
+            echo "::error::Could not look up the current npm 'latest' version, refusing to guess:" >&2
+            cat "$RUNNER_TEMP/npm-view-err.log" >&2
+            exit 1
+          fi
+          if ! node -e "process.exit(require('semver').valid(process.argv[1]) ? 0 : 1)" "$CURRENT_LATEST"; then
+            echo "::error::Looked-up 'latest' version ($CURRENT_LATEST) is not valid SemVer -- refusing to compare." >&2
+            exit 1
+          fi
+          if node -e "process.exit(require('semver').gt(process.argv[1], process.argv[2]) ? 0 : 1)" "$PKG_VERSION" "$CURRENT_LATEST"; then
+            pnpm publish --no-git-checks --access public --provenance
+          else
+            echo "::warning::$PKG_VERSION is not newer than the published latest ($CURRENT_LATEST) -- publishing without moving the 'latest' dist-tag."
+            pnpm publish --no-git-checks --access public --provenance --tag superseded
+          fi

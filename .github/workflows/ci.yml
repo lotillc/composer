@@ -33,27 +33,25 @@ jobs:
 
       - run: pnpm test
 
-  # Runs after `test` passes on a push to main. If there are pending changesets,
-  # it opens/updates a "Version Packages" PR. If that PR was just merged (no
-  # changesets left, version already bumped), it runs the `release` script
-  # below to publish to npm instead.
-  #
-  # id-token: write is required for npm Trusted Publishing (OIDC) in the
-  # `release` script. The short-lived token is minted at publish time; no
-  # NPM_TOKEN secret is stored. The "npm-publish" GitHub Environment must exist
-  # on this repo and match the environment name configured in the package's
-  # npmjs.com Trusted Publisher settings. Reviewers configured on this
-  # environment act as a human gate before this job runs.
-  release:
-    name: Release
+  # Maintains the Version Packages PR only — no npm access, so it stays
+  # ungated. Publishing itself lives in release.yml (see there for why it's a
+  # separate file). Once merged, this job tags the release and dispatches
+  # release.yml via workflow_dispatch, since GITHUB_TOKEN-authored pushes
+  # don't trigger other workflows.
+  version:
+    name: Version
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: npm-publish
+    # Serialize runs so overlapping pushes to main can't race on the
+    # Version PR branch or double-tag.
+    concurrency:
+      group: version-${{ github.workflow }}
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write
-      id-token: write
+      actions: write # required for `gh workflow run` to dispatch release.yml
     steps:
       - uses: actions/checkout@v6
         with:
@@ -68,13 +66,96 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          registry-url: https://registry.npmjs.org
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Create Version Packages PR, or publish to npm
-        uses: changesets/action@v1
-        with:
-          publish: pnpm run release
+      - name: Skip if a newer push has already superseded this one
+        # GitHub doesn't guarantee execution order within a concurrency
+        # group -- an older push's job can run after a newer one's. The
+        # action below always resets its release branch to whatever commit
+        # ($GITHUB_SHA) originally triggered THIS job, fixed at trigger time
+        # and NOT overridable (GITHUB_* env vars are reserved -- GitHub
+        # silently ignores any attempt to set them). If this job's trigger
+        # commit is stale, calling the action would force-push an
+        # incomplete version calculation over whatever a run for the newer
+        # commit already produced (or will produce). Skip instead: any
+        # future push re-triggers this job against main's then-current
+        # state, and changesets tracks *all* unconsumed changeset files
+        # cumulatively, not per-push, so nothing is lost -- just deferred
+        # to the next run that isn't already stale by the time it starts.
+        id: staleness-check
+        run: |
+          git fetch origin ${{ github.ref_name }}
+          CURRENT_TIP=$(git rev-parse origin/${{ github.ref_name }})
+          if [ "$CURRENT_TIP" != "${{ github.sha }}" ]; then
+            echo "main is now at $CURRENT_TIP, past this job's trigger commit (${{ github.sha }}) -- skipping."
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update the Version Packages PR
+        if: steps.staleness-check.outputs.stale != 'true'
+        # Pinned to a commit: this job holds contents/pull-requests write, and
+        # `v1` is a force-pushed branch upstream, not an immutable tag.
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore the main checkout
+        # Whenever changesets are still pending, changesets/action checks out
+        # changeset-release/main locally to commit the version bump there,
+        # and leaves it checked out -- it never switches back. Everything
+        # below must read package.json from main's actual state, not
+        # whatever the action left checked out, or it will tag and publish
+        # an unreviewed, unmerged future version on every such push.
+        run: |
+          git fetch origin ${{ github.ref_name }}
+          git checkout ${{ github.ref_name }}
+          git reset --hard origin/${{ github.ref_name }}
+
+      - name: Tag the release and hand off to release.yml
+        # Runs unconditionally, not gated on hasChangesets: GitHub's
+        # concurrency queue keeps only the latest pending run per group and
+        # drops the rest (not a FIFO queue), so the run for a Version-PR-merge
+        # commit can be cancelled before it executes; a later run must still
+        # be able to catch up. That later run's HEAD may have moved past the
+        # actual bump commit (more commits landed on top), so we can't just
+        # tag HEAD -- `changeset tag` does exactly that and would tag/publish
+        # unrelated later changes under this version. Instead, use git's
+        # pickaxe search to find the exact commit that introduced the current
+        # version string in package.json, and tag that commit specifically.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG="v$PKG_VERSION"
+
+          # Ground truth is the npm registry, not git tag existence: if a
+          # prior run died between pushing the tag and dispatching
+          # release.yml, the tag would exist forever with no release ever
+          # having actually published, permanently stranding that version.
+          if npm view "@lotiai/composer@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "$PKG_VERSION is already published on npm. Nothing to do."
+            exit 0
+          fi
+
+          # TODO: SECURITY.md documents signed release tags as the goal. No
+          # signing key is configured yet -- the tag created below is
+          # unsigned (SECURITY.md's wording currently reflects this). Add a
+          # GPG/SSH key as a repo secret and wire it into `git tag` (e.g.
+          # `git tag -s`, with `user.signingkey` configured from the secret)
+          # to close this gap.
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            BUMP_COMMIT=$(git log -1 --format=%H -S"\"version\": \"$PKG_VERSION\"" -- package.json)
+            if [ -z "$BUMP_COMMIT" ]; then
+              echo "Could not locate the commit that introduced version $PKG_VERSION — nothing to tag."
+              exit 0
+            fi
+            git tag "$TAG" "$BUMP_COMMIT"
+            git push origin "refs/tags/$TAG"
+          fi
+
+          # Always (re-)dispatch once we know the version isn't published yet
+          # -- safe to repeat even if an earlier dispatch is still in flight
+          # or already failed, and the npm check above stops this from
+          # firing again once a release actually succeeds.
+          gh workflow run release.yml --ref "$TAG"
