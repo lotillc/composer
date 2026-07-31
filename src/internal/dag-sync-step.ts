@@ -58,6 +58,31 @@ export interface StepRetryPolicy {
   backoffCoefficient?: number;
   initialInterval?: DurationString;
   maximumInterval?: DurationString;
+  /**
+   * Error codes that must not be retried. When a step throws an error whose
+   * `code` matches one of these strings, Temporal fails the activity on the
+   * first attempt instead of burning the remaining `maximumAttempts`.
+   *
+   * Use this for deterministic failures that are guaranteed to fail identically
+   * on retry -- content-policy rejections, validation failures, permanent 4xx
+   * responses -- so callers see the failure immediately instead of after the
+   * full backoff schedule.
+   *
+   * Matching is by exact string against the thrown error's `code` property
+   * (the framework maps `code` onto `ApplicationFailure.type`, which is what
+   * Temporal compares against). Errors without a `code` never match.
+   *
+   * Unset means every error is retryable, which is the framework default.
+   *
+   * @example
+   * ```typescript
+   * asyncRetry: {
+   *   maximumAttempts: 3,
+   *   nonRetryableErrorTypes: ["CONTENT_REJECTED", "VALIDATION_FAILED"],
+   * }
+   * ```
+   */
+  nonRetryableErrorTypes?: string[];
 }
 
 /**

@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, type MockedFunction, vi } from "vites
 
 import type {
   FanOutBatchEntry,
+  StepActivityConfig,
   StepBatch,
   TemporalWorkflowResult,
   WorkflowInput,
@@ -105,6 +106,58 @@ vi.mock("@temporalio/workflow", async (importOriginal) => {
     },
   };
 });
+
+/**
+ * Builds the ApplicationFailure shape the activity worker produces for a coded
+ * error: the error code lands in `type`, which is the field Temporal matches
+ * against `RetryPolicy.nonRetryableErrorTypes`.
+ */
+function codedApplicationFailure(code: string): ApplicationFailure {
+  return ApplicationFailure.create({
+    type: code,
+    message: `${code}: deterministic failure`,
+    details: [{ code, parentCodes: [] }],
+    nonRetryable: false,
+  });
+}
+
+/**
+ * Makes proxyActivities hand back activities wrapped in a retry loop that
+ * mirrors Temporal's server-side semantics: retry up to `maximumAttempts`,
+ * but give up after the first attempt when the failure's `type` is listed in
+ * `nonRetryableErrorTypes`. The real loop lives in the Temporal server and
+ * cannot be observed from a unit test, so this stand-in checks that the policy
+ * the workflow hands to proxyActivities produces the intended behavior.
+ * Attempt counts are asserted on the inner mocks in `mocks.activityFunctions`.
+ */
+function applyTemporalRetrySemantics(): void {
+  mocks.proxyActivities.mockImplementation((options: Record<string, unknown>) => {
+    const retry = (options.retry ?? {}) as {
+      maximumAttempts?: number;
+      nonRetryableErrorTypes?: string[];
+    };
+    const maximumAttempts = retry.maximumAttempts ?? 3;
+    const nonRetryable = new Set(retry.nonRetryableErrorTypes ?? []);
+
+    const wrapped: Record<string, MockedFunction<ActivityFn>> = {};
+    for (const [name, activityFn] of Object.entries(mocks.activityFunctions)) {
+      wrapped[name] = vi.fn(async (workflowInput, ...args) => {
+        let lastError: unknown;
+        for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
+          try {
+            return await activityFn(workflowInput, ...args);
+          } catch (err) {
+            lastError = err;
+            const type = (err as { type?: string }).type;
+            if (type !== undefined && nonRetryable.has(type)) break;
+          }
+        }
+        throw lastError;
+      });
+    }
+    return wrapped;
+  });
+}
 
 describe("WorkflowFactory", () => {
   describe("createWorkflowFunction", () => {
@@ -313,6 +366,117 @@ describe("WorkflowFactory", () => {
         const { error } = await runWorkflowExpectingResult(workflowFn, input);
         expect(error).toBeDefined();
         expect(error?.message).toContain("Batch 1 failed: 1 step(s) failed");
+      });
+    });
+
+    describe("Non-Retryable Error Types", () => {
+      /** Builds a single-step plan whose activity carries the given retry config. */
+      function planWithRetry(retry: StepActivityConfig["retry"]): WorkflowPlan {
+        return {
+          name: "retryWorkflow",
+          batches: [
+            {
+              steps: [
+                {
+                  name: "step1",
+                  activityName: "step1-abc",
+                  needs: [],
+                  provides: ["result"],
+                  taskQueue: "standard-tasks",
+                  activityConfig: { retry },
+                },
+              ],
+            },
+          ],
+        };
+      }
+
+      /** Reads the retry policy the workflow handed to proxyActivities. */
+      function capturedRetryPolicy(): Record<string, unknown> {
+        expect(mocks.proxyActivities).toHaveBeenCalledTimes(1);
+        const options = mocks.proxyActivities.mock.calls[0]![0];
+        return options.retry as Record<string, unknown>;
+      }
+
+      it("should pass nonRetryableErrorTypes through to the Temporal retry policy", async () => {
+        mocks.activityFunctions["step1-abc"] = vi.fn(async () => ({ result: "done" }));
+
+        const workflowFn = createWorkflowFunction(
+          planWithRetry({
+            maximumAttempts: 2,
+            nonRetryableErrorTypes: ["CONTENT_REJECTED", "VALIDATION_FAILED"],
+          }),
+        );
+        await workflowFn({ initialData: {} });
+
+        expect(capturedRetryPolicy()).toEqual({
+          maximumAttempts: 2,
+          backoffCoefficient: 2,
+          initialInterval: "1s",
+          maximumInterval: "60s",
+          nonRetryableErrorTypes: ["CONTENT_REJECTED", "VALIDATION_FAILED"],
+        });
+      });
+
+      it("should omit nonRetryableErrorTypes when the step does not set it", async () => {
+        mocks.activityFunctions["step1-abc"] = vi.fn(async () => ({ result: "done" }));
+
+        const workflowFn = createWorkflowFunction(planWithRetry({ maximumAttempts: 5 }));
+        await workflowFn({ initialData: {} });
+
+        const retry = capturedRetryPolicy();
+        expect(retry).not.toHaveProperty("nonRetryableErrorTypes");
+        expect(retry).toEqual({
+          maximumAttempts: 5,
+          backoffCoefficient: 2,
+          initialInterval: "1s",
+          maximumInterval: "60s",
+        });
+      });
+
+      it("should omit nonRetryableErrorTypes when set to an empty array", async () => {
+        mocks.activityFunctions["step1-abc"] = vi.fn(async () => ({ result: "done" }));
+
+        const workflowFn = createWorkflowFunction(
+          planWithRetry({ maximumAttempts: 3, nonRetryableErrorTypes: [] }),
+        );
+        await workflowFn({ initialData: {} });
+
+        expect(capturedRetryPolicy()).not.toHaveProperty("nonRetryableErrorTypes");
+      });
+
+      it("should not retry a step whose error code is listed as non-retryable", async () => {
+        const failingActivity = vi.fn(async () => {
+          throw codedApplicationFailure("CONTENT_REJECTED");
+        });
+        mocks.activityFunctions["step1-abc"] = failingActivity;
+        applyTemporalRetrySemantics();
+
+        const workflowFn = createWorkflowFunction(
+          planWithRetry({ maximumAttempts: 3, nonRetryableErrorTypes: ["CONTENT_REJECTED"] }),
+        );
+
+        const { error } = await runWorkflowExpectingResult(workflowFn, { initialData: {} });
+
+        expect(failingActivity).toHaveBeenCalledTimes(1);
+        expect(error?.errors?.[0]?.code).toBe("CONTENT_REJECTED");
+      });
+
+      it("should still retry a step whose error code is not listed", async () => {
+        const failingActivity = vi.fn(async () => {
+          throw codedApplicationFailure("UPSTREAM_TIMEOUT");
+        });
+        mocks.activityFunctions["step1-abc"] = failingActivity;
+        applyTemporalRetrySemantics();
+
+        const workflowFn = createWorkflowFunction(
+          planWithRetry({ maximumAttempts: 3, nonRetryableErrorTypes: ["CONTENT_REJECTED"] }),
+        );
+
+        const { error } = await runWorkflowExpectingResult(workflowFn, { initialData: {} });
+
+        expect(failingActivity).toHaveBeenCalledTimes(3);
+        expect(error).toBeDefined();
       });
     });
 
