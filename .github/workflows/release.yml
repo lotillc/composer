@@ -138,6 +138,23 @@ jobs:
         # doesn't cover dist-tag operations, only publish).
         if: steps.already-published.outputs.skip != 'true'
         run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+
+          # A prerelease must never become `latest`, full stop -- not just
+          # when it's older than the current latest. semver.gt() alone
+          # would let a *next*-version prerelease (e.g. 0.3.0-beta.1 when
+          # latest is 0.2.5) through, since it genuinely outranks 0.2.5;
+          # 'latest' should never point at unstable code regardless.
+          PRERELEASE_ID=$(node -e "
+            const pre = require('semver').prerelease(process.argv[1]);
+            process.stdout.write(pre ? String(pre[0]) : '');
+          " "$PKG_VERSION")
+          if [ -n "$PRERELEASE_ID" ]; then
+            echo "::notice::$PKG_VERSION is a prerelease -- publishing under the '$PRERELEASE_ID' dist-tag, not 'latest'."
+            pnpm publish --no-git-checks --access public --provenance --tag "$PRERELEASE_ID"
+            exit 0
+          fi
+
           if ! LOOKUP=$(npm view @lotiai/composer version 2>&1); then
             if echo "$LOOKUP" | grep -q "E404"; then
               CURRENT_LATEST="0.0.0" # package has no published versions yet
@@ -148,7 +165,6 @@ jobs:
           else
             CURRENT_LATEST="$LOOKUP"
           fi
-          PKG_VERSION=$(node -p "require('./package.json').version")
           if node -e "process.exit(require('semver').gt(process.argv[1], process.argv[2]) ? 0 : 1)" "$PKG_VERSION" "$CURRENT_LATEST"; then
             pnpm publish --no-git-checks --access public --provenance
           else
