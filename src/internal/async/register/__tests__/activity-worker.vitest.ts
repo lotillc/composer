@@ -375,9 +375,61 @@ describe("Activity Worker", () => {
 
         expect(failure).toBeInstanceOf(ApplicationFailure);
         expect(failure?.type).toBe("CONTENT_REJECTED");
+        expect(failure?.details?.[0]).toMatchObject({
+          code: "CONTENT_REJECTED",
+          parentCodes: ["POLICY_ERROR"],
+        });
         // Existing errors stay retryable unless a step lists their code in
         // asyncRetry.nonRetryableErrorTypes.
         expect(failure?.nonRetryable).toBe(false);
+      });
+
+      // parentCodes is optional. Requiring it would drop the code for plain
+      // coded errors, and since nonRetryableErrorTypes matches on that code,
+      // such a step would keep retrying however it configured asyncRetry.
+      it("should map the code of an error that has no parentCodes", async () => {
+        const codedError = Object.assign(new Error("Input failed validation"), {
+          code: "VALIDATION_FAILED",
+        });
+        mockStepRun.mockRejectedValueOnce(codedError);
+
+        await createActivityWorkers(createTestConfig());
+
+        const createCall = mockWorkerCreate.mock.calls[0]?.[0];
+        expect(createCall).toBeDefined();
+        const activityFn = createCall!.activities.testStep;
+
+        let failure: ApplicationFailure | undefined;
+        try {
+          await (activityFn as (a: unknown, b: unknown) => Promise<unknown>)(
+            {},
+            { input: "test" },
+          );
+        } catch (err) {
+          failure = err as ApplicationFailure;
+        }
+
+        expect(failure).toBeInstanceOf(ApplicationFailure);
+        expect(failure?.type).toBe("VALIDATION_FAILED");
+        expect(failure?.details?.[0]).toMatchObject({
+          code: "VALIDATION_FAILED",
+          parentCodes: [],
+        });
+      });
+
+      it("should leave errors with no code as-is", async () => {
+        const plainError = new Error("Something broke");
+        mockStepRun.mockRejectedValueOnce(plainError);
+
+        await createActivityWorkers(createTestConfig());
+
+        const createCall = mockWorkerCreate.mock.calls[0]?.[0];
+        expect(createCall).toBeDefined();
+        const activityFn = createCall!.activities.testStep;
+
+        await expect(
+          (activityFn as (a: unknown, b: unknown) => Promise<unknown>)({}, { input: "test" }),
+        ).rejects.toBe(plainError);
       });
     });
   });

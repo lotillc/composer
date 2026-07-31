@@ -39,7 +39,11 @@ import type { ComposerLogger } from "../../types";
 import { denamespaceSyntheticSteps } from "../build-scripts/utils/common";
 import { isFanOut } from "../build-scripts/utils/type-guards";
 import { startTaskQueueMetrics, type TaskQueueMetricsHandle } from "../metrics/task-queue-metrics";
-import { isComposerError } from "../utils/is-composer-error";
+import {
+  isComposerError,
+  parentCodesOf,
+  type ComposerErrorInstance,
+} from "../utils/is-composer-error";
 import { collectAllWorkflows } from "./generate-workflow-source";
 
 interface ActiveActivitySummary {
@@ -171,12 +175,11 @@ async function fetchEcsTaskMetadata(logger: ComposerLogger): Promise<EcsTaskMeta
  * We don't set `cause` to avoid message duplication - all info is in type/details.
  * With `cause` set we get an exact duplicate of the error in the cause chain.
  *
- * Compatible with errors that carry a stable string code and a parentCodes array
- * (the {code, parentCodes} convention used by typical error-class factories).
+ * Compatible with errors that carry a stable string code, with or without a
+ * parentCodes array (the {code} / {code, parentCodes} convention used by typical
+ * error-class factories).
  */
-function toCodedApplicationFailure(
-  error: Error & { code: string; parentCodes: readonly string[] },
-): ApplicationFailure {
+function toCodedApplicationFailure(error: ComposerErrorInstance): ApplicationFailure {
   return ApplicationFailure.create({
     // No `cause` - avoids message duplication. All info preserved in type/details.
     type: error.code, // This is preserved through Temporal serialization!
@@ -184,7 +187,7 @@ function toCodedApplicationFailure(
     details: [
       {
         code: error.code,
-        parentCodes: error.parentCodes,
+        parentCodes: parentCodesOf(error),
         data: (error as { data?: unknown }).data,
         // Include stack trace in details since we're not using cause
         stack: error.stack,
