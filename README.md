@@ -267,6 +267,33 @@ Error handler return values:
 - `Error` -- propagate or transform the error into the result's `error`
 - Throwing -- `error` will be a `WorkflowErrorHandlerFailure` wrapping both the original error and the handler error
 
+#### A Wrapper's Message Is Its Own
+
+`WorkflowStepError`, `WorkflowBatchError` and `WorkflowErrorHandlerFailure` carry only
+Composer's context in their `message` -- which workflow, which step, which batch -- and never
+repeat the message of the error they wrap:
+
+```typescript
+stepError.message; // 'Workflow "abc" failed at step "insertUser" (batch 2)'
+stepError.originalError.message; // the driver's message, verbatim
+stepError.cause; // the same error, via standard error chaining
+```
+
+A wrapper goes everywhere: log lines, span attributes, Temporal event history, a parent
+workflow's failure. Inlining the original's message put that text in all of them at once, and
+for MikroORM/knex that message is the parameter-inlined SQL, quoting real row values.
+
+This matters for classifying, not just printing. A wrapper copies the original's `code` so
+`matchesError()` keeps working -- which means a classifier keying on `code` sees what looks
+like the original error. When the message was inlined too, a scrubber that rebuilds a database
+error's message from its structured fields would pass the wrapper through untouched, because
+the wrapper carries `code` but not `severity`, `table` or `constraint`. Read `.cause` or
+`.originalError` to get at the underlying error; do not read a wrapper's `message` expecting
+to find it.
+
+`toLogContext()` follows the same rule: it hands the logger the original `Error` object rather
+than a `{ name, message, stack }` projection, so your serializer decides what it looks like.
+
 ### Context Provider
 
 The context provider manages per-step resources (e.g. database connections, loggers). It is configured once via `createComposer` and used automatically for every step execution.
@@ -334,8 +361,29 @@ serializer's absence showing, not Composer withholding anything.
 
 This covers the logger Composer was given. It does **not** cover the async path's
 workflow-side logging: `workflow-factory.ts` logs through `@temporalio/workflow`'s `wf.log`,
-which Temporal routes to its own `Runtime` logger, and Composer does not wire the injected
-logger into it. Those lines are outside this seam.
+which Temporal routes to the logger on its own `Runtime`, not to this one.
+
+Composer does not wire the injected logger into that Runtime, and will not. `Runtime.install`
+is process-global and single-shot -- it throws once any worker has started or another
+`install` has run -- so a library that calls it seizes a decision belonging to the host
+process. The supported per-worker alternative does not exist either: `wf.log` is delivered by
+a sink named `__temporal_logger`, and Temporal rejects any sink whose name carries its
+reserved `__temporal_` prefix.
+
+It would not restore fidelity in any case. Sink arguments cross the workflow sandbox boundary
+by `postMessage`, which constrains them to primitives -- an `Error` cannot arrive on the other
+side for a serializer to classify. So instead of routing those lines, Composer stops putting
+raw error text in them: the workflow side logs an error's **name and code**, never its
+message, and the same holds for every structure it hands to Temporal (see below).
+
+To route the lines themselves, install your own logger before starting any worker. `Runtime`
+is re-exported so this needs no direct dependency on `@temporalio/worker`:
+
+```typescript
+import { Runtime } from "@lotiai/composer";
+
+Runtime.install({ logger: myLogger });
+```
 
 ### Error Messages on Trace Spans
 
@@ -363,10 +411,12 @@ const composer = createComposer({
 });
 ```
 
-The error handed to the renderer is Composer's own wrapper, and `WorkflowStepError`'s message
-embeds the original's -- so `(error) => error.message` puts back exactly what withholding it
-avoided. Classify on `.originalError` / `.cause`. If the renderer throws, Composer falls back
-to attaching no message rather than letting it replace the workflow's own error.
+The error handed to the renderer is Composer's own wrapper, whose message is Composer's own
+context -- `Workflow "..." failed at step "..." (batch 2)` -- and never the wrapped error's.
+Reading `.message` is safe, but it says nothing about why the step failed; the original is on
+`.originalError` / `.cause`, and it is that message the renderer has to decide about. If the
+renderer throws, Composer falls back to attaching no message rather than letting it replace
+the workflow's own error.
 
 The full `Error` still reaches the logger either way; this controls the trace sink only. It
 applies to sync workflow runs -- async runs use Temporal's own observability.
@@ -408,16 +458,33 @@ The types you need to write either seam (`DataConverter`, `FailureConverter`, `P
 `ActivityInterceptorsFactory`) are re-exported from `@lotiai/composer`, so you do not need a
 direct dependency on the Temporal packages.
 
-**A failure converter has more to scrub than `message` and `stackTrace`.** Composer puts raw
-error text in three further places a converter must handle:
+### What Composer Itself Puts in Event History
 
-- `toCodedApplicationFailure` copies the error's `stack` into `details[0].stack`, and a stack's
-  header line repeats the message.
-- An unhandled workflow error throws with `details: [{ bag, error }]` -- `bag` is every value
-  the workflow touched, and `error.errors[]` carries each failed step's message.
-- The error-handler activity returns `{ error: { message, code } }` as an activity **result**,
-  which the payload converter encodes, not the failure converter. Reaching that needs a
-  `payloadCodec`.
+A failure converter has more to reach than `message` and `stackTrace`, so Composer does not
+rely on one being written. What it hands Temporal carries **no error message of its own**:
+
+- A step failure travels as `{ stepName, code, parentCodes, type, cause }` -- no `message`, at
+  any depth of the cause chain. It is both an activity argument and an `ApplicationFailure`
+  detail, so it lands at rest twice; codes and types classify a failure without quoting the
+  row. `matchesError()` is unaffected: it matches on codes, which all survive.
+- `details[0].stack` carries stack **frames** only. V8 opens a stack with its `name: message`
+  header, so copying `error.stack` whole put a second copy of the message where a converter
+  scrubbing `message` and `stackTrace` would not look.
+- An unhandled workflow error throws with `details: [{ error }, { bag }]`. The bag -- every
+  value the workflow touched -- is its own entry, so a converter can drop `details[1]` whole
+  without rebuilding the error beside it. Read partial workflow state from `details[1].bag`.
+- A code recovered from a `CODE: message` prefix must be identifier-shaped
+  (`[A-Z0-9_]{2,50}`). A bare length cutoff laundered arbitrary message text into `code` --
+  `constraint "u_email": Key (email)=(jane@x.com)` yielded a 20-character prefix quoting the
+  row -- and `code` is emitted exactly where the message is withheld.
+
+Two things still carry text Composer cannot vouch for, both of them yours:
+
+- `ApplicationFailure.message` is the failing error's own message, which is what a
+  `failureConverter` exists to rewrite. This is the seam's primary job.
+- The error-handler activity returns `{ error: { message, code } }` -- the message of the
+  `Error` **your** handler returned. It is an activity **result**, encoded by the payload
+  converter rather than the failure converter, so reaching it needs a `payloadCodec`.
 
 Connections are cached per converter. Converter paths are compared as strings, but
 `payloadCodecs` entries are compared by object identity -- hold codec instances at module
@@ -588,6 +655,7 @@ Defaults can be overridden per-deployment via `workerProfiles` in `composer.buil
 | `startActivityWorker` | Start a Temporal activity worker |
 | `getAllTaskQueues` | Get all configured task queue names |
 | `getTaskQueueForProfile` | Get the task queue for a worker profile |
+| `Runtime` | Temporal's `Runtime`, re-exported so a consumer can install their own workflow logger |
 | `WorkflowStepError` | Error class for step failures |
 | `WorkflowBatchError` | Error class for batch failures |
 | `WorkflowErrorHandlerFailure` | Error class for error handler failures |

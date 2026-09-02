@@ -33,7 +33,12 @@ async function runWorkflowExpectingResult(
     return await workflowFn(input);
   } catch (err) {
     if (err instanceof ApplicationFailure && err.details) {
-      return err.details[0] as TemporalWorkflowResult;
+      // The failure carries the error and the bag as separate details entries.
+      const [errorDetail, bagDetail] = err.details as [
+        { error?: TemporalWorkflowResult["error"] },
+        { bag?: Record<string, unknown> } | undefined,
+      ];
+      return { bag: bagDetail?.bag ?? {}, error: errorDetail?.error };
     }
     throw err;
   }
@@ -1555,7 +1560,9 @@ describe("WorkflowFactory", () => {
         expect(passedErrorInfo.workflowId).toBe("test-workflow-id");
         expect(passedErrorInfo.errors).toHaveLength(1);
         expect(passedErrorInfo.errors[0]!.stepName).toBe("failingStep");
-        expect(passedErrorInfo.errors[0]!.message).toBe("Step execution failed");
+        // No message: this value is an activity argument and a details entry, so it is
+        // twice at rest in event history. Classification travels as code/type instead.
+        expect(passedErrorInfo.errors[0]).not.toHaveProperty("message");
       });
 
       it("should not fail workflow if error handler activity fails", async () => {
@@ -1698,6 +1705,144 @@ describe("WorkflowFactory", () => {
           initial: "data",
           success: "value", // From successful step
         });
+      });
+    });
+
+    // Everything in this block lands in Temporal event history at rest, where the injected
+    // ComposerLogger never reaches and only a failure converter or payload codec can. A step
+    // error's message is not Composer's to put there: for MikroORM/knex it is the
+    // parameter-inlined SQL, quoting real row values.
+    describe("Raw error text kept out of event history", () => {
+      const inlinedSql =
+        "insert into \"user\" (\"email\") values ('jane@example.com') - duplicate key";
+
+      /** The whole failure as Temporal would persist it: message, type and every detail. */
+      async function failureFrom(plan: WorkflowPlan): Promise<ApplicationFailure> {
+        try {
+          await createWorkflowFunction(plan)({ initialData: {} });
+        } catch (err) {
+          return err as ApplicationFailure;
+        }
+        throw new Error("workflow was expected to throw ApplicationFailure");
+      }
+
+      function planFor(steps: WorkflowPlan["batches"][number]["steps"]): WorkflowPlan {
+        return { name: "leakyWorkflow", batches: [{ steps }] };
+      }
+
+      const failingStep = {
+        name: "failingStep",
+        activityName: "failingStep-abc",
+        needs: [],
+        provides: ["failure"],
+        taskQueue: "standard-tasks",
+      };
+
+      beforeEach(() => {
+        mocks.activityFunctions["failingStep-abc"] = vi.fn(async () => {
+          throw Object.assign(new Error(inlinedSql), { code: "23505" });
+        });
+      });
+
+      it("puts no step message anywhere in the thrown failure", async () => {
+        const failure = await failureFrom(planFor([failingStep]));
+
+        expect(JSON.stringify(failure.details)).not.toContain("jane@example.com");
+        expect(JSON.stringify(failure.details)).not.toContain("insert into");
+        expect(failure.message).not.toContain("insert into");
+      });
+
+      it("keeps the step's code so a failure is still classifiable", async () => {
+        const failure = await failureFrom(planFor([failingStep]));
+
+        const { error } = failure.details?.[0] as { error: TemporalWorkflowResult["error"] };
+        expect(error?.errors?.[0]).toMatchObject({ stepName: "failingStep", code: "23505" });
+      });
+
+      it("carries the bag as its own details entry, not a key on the error", async () => {
+        const okStep = {
+          name: "okStep",
+          activityName: "okStep-abc",
+          needs: [],
+          provides: ["ok"],
+          taskQueue: "standard-tasks",
+        };
+        mocks.activityFunctions["okStep-abc"] = vi.fn(async () => ({ ok: "value" }));
+
+        const failure = await failureFrom(planFor([okStep, failingStep]));
+
+        // A scrubbing failure converter has to be able to drop the bag whole without
+        // rebuilding the error that sits beside it.
+        expect(failure.details?.[0]).not.toHaveProperty("bag");
+        expect(failure.details?.[0]).toHaveProperty("error");
+        expect(failure.details?.[1]).toMatchObject({ bag: { ok: "value" } });
+      });
+
+      // Temporal wraps an activity error ActivityFailure -> ApplicationFailure -> original,
+      // and the chain is walked to depth 5. Dropping the message only at the top would
+      // leave every message below it in the details.
+      it("carries no message anywhere down the cause chain", async () => {
+        mocks.activityFunctions["failingStep-abc"] = vi.fn(async () => {
+          const root = new Error(inlinedSql);
+          throw Object.assign(new Error("ActivityFailure"), {
+            code: "WRAPPER",
+            cause: Object.assign(new Error("ApplicationFailure"), {
+              type: "23505",
+              cause: root,
+            }),
+          });
+        });
+
+        const failure = await failureFrom(planFor([failingStep]));
+
+        const { error } = failure.details?.[0] as { error: TemporalWorkflowResult["error"] };
+        expect(error?.errors?.[0]?.cause).toBeDefined();
+        expect(JSON.stringify(failure.details)).not.toContain("insert into");
+        expect(JSON.stringify(failure.details)).not.toContain("ApplicationFailure");
+        // The chain still classifies: the wrapper's type survives as a code.
+        expect(JSON.stringify(failure.details)).toContain("23505");
+      });
+
+      // `code` is emitted where the message is withheld, so what may become a code matters.
+      // A bare length cutoff turned any short `prefix: rest` message into a code.
+      it("does not turn a message prefix into a code", async () => {
+        mocks.activityFunctions["failingStep-abc"] = vi.fn(async () => {
+          throw new Error('constraint "u_email": Key (email)=(jane@example.com) exists');
+        });
+
+        const failure = await failureFrom(planFor([failingStep]));
+
+        const { error } = failure.details?.[0] as { error: TemporalWorkflowResult["error"] };
+        expect(error?.errors?.[0]?.code).toBeUndefined();
+        expect(JSON.stringify(failure.details)).not.toContain("u_email");
+      });
+
+      it("still recovers an identifier-shaped code from a LotiError message", async () => {
+        mocks.activityFunctions["failingStep-abc"] = vi.fn(async () => {
+          throw new Error("CONTENT_REJECTED: the reference image was rejected");
+        });
+
+        const failure = await failureFrom(planFor([failingStep]));
+
+        const { error } = failure.details?.[0] as { error: TemporalWorkflowResult["error"] };
+        expect(error?.errors?.[0]?.code).toBe("CONTENT_REJECTED");
+      });
+
+      it("does not repeat a crashed error handler's message", async () => {
+        mocks.activityFunctions["errorHandler"] = vi.fn(async () => {
+          throw Object.assign(new Error(inlinedSql), { code: "23505" });
+        });
+
+        const failure = await failureFrom({
+          ...planFor([failingStep]),
+          errorHandlerActivityName: "errorHandler",
+        });
+
+        expect(failure.message).not.toContain("insert into");
+        expect(JSON.stringify(failure.details)).not.toContain("insert into");
+        // The failure still says which handler broke and on which batch.
+        expect(failure.type).toBe("WorkflowErrorHandlerFailure");
+        expect(failure.message).toContain("batch 1");
       });
     });
 
@@ -1855,6 +2000,57 @@ describe("WorkflowFactory", () => {
 
         // aggregateResults should not be called when children fail
         expect(aggregateResultsActivity).not.toHaveBeenCalled();
+      });
+
+      // The failure summary is inlined into the thrown Error's message, which becomes a step
+      // failure and so reaches event history. A child's raw message would be at rest twice.
+      it("names failed children by code, never by message", async () => {
+        mocks.activityFunctions[baseFanOut.mapInputActivityName] = vi.fn(async () => [
+          { item: "a" },
+        ]);
+        mocks.activityFunctions[baseFanOut.aggregateResultsActivityName] = vi.fn(async () => ({
+          results: [],
+        }));
+
+        const inlinedSql = "insert into \"user\" values ('jane@example.com')";
+        mocks.executeChild.mockImplementation(async () => {
+          const { ChildWorkflowFailure, ApplicationFailure: AppFailure } = await import(
+            "@temporalio/workflow"
+          );
+          throw new ChildWorkflowFailure(
+            "default",
+            { workflowId: "child-wf", runId: "child-run" },
+            "child-wf",
+            "NON_RETRYABLE_FAILURE",
+            AppFailure.create({
+              message: inlinedSql,
+              type: "WorkflowBatchError",
+              nonRetryable: true,
+              details: [{ error: { message: inlinedSql, code: "23505", type: "DbError" } }],
+            }),
+          );
+        });
+
+        let failure: ApplicationFailure | undefined;
+        try {
+          await createWorkflowFunction(planWithFanOut(baseFanOut))({
+            initialData: { items: ["a"] },
+          });
+        } catch (err) {
+          failure = err as ApplicationFailure;
+        }
+
+        const serialized = JSON.stringify([failure?.message, failure?.details]);
+        expect(serialized).not.toContain("jane@example.com");
+        expect(serialized).not.toContain("insert into");
+        // The FanOut's own code, not one guessed from its message prefix.
+        expect(serialized).toContain("FANOUT_CHILD_FAILURE");
+
+        // The per-child codes stay on the workflow log line, which does not persist.
+        expect(mocks.log.error).toHaveBeenCalledWith(
+          "FanOut: child workflow failures",
+          expect.objectContaining({ failures: "child 0: 23505" }),
+        );
       });
 
       it("should extract structured error from ChildWorkflowFailure -> ApplicationFailure", async () => {

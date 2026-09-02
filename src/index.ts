@@ -116,3 +116,7 @@ export type {
   ActivityInterceptors,
   ActivityInterceptorsFactory,
 } from "@temporalio/worker";
+// Workflow-side `wf.log` lines are routed by Temporal, not by the injected ComposerLogger.
+// Re-exported so a consumer can install their own logger on the Runtime without a direct
+// dependency on @temporalio/worker; Composer never installs one itself. See the README.
+export { Runtime, type RuntimeOptions } from "@temporalio/worker";

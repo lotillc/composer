@@ -23,6 +23,26 @@ vi.mock("../internal/defaults", async (importOriginal) => {
 });
 
 /**
+ * Every message reachable below `error`, walking the wrappers Composer chains through
+ * (`errors[]`, `originalError`, `cause`). Composer's wrappers carry their own context as
+ * their message and do not repeat what they wrap, so an assertion about the underlying
+ * failure has to look down the chain.
+ */
+function causeMessagesOf(error: unknown): string[] {
+  if (!(error instanceof Error)) return [];
+  const { errors, originalError, cause } = error as Error & {
+    errors?: unknown[];
+    originalError?: unknown;
+  };
+  return [
+    error.message,
+    ...(errors ?? []).flatMap(causeMessagesOf),
+    ...causeMessagesOf(originalError),
+    ...causeMessagesOf(cause),
+  ];
+}
+
+/**
  * Composer with mock logger + mock tracer/metrics for testing system failures.
  */
 const composerWithMockLogger = createComposer({
@@ -55,7 +75,7 @@ describe("Observability System Failures", () => {
       input: "test",
     });
     expect(error1).toBeDefined();
-    expect(error1?.message).toContain("Span creation failed");
+    expect(causeMessagesOf(error1)).toContain("Span creation failed");
 
     // Verify that span creation was attempted
     expect(mockTracer.startSpan).toHaveBeenCalled();
@@ -80,7 +100,7 @@ describe("Observability System Failures", () => {
       input: "test",
     });
     expect(error2).toBeDefined();
-    expect(error2?.message).toContain("Counter creation failed");
+    expect(causeMessagesOf(error2)).toContain("Counter creation failed");
 
     // Verify that metrics creation was attempted
     expect(mockMetrics.counter).toHaveBeenCalled();

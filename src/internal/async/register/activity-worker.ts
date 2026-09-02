@@ -180,6 +180,7 @@ async function fetchEcsTaskMetadata(logger: ComposerLogger): Promise<EcsTaskMeta
  * error-class factories).
  */
 function toCodedApplicationFailure(error: ComposerErrorInstance): ApplicationFailure {
+  const stack = stackFramesOf(error);
   return ApplicationFailure.create({
     // No `cause` - avoids message duplication. All info preserved in type/details.
     type: error.code, // This is preserved through Temporal serialization!
@@ -189,12 +190,27 @@ function toCodedApplicationFailure(error: ComposerErrorInstance): ApplicationFai
         code: error.code,
         parentCodes: parentCodesOf(error),
         data: (error as { data?: unknown }).data,
-        // Include stack trace in details since we're not using cause
-        stack: error.stack,
+        // Frames only. V8 opens a stack with `name: message`, so copying `error.stack`
+        // whole puts a second copy of the message in details, where a failure converter
+        // scrubbing `message` and `stackTrace` would not think to look for it.
+        // Frames only. V8 opens a stack with `name: message`, so copying `error.stack`
+        // whole puts a second copy of the message in details, where a failure converter
+        // scrubbing `message` and `stackTrace` would not think to look for it.
+        stack,
       },
     ],
     nonRetryable: false,
   });
+}
+
+/**
+ * A stack with its `name: message` header line removed, so it carries frames and no message.
+ * Best-effort: a stack that does not start with the header is kept as-is minus non-frame lines.
+ */
+function stackFramesOf(error: Error): string | undefined {
+  const stack = typeof error.stack === "string" ? error.stack : "";
+  const frames = stack.split("\n").filter((line) => line.trimStart().startsWith("at "));
+  return frames.length > 0 ? frames.join("\n") : undefined;
 }
 
 /**
@@ -424,7 +440,7 @@ function createActivitiesFromWorkflows<TContext>(
         const typedErrorInfo = errorInfo as {
           batchNumber: number;
           workflowId: string;
-          errors: Array<{ stepName: string; message: string; code?: string; type: string }>;
+          errors: Array<{ stepName: string; code?: string; type: string }>;
         };
 
         const error = {

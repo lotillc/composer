@@ -39,7 +39,6 @@ export interface WorkflowInput {
  * Includes parentCodes to support LotiError subclass matching via extractIfPresent.
  */
 export interface SerializedErrorInfo {
-  message: string;
   code?: string;
   /** Parent error codes for subclass matching (e.g., NOT_FOUND -> DB_NOT_FOUND) */
   parentCodes?: readonly string[];
@@ -49,12 +48,15 @@ export interface SerializedErrorInfo {
 
 /**
  * Information about a step failure, passed to error handler activities.
+ *
+ * Carries no error message. This value is an activity argument and a member of the
+ * `ApplicationFailure` details, so both copies land in Temporal event history at rest,
+ * where only a `payloadCodec` could reach them. Codes and types classify a failure
+ * without quoting whatever the driver put in the message.
  */
 export interface StepFailureInfo {
   /** Step name that failed */
   stepName: string;
-  /** Error message (from outermost error wrapper) */
-  message: string;
   /** Error code if available */
   code?: string;
   /** Parent error codes for subclass matching */
@@ -93,16 +95,31 @@ interface ApplicationFailureLike extends ErrorWithCause {
   details?: Array<{ code?: string; parentCodes?: readonly string[]; data?: unknown }>;
 }
 
+/** A code is an identifier: SCREAMING_SNAKE like CONTENT_REJECTED, or a SQLSTATE like 23505. */
+const ERROR_CODE = /^[A-Z0-9_]{2,50}$/;
+
 /**
  * LotiError formats messages as "CODE: message" - extract code from message if not available elsewhere.
+ *
+ * Only an identifier-shaped prefix is accepted. A bare length cutoff laundered arbitrary
+ * message text into `code` -- `constraint "u_email": Key (email)=(jane@x.com)` yields a
+ * 20-character prefix quoting the row -- and `code` is emitted where the message is withheld.
  */
 function extractCodeFromMessage(message: string | undefined): string | undefined {
   if (!message) return undefined;
   const colonIndex = message.indexOf(": ");
-  if (colonIndex > 0 && colonIndex < 50) {
-    return message.substring(0, colonIndex);
-  }
-  return undefined;
+  if (colonIndex <= 0) return undefined;
+  const candidate = message.substring(0, colonIndex);
+  return ERROR_CODE.test(candidate) ? candidate : undefined;
+}
+
+/** Code carried by the error a FanOut throws when any of its children fail. */
+export const FANOUT_CHILD_FAILURE_CODE = "FANOUT_CHILD_FAILURE";
+
+/** A thrown value's string `code`, if it carries one. Safe to log: codes are identifiers. */
+function codeOf(value: unknown): string | undefined {
+  const code = (value as { code?: unknown } | null | undefined)?.code;
+  return typeof code === "string" ? code : undefined;
 }
 
 /**
@@ -132,11 +149,11 @@ function buildCauseChain(
 ): SerializedErrorInfo | undefined {
   if (!err?.cause || depth >= 5) return undefined;
   const cause = err.cause as ApplicationFailureLike;
-  const message = cause.message ?? String(cause);
   const lotiDetails = extractLotiDetails(cause);
-  const code = cause.code ?? cause.type ?? lotiDetails?.code ?? extractCodeFromMessage(message);
+  // The message is read only to recover a `CODE: message` prefix; it is not carried forward.
+  const code =
+    cause.code ?? cause.type ?? lotiDetails?.code ?? extractCodeFromMessage(cause.message);
   return {
-    message,
     code,
     parentCodes: lotiDetails?.parentCodes,
     type: cause.name,
@@ -161,7 +178,6 @@ function buildStepFailureInfo(stepName: string, rawError: unknown): StepFailureI
 
   return {
     stepName,
-    message: causeError?.message ?? error?.message ?? String(rawError),
     code,
     parentCodes: lotiDetails?.parentCodes,
     type: error?.name ?? "Error",
@@ -636,14 +652,18 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
               }
               // If neither, keep the original batch error
             } catch (handlerError) {
+              // Name and code only: `wf.log` crosses the sandbox boundary by structured
+              // clone, so an Error cannot reach the logger's serializer from here, and a
+              // flattened message is the raw driver text with nothing left to redact it.
               wf.log.error("Error handler activity failed", {
                 workflowId,
                 activityName: plan.errorHandlerActivityName,
-                error: handlerError instanceof Error ? handlerError.message : String(handlerError),
+                errorName: handlerError instanceof Error ? handlerError.name : typeof handlerError,
+                errorCode: codeOf(handlerError),
               });
               // Handler crashed - wrap both errors
               resultError = {
-                message: `Error handler failed: ${handlerError instanceof Error ? handlerError.message : String(handlerError)} (original: ${failedStepNames})`,
+                message: `Error handler failed while handling batch ${batchNumber} [${failedStepNames}]`,
                 code: "WORKFLOW_ERROR_HANDLER_FAILURE",
                 type: "WorkflowErrorHandlerFailure",
                 batchNumber,
@@ -655,12 +675,15 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
 
         if (resultError) {
           // Unhandled error: throw ApplicationFailure to mark workflow as Failed.
-          // Include bag in details so callers can extract partial workflow state.
+          // The bag is a details entry of its own, not a key on the error entry: it is every
+          // value the workflow touched, it goes to Temporal event history at rest, and a
+          // scrubbing failure converter has to be able to drop it without rebuilding the
+          // error alongside it. Callers extracting partial state read details[1].bag.
           throw wf.ApplicationFailure.create({
             message: resultError.message,
             type: resultError.type ?? "WorkflowError",
             nonRetryable: true,
-            details: [{ bag, error: resultError }],
+            details: [{ error: resultError }, { bag }],
           });
         }
         // Error was handled - continue processing remaining batches
@@ -790,16 +813,13 @@ async function executeFanOutInWorkflow(
   }
 
   if (failures.length > 0) {
+    // Identify each failed child by index and code, never by message. This string is both
+    // logged and inlined into the thrown Error, which becomes a step failure and so reaches
+    // Temporal event history -- a child's raw message would be at rest in two places.
     const failureDetails = failures
       .map((f) => {
-        const err = f.error as Record<string, unknown> | Error | undefined;
-        const msg =
-          err instanceof Error
-            ? err.message
-            : typeof err === "object" && err !== null && typeof err.message === "string"
-              ? err.message
-              : String(err);
-        return `child ${f.index}: ${msg}`;
+        const code = codeOf(f.error);
+        return code === undefined ? `child ${f.index}` : `child ${f.index}: ${code}`;
       })
       .join("; ");
 
@@ -810,8 +830,13 @@ async function executeFanOutInWorkflow(
       failures: failureDetails,
     });
 
-    throw new Error(
-      `FanOut "${fanOut.name}": ${failures.length} of ${childInputs.length} child workflow(s) failed [${failureDetails}]`,
+    throw Object.assign(
+      new Error(
+        `FanOut "${fanOut.name}": ${failures.length} of ${childInputs.length} child workflow(s) failed [${failureDetails}]`,
+      ),
+      // The message is dropped before this reaches event history, so the code is what is
+      // left to classify on. Without it, a code would be guessed from the message prefix.
+      { code: FANOUT_CHILD_FAILURE_CODE },
     );
   }
 

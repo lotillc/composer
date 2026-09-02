@@ -74,6 +74,21 @@ describe("WorkflowStepError", () => {
     expect(context.code).toBe("CUSTOM_ERROR");
     expect(context.originalError.code).toBe("CUSTOM_ERROR");
   });
+
+  // A projection decides what an error looks like in a log line before the logger's
+  // serializer can, and drops the fields it would classify on -- a driver error's
+  // `severity`, `table`, `constraint` -- leaving only the message it should not print.
+  it("hands the Error itself to the logger, not a flattened projection", () => {
+    const original = Object.assign(new Error("values ('jane@example.com')"), {
+      code: "23505",
+      severity: "ERROR",
+    });
+    const context = createStepError(original).toLogContext();
+
+    expect(context.originalError).toBe(original);
+    expect(context.originalError.severity).toBe("ERROR");
+    expect(JSON.stringify(context)).not.toContain("jane@example.com");
+  });
 });
 
 describe("WorkflowBatchError", () => {
@@ -169,6 +184,9 @@ describe("WorkflowBatchError", () => {
     expect(context.failedSteps).toHaveLength(2);
     expect(context.failedSteps[0].stepName).toBe("step1");
     expect(context.failedSteps[1].stepName).toBe("step2");
+    // Named by code, not by the message each step failed with.
+    expect(context.failedSteps[0]).not.toHaveProperty("message");
+    expect(JSON.stringify(context.failedSteps)).not.toContain("first");
   });
 });
 
@@ -243,8 +261,12 @@ describe("WorkflowErrorHandlerFailure", () => {
 
     expect(failure.message).toContain("test-workflow");
     expect(failure.message).toContain("error handler failed");
-    expect(failure.message).toContain("handler died");
-    expect(failure.message).toContain("step failed");
+    // Neither wrapped message is copied into this one; both errors stay reachable.
+    expect(failure.message).not.toContain("handler died");
+    expect(failure.message).not.toContain("step failed");
+    expect(failure.handlerError.message).toBe("handler died");
+    expect(failure.cause).toBe(failure.handlerError);
+    expect((failure.originalError as WorkflowStepError).originalError.message).toBe("step failed");
   });
 
   it("includes full context in toLogContext", () => {
@@ -265,7 +287,9 @@ describe("WorkflowErrorHandlerFailure", () => {
     expect(context.workflowId).toBe("test-workflow");
     expect(context.originalError.stepName).toBe("failingStep");
     expect(context.originalError.code).toBe("CUSTOM_ERROR");
+    expect(context.handlerError).toBe(handlerError);
     expect(context.handlerError.code).toBe("HANDLER_ERROR");
+    expect(JSON.stringify(context)).not.toContain("handler failed");
   });
 });
 

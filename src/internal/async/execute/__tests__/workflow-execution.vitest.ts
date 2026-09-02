@@ -341,7 +341,46 @@ describe("executeWorkflowTemporal", () => {
       expect(result.bag).toEqual({ inputField: "value" });
     });
 
-    it("should extract bag and error from WorkflowFailedError with ApplicationFailure cause", async () => {
+    it("should extract the bag from its own details entry", async () => {
+      const workflow = {
+        name: "test-workflow",
+        steps: [],
+      } as unknown as Workflow<any, any, any>;
+
+      const partialBag = { inputField: "value", stepResult: "partial" };
+      const errorDetail = {
+        message: "Batch 1 failed: 1 step(s) failed [badStep]",
+        code: "WORKFLOW_BATCH_ERROR",
+        type: "WorkflowBatchError",
+        batchNumber: 1,
+      };
+
+      const appFailure = ApplicationFailure.create({
+        message: errorDetail.message,
+        type: errorDetail.type,
+        nonRetryable: true,
+        details: [{ error: errorDetail }, { bag: partialBag }],
+      });
+
+      mockExecuteWorkflowAndWait.mockRejectedValue(
+        new WorkflowFailedError("Workflow execution failed", appFailure, "NON_RETRYABLE_FAILURE"),
+      );
+
+      const result = await executeWorkflowTemporal(
+        workflow,
+        { inputField: "value" },
+        { workflowId: mockWorkflowId, clientConfig: mockClientConfig },
+      );
+
+      expect(result.bag).toEqual(partialBag);
+      expect((result.error as unknown as Record<string, unknown>).code).toBe(
+        "WORKFLOW_BATCH_ERROR",
+      );
+    });
+
+    // Temporal event history and in-flight workflows outlive a deploy: a workflow started by
+    // a bundle that packed the bag onto the error entry can still complete against this client.
+    it("should still read a bag packed onto the error entry by an older bundle", async () => {
       const workflow = {
         name: "test-workflow",
         steps: [],

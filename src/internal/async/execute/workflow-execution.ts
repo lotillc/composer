@@ -207,9 +207,8 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
     // We pack the bag and structured error into ApplicationFailure.details so we can
     // reconstruct a WorkflowResult here instead of losing the partial bag state.
     if (err instanceof WorkflowFailedError && err.cause instanceof ApplicationFailure) {
-      const detail = err.cause.details?.[0] as
-        | { bag?: Record<string, unknown>; error?: TemporalWorkflowResult["error"] }
-        | undefined;
+      type ErrorDetail = { bag?: Record<string, unknown>; error?: TemporalWorkflowResult["error"] };
+      const detail = err.cause.details?.[0] as ErrorDetail | undefined;
       if (detail) {
         const errorInfo = detail.error;
         const error = errorInfo
@@ -220,7 +219,11 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
               errors: errorInfo.errors,
             })
           : new Error(err.message);
-        return { bag: (detail.bag ?? mergedInitialData) as Bag, error };
+        // The bag is its own details entry. `details[0].bag` is the pre-split layout: a
+        // workflow started by an older bundle can still be completing against this client.
+        const bagDetail = err.cause.details?.[1] as { bag?: Record<string, unknown> } | undefined;
+        const bag = bagDetail?.bag ?? detail.bag ?? mergedInitialData;
+        return { bag: bag as Bag, error };
       }
     }
     const error = err instanceof Error ? err : new Error(String(err));

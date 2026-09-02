@@ -516,6 +516,49 @@ describe("Activity Worker", () => {
       });
     });
 
+    // A stack opens with `name: message`, so copying `error.stack` whole put a second copy
+    // of the message in details -- where a converter scrubbing `message` and `stackTrace`
+    // would not think to look.
+    describe("Stack in failure details", () => {
+      const inlinedSql =
+        "insert into \"user\" (\"email\") values ('jane@example.com') - duplicate key";
+
+      async function failureFor(error: Error): Promise<ApplicationFailure> {
+        mockStepRun.mockRejectedValueOnce(error);
+        await createActivityWorkers(createTestConfig());
+        const activityFn = mockWorkerCreate.mock.calls[0]![0]!.activities.testStep;
+        try {
+          await (activityFn as (a: unknown, b: unknown) => Promise<unknown>)({}, {});
+        } catch (err) {
+          return err as ApplicationFailure;
+        }
+        throw new Error("activity was expected to reject");
+      }
+
+      it("carries stack frames without the message header line", async () => {
+        const failure = await failureFor(
+          Object.assign(new Error(inlinedSql), { code: "DB_ERROR" }),
+        );
+
+        const { stack } = failure.details?.[0] as { stack?: string };
+        expect(stack).toBeDefined();
+        expect(stack).not.toContain(inlinedSql);
+        expect(stack).not.toContain("Error:");
+        // Frames survive -- this withholds the message, it does not discard the stack.
+        expect(stack).toMatch(/^\s*at /);
+      });
+
+      it("omits the stack entirely rather than emitting a bare header", async () => {
+        const stackless = Object.assign(new Error(inlinedSql), { code: "DB_ERROR" });
+        stackless.stack = `Error: ${inlinedSql}`;
+
+        const failure = await failureFor(stackless);
+
+        expect(failure.details?.[0]).toMatchObject({ code: "DB_ERROR" });
+        expect((failure.details?.[0] as { stack?: string }).stack).toBeUndefined();
+      });
+    });
+
     describe("Failure scrubbing seams", () => {
       it("should forward a dataConverter to every worker", async () => {
         const dataConverter: DataConverter = {
