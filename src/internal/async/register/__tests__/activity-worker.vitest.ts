@@ -6,6 +6,7 @@
  */
 
 import { ApplicationFailure } from "@temporalio/activity";
+import type { DataConverter } from "@temporalio/common";
 import type { MockedFunction } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -34,6 +35,8 @@ type WorkerCreateOptions = {
   taskQueue: string;
   activities: Record<string, unknown>;
   maxConcurrentActivityTaskExecutions: number;
+  dataConverter?: DataConverter;
+  interceptors?: { activity?: unknown[] };
 };
 type MockActivityContext = {
   info: {
@@ -430,6 +433,110 @@ describe("Activity Worker", () => {
         await expect(
           (activityFn as (a: unknown, b: unknown) => Promise<unknown>)({}, { input: "test" }),
         ).rejects.toBe(plainError);
+      });
+
+      // A driver error's structured fields are what a consumer's serializer classifies on:
+      // flattening to `error.message` here leaves it only the inlined SQL to pattern-match.
+      it("should log the failure as the Error itself, structured fields intact", async () => {
+        const logger = makeLogger();
+        const driverError = Object.assign(new Error('insert into "user" ... - detail: Key ...'), {
+          code: "23505",
+          severity: "ERROR",
+          table: "user",
+          constraint: "user_email_unique",
+        });
+        mockStepRun.mockRejectedValueOnce(driverError);
+
+        await createActivityWorkers(createTestConfig({ logger }));
+        const activityFn = mockWorkerCreate.mock.calls[0]?.[0].activities.testStep;
+
+        // A coded error becomes an ApplicationFailure -- whose message is the raw one, which
+        // is what the failureConverter seam exists to rewrite.
+        await expect(
+          (activityFn as (a: unknown, b: unknown) => Promise<unknown>)({}, { input: "test" }),
+        ).rejects.toBeInstanceOf(ApplicationFailure);
+
+        const [, metadata] = logger.error.mock.calls.find(
+          ([message]) => message === "Activity execution failed",
+        )!;
+        expect(metadata?.error).toBe(driverError);
+        expect(metadata?.error).toMatchObject({
+          code: "23505",
+          severity: "ERROR",
+          table: "user",
+          constraint: "user_email_unique",
+        });
+      });
+
+      it("should log an afterStep cleanup failure as the Error, naming the step error only", async () => {
+        const logger = makeLogger();
+        const contextProvider = createMockContextProvider();
+        const cleanupFailure = new Error("flush failed");
+        contextProvider.afterStep.mockRejectedValueOnce(cleanupFailure);
+        mockStepRun.mockRejectedValueOnce(new TypeError("step blew up"));
+
+        await createActivityWorkers(createTestConfig({ logger, contextProvider }));
+        const activityFn = mockWorkerCreate.mock.calls[0]?.[0].activities.testStep;
+
+        await expect(
+          (activityFn as (a: unknown, b: unknown) => Promise<unknown>)({}, { input: "test" }),
+        ).rejects.toThrow("step blew up");
+
+        expect(logger.error).toHaveBeenCalledWith(
+          "afterStep cleanup failed",
+          expect.objectContaining({
+            error: cleanupFailure,
+            originalStepErrorName: "TypeError",
+          }),
+        );
+      });
+    });
+
+    describe("Failure scrubbing seams", () => {
+      it("should forward a dataConverter to every worker", async () => {
+        const dataConverter: DataConverter = {
+          failureConverterPath: "/srv/scrubbing-failure-converter.js",
+        };
+
+        await createActivityWorkers(createTestConfig({ dataConverter }));
+
+        expect(mockWorkerCreate).toHaveBeenCalledTimes(3);
+        for (const [options] of mockWorkerCreate.mock.calls) {
+          expect(options.dataConverter).toBe(dataConverter);
+        }
+      });
+
+      it("should forward activity interceptors to every worker", async () => {
+        const interceptorFactory = vi.fn();
+
+        await createActivityWorkers(
+          createTestConfig({ interceptors: { activity: [interceptorFactory] } }),
+        );
+
+        expect(mockWorkerCreate).toHaveBeenCalledTimes(3);
+        for (const [options] of mockWorkerCreate.mock.calls) {
+          expect(options.interceptors).toEqual({ activity: [interceptorFactory] });
+        }
+      });
+
+      // Omitted rather than passed as undefined: Temporal's own defaults have to stand.
+      it("should omit both keys when neither seam is configured", async () => {
+        await createActivityWorkers(createTestConfig());
+
+        const options = mockWorkerCreate.mock.calls[0]?.[0];
+        expect(options).toBeDefined();
+        expect(options).not.toHaveProperty("dataConverter");
+        expect(options).not.toHaveProperty("interceptors");
+      });
+
+      // workflowModules drives the workflow sandbox, which this worker never loads.
+      it("should not forward workflowModules to an activity worker", async () => {
+        await createActivityWorkers(
+          createTestConfig({ interceptors: { workflowModules: ["./wf-interceptors"] } }),
+        );
+
+        const options = mockWorkerCreate.mock.calls[0]?.[0];
+        expect(options).not.toHaveProperty("interceptors");
       });
     });
   });

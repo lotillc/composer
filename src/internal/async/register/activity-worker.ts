@@ -28,9 +28,10 @@
  */
 
 import { Context as ActivityContext, ApplicationFailure } from "@temporalio/activity";
+import type { DataConverter } from "@temporalio/common";
 import { VersioningBehavior } from "@temporalio/common";
 import { NativeConnection, Worker } from "@temporalio/worker";
-import type { StepContextProvider } from "../../context-provider";
+import type { ComposerWorkerInterceptors, StepContextProvider } from "../../context-provider";
 import type { FanOutMetadata } from "../../dag-sync-fanout";
 import type { AsyncStepRuntime, Step } from "../../dag-sync-step";
 import type { Workflow } from "../../dag-sync-workflow";
@@ -160,9 +161,7 @@ async function fetchEcsTaskMetadata(logger: ComposerLogger): Promise<EcsTaskMeta
     }
     return parseEcsTaskMetadata(await response.json());
   } catch (error) {
-    logger.debug("Failed to fetch ECS task metadata", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    logger.debug("Failed to fetch ECS task metadata", { error });
     return undefined;
   }
 }
@@ -256,6 +255,20 @@ export interface ActivityWorkerConfig<TContext = unknown> {
    * If not provided, defaults to the console-based defaultLogger.
    */
   logger?: ComposerLogger;
+
+  /**
+   * Custom payload and failure converters.
+   *
+   * A `failureConverterPath` here decides what an activity failure looks like in Temporal's
+   * event history and UI. The default converter writes the error's message and stack
+   * verbatim, so this is the only place to scrub them before Temporal stores them.
+   */
+  dataConverter?: DataConverter;
+
+  /**
+   * Interceptors forwarded to `Worker.create`. Only `activity` applies to this worker.
+   */
+  interceptors?: ComposerWorkerInterceptors;
 }
 
 /**
@@ -353,11 +366,14 @@ function createActivitiesFromWorkflows<TContext>(
         return result;
       } catch (error) {
         stepError = error instanceof Error ? error : new Error(String(error));
+        // The Error itself, not its message: flattening strips the structured fields (a
+        // driver error's `code`, `severity`, `table`, `constraint`) that the injected
+        // logger's serializer needs to classify the failure and rebuild a safe message.
         logger.error("Activity execution failed", {
           activityName,
           stepName,
           workflowId,
-          error: stepError.message,
+          error: stepError,
           code: isComposerError(error) ? error.code : undefined,
         });
         // Convert structured errors to ApplicationFailure to preserve the error code through serialization
@@ -380,9 +396,10 @@ function createActivitiesFromWorkflows<TContext>(
               activityName,
               stepName,
               workflowId,
-              cleanupError:
-                cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-              originalStepError: stepError?.message,
+              error: cleanupError,
+              // Name only: the step error is logged in full by the line above, and a second
+              // copy of its message is a second thing to redact.
+              originalStepErrorName: stepError?.name,
             });
           }
         }
@@ -488,6 +505,8 @@ export async function createActivityWorkers<TContext = unknown>(
     workflowCount,
     maxConcurrentActivityTaskExecutions: config.maxConcurrentActivityTaskExecutions,
     hasContextProvider: !!config.contextProvider,
+    hasDataConverter: !!config.dataConverter,
+    activityInterceptorCount: config.interceptors?.activity?.length ?? 0,
   });
 
   if (config.taskQueues.length === 0) {
@@ -519,10 +538,10 @@ export async function createActivityWorkers<TContext = unknown>(
 
   // Create workers for each task queue
   // Each queue gets all activities registered (Temporal handles routing)
-  // TODO: Add OpenTelemetry interceptor for trace context propagation in activities
-  // Once @temporalio/interceptors-opentelemetry is installed, add:
+  // TODO: Add OpenTelemetry interceptor for trace context propagation in activities, by
+  // appending to config.interceptors.activity:
   // import { OpenTelemetryActivityInboundInterceptor } from "@temporalio/interceptors-opentelemetry/lib/worker";
-  // Then add to Worker.create options: interceptors: { activity: [(ctx) => ({ inbound: new OpenTelemetryActivityInboundInterceptor(ctx) })] }
+  const activityInterceptors = config.interceptors?.activity;
   const workers = await Promise.all(
     config.taskQueues.map(async (taskQueue) => {
       const worker = await Worker.create({
@@ -531,6 +550,8 @@ export async function createActivityWorkers<TContext = unknown>(
         taskQueue,
         activities,
         maxConcurrentActivityTaskExecutions: config.maxConcurrentActivityTaskExecutions,
+        ...(config.dataConverter ? { dataConverter: config.dataConverter } : {}),
+        ...(activityInterceptors ? { interceptors: { activity: activityInterceptors } } : {}),
         // Enable Build ID versioning for safe rainbow deploys when a git hash is available.
         // PINNED ensures workflows started on a specific version continue using that version.
         ...(config.buildId
@@ -627,9 +648,7 @@ export async function runActivityWorkers<TContext = unknown>(
       try {
         worker.shutdown();
       } catch (error) {
-        logger.debug("Activity Worker shutdown request ignored", {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        logger.debug("Activity Worker shutdown request ignored", { error });
       }
     }
     logger.info("Activity Worker shutdown requested", {
@@ -665,9 +684,7 @@ export async function runActivityWorkers<TContext = unknown>(
     if (isShuttingDown) {
       return;
     }
-    logger.error("Activity Workers error", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    logger.error("Activity Workers error", { error });
     throw error;
   }
 }

@@ -100,9 +100,7 @@ export async function startActivityWorker<TContext>(
       workflows: options.workflows,
     });
   } catch (error) {
-    logger.error("Failed to start Activity Workers", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    logger.error("Failed to start Activity Workers", { error });
     process.exit(1);
   }
 }

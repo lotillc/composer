@@ -136,7 +136,7 @@ export async function runScheduleSync<TContext>(
     }
   } catch (error) {
     logger.error("Failed to sync Temporal schedules", {
-      error: error instanceof Error ? error.message : String(error),
+      error,
     });
     process.exit(1);
   }

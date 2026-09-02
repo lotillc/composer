@@ -30,7 +30,7 @@
 
 import type { WorkflowExecutionStatusName, WorkflowHandle } from "@temporalio/client";
 import { Client, Connection, WorkflowNotFoundError } from "@temporalio/client";
-import type { VersioningOverride } from "@temporalio/common";
+import type { DataConverter, PayloadCodec, VersioningOverride } from "@temporalio/common";
 import type { UUIDV7 } from "../../types";
 import type { WorkflowInput } from "../build/workflow-factory";
 
@@ -47,6 +47,16 @@ export interface TemporalClientConfig {
    * Temporal namespace
    */
   namespace: string;
+
+  /**
+   * Custom payload and failure converters. Must match what the workers use, or the client
+   * cannot decode the payloads and failures they wrote.
+   *
+   * Connections are cached per converter. Converter *paths* are compared as strings, but
+   * `payloadCodecs` entries are compared by object identity -- rebuilding a codec on each
+   * call opens a new connection each time. Hold codec instances at module scope.
+   */
+  dataConverter?: DataConverter;
 }
 
 /**
@@ -90,6 +100,31 @@ export interface ExecuteWorkflowOptions {
 
 const cachedClients = new Map<string, Promise<Client>>();
 
+// Converter paths are strings and go in as themselves, so a caller that rebuilds an
+// equivalent config object per call still hits the same cached connection rather than
+// leaking one per call. Codecs are opaque objects with no value identity, so they can only
+// be keyed on reference -- hence the note on `dataConverter` about holding them at module
+// scope. JSON.stringify rather than a delimiter: a path is free to contain any character.
+const codecIds = new WeakMap<PayloadCodec, number>();
+let nextCodecId = 0;
+
+function dataConverterCacheKey(dataConverter: DataConverter | undefined): string {
+  if (!dataConverter) return "";
+  const codecs = (dataConverter.payloadCodecs ?? []).map((codec) => {
+    let id = codecIds.get(codec);
+    if (id === undefined) {
+      id = ++nextCodecId;
+      codecIds.set(codec, id);
+    }
+    return id;
+  });
+  return JSON.stringify([
+    dataConverter.payloadConverterPath ?? null,
+    dataConverter.failureConverterPath ?? null,
+    codecs,
+  ]);
+}
+
 /**
  * Creates or returns a cached Temporal client connection.
  * Caches the connection Promise (not the resolved client) so concurrent
@@ -100,7 +135,7 @@ const cachedClients = new Map<string, Promise<Client>>();
  * @returns Temporal Client instance
  */
 export function createTemporalClient(config: TemporalClientConfig): Promise<Client> {
-  const cacheKey = `${config.address}:${config.namespace}`;
+  const cacheKey = `${config.address}:${config.namespace}:${dataConverterCacheKey(config.dataConverter)}`;
 
   const existing = cachedClients.get(cacheKey);
   if (existing) {
@@ -120,6 +155,7 @@ export function createTemporalClient(config: TemporalClientConfig): Promise<Clie
     return new Client({
       connection,
       namespace: config.namespace,
+      ...(config.dataConverter ? { dataConverter: config.dataConverter } : {}),
     });
   })();
 

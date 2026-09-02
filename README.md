@@ -307,6 +307,82 @@ const composer = createComposer({
 });
 ```
 
+When Composer logs a failure it puts the **`Error` object itself** on the metadata's `error`
+key, rather than a flattened `{ name, message, stack }`. Deciding what an error looks like in a
+log line is the logger's job, and a projection throws away what that decision needs: a database
+driver error's `code`, `severity`, `table` and `constraint` are gone before the logger sees
+them, leaving it only the message -- which for MikroORM/knex is the parameter-inlined SQL,
+quoting real row values.
+
+Give your logger an error serializer. `pino`'s `err` serializer, or your own:
+
+```typescript
+const composer = createComposer({
+  contextProvider,
+  logger: {
+    // ...
+    error: (msg, meta) => pino().error({ ...meta, error: serializeError(meta?.error) }, msg),
+  },
+});
+```
+
+A logger that `JSON.stringify`s its metadata will render an `Error` as `{}` -- that is the
+serializer's absence showing, not Composer withholding anything.
+
+### Error Messages on Trace Spans
+
+Span attributes go straight to the trace backend without passing through the logger, so
+whatever redaction the logger applies does not reach them. Composer cannot vouch for a step
+error's message, so by default it attaches **no message to any span** -- only
+`workflow.error.type` / `step.error.type`, the error's name -- and `recordException` is called
+with a name-only exception rather than the `Error`, whose `stack` header line repeats the
+message.
+
+Supply `traceErrorMessage` to put text back on the span, on your terms:
+
+```typescript
+const composer = createComposer({
+  contextProvider,
+  // Return undefined for an error whose message should stay off the span.
+  traceErrorMessage: (error) => describeError(error).message,
+});
+```
+
+The full `Error` still reaches the logger either way; this controls the trace sink only. It
+applies to sync workflow runs -- async runs use Temporal's own observability.
+
+### Scrubbing Temporal Failures
+
+Temporal persists an `ApplicationFailure`'s message and stack in event history and renders
+them in the Temporal UI. Neither passes through any logging redaction, so an activity that
+fails on a driver error puts the inlined SQL, row values and all, at rest outside every
+redaction path.
+
+`dataConverter` and `interceptors` are the seams for rewriting a failure before Temporal ever
+sees it. Both are configured once on `temporal`, so every worker Composer starts and every
+client it opens gets them:
+
+```typescript
+const composer = createComposer({
+  contextProvider,
+  temporal: {
+    serverAddress: "localhost:7233",
+    namespace: "my-namespace",
+    serviceName: "my-service",
+    // A module with a `failureConverter` named export.
+    dataConverter: { failureConverterPath: require.resolve("./scrubbing-failure-converter") },
+    interceptors: {
+      activity: [() => ({ inbound: { execute: scrubbingExecute } } )],
+    },
+  },
+});
+```
+
+`dataConverter` reaches both worker types **and** the client -- a converter installed only on
+the workers leaves the client unable to decode what they wrote. Of `interceptors`, `activity`
+goes to activity workers and `workflowModules` to workflow workers; neither is forwarded to
+the worker that cannot run it.
+
 ## CLI
 
 The package includes a CLI for building and managing Temporal workflow/activity bundles. It reads configuration from a `composer.build-config.ts` file in your package root.
@@ -458,6 +534,9 @@ Defaults can be overridden per-deployment via `workerProfiles` in `composer.buil
 | Export | Description |
 |--------|-------------|
 | `createComposer` | Create a configured Composer instance |
+| `ComposerConfig` | Type: options accepted by `createComposer` |
+| `ComposerWorkerInterceptors` | Type: worker interceptors forwarded to Temporal |
+| `TraceErrorMessage` | Type: renders an error into span text |
 | `createWorkflow` | Create a workflow with compile-time dependency validation |
 | `step` | Factory for creating type-safe steps |
 | `use` | Compose a child workflow into a parent |

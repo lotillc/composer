@@ -9,6 +9,8 @@
  */
 
 import type { WorkflowExecutionStatusName } from "@temporalio/client";
+import type { DataConverter } from "@temporalio/common";
+import type { ActivityInterceptorsFactory } from "@temporalio/worker";
 import type { ScheduleDefinition } from "./async/schedule/define-schedule";
 import type { SyncSchedulesResult } from "./async/schedule/sync-schedules";
 import type {
@@ -22,7 +24,7 @@ import type {
   Workflow,
   WorkflowResult,
 } from "./dag-sync-workflow";
-import type { ComposerLogger } from "./types";
+import type { ComposerLogger, TraceErrorMessage } from "./types";
 
 /**
  * Step Context Provider - manages context lifecycle for steps.
@@ -120,6 +122,35 @@ export interface ComposerConfig<TContext> {
    * When omitted, it returns a `SyncComposer` with only `runSyncWorkflow`.
    */
   temporal?: TemporalConfig;
+
+  /**
+   * Renders an error into the text attached to trace spans for sync workflow runs.
+   *
+   * Defaults to attaching no message: span attributes reach the trace backend without
+   * passing through whatever redaction the logger applies, and Composer cannot vouch for
+   * a step error's message. See {@link TraceErrorMessage}.
+   */
+  traceErrorMessage?: TraceErrorMessage;
+}
+
+/**
+ * Worker-side interceptors Composer forwards to Temporal's `Worker.create`.
+ */
+export interface ComposerWorkerInterceptors {
+  /**
+   * Activity interceptor factories, applied to every activity worker.
+   *
+   * An inbound `execute` interceptor is the seam for rewriting an activity's failure
+   * before Temporal records it: Temporal persists an `ApplicationFailure`'s message and
+   * stack in event history and renders them in the Temporal UI, where no logging
+   * redaction reaches them.
+   */
+  activity?: ActivityInterceptorsFactory[];
+
+  /**
+   * Modules exporting an `interceptors` factory, loaded into the workflow sandbox.
+   */
+  workflowModules?: string[];
 }
 
 /**
@@ -142,6 +173,22 @@ export interface TemporalConfig {
    * When unset (e.g., local dev), Worker Versioning is disabled.
    */
   buildId?: string;
+
+  /**
+   * Custom payload and failure converters, applied to both worker types and to the client
+   * Composer uses to start and await workflows.
+   *
+   * `failureConverterPath` is the seam for scrubbing a failure on its way into Temporal:
+   * the default converter writes an error's message and stack to event history verbatim.
+   * Both halves matter -- a converter installed only on the workers leaves the client
+   * unable to decode what they wrote.
+   */
+  dataConverter?: DataConverter;
+
+  /**
+   * Interceptors applied to the workers Composer creates.
+   */
+  interceptors?: ComposerWorkerInterceptors;
 }
 
 /**

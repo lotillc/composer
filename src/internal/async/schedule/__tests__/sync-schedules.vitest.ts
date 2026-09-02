@@ -3,12 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MANAGED_BY_MEMO_KEY, MANAGED_BY_MEMO_VALUE } from "../constants";
 import type { ScheduleDefinition } from "../define-schedule";
 
-const { mockCreate, mockGetHandle, mockScheduleList, mockConnectionClose } = vi.hoisted(() => ({
-  mockCreate: vi.fn(),
-  mockGetHandle: vi.fn(),
-  mockScheduleList: vi.fn(),
-  mockConnectionClose: vi.fn().mockResolvedValue(undefined),
-}));
+const { mockCreate, mockGetHandle, mockScheduleList, mockConnectionClose, clientOptions } =
+  vi.hoisted(() => ({
+    mockCreate: vi.fn(),
+    mockGetHandle: vi.fn(),
+    mockScheduleList: vi.fn(),
+    mockConnectionClose: vi.fn().mockResolvedValue(undefined),
+    clientOptions: [] as Array<Record<string, unknown>>,
+  }));
 
 vi.mock("@temporalio/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@temporalio/client")>();
@@ -23,6 +25,9 @@ vi.mock("@temporalio/client", async (importOriginal) => {
         getHandle: mockGetHandle,
         list: mockScheduleList,
       };
+      constructor(options: Record<string, unknown>) {
+        clientOptions.push(options);
+      }
     },
   };
 });
@@ -66,6 +71,7 @@ describe("syncSchedules", () => {
     mockGetHandle.mockReset();
     mockScheduleList.mockReset();
     silentLogger.info.mockReset();
+    silentLogger.error.mockReset();
   });
 
   it("creates a new schedule when it does not exist", async () => {
@@ -387,5 +393,106 @@ describe("syncSchedules", () => {
         }),
       }),
     );
+  });
+});
+
+// The returned `errors[]` entry stays a string -- it is a value a caller reads -- but the log
+// line gets the Error, so a serializer can still see what kind of failure it was.
+describe("syncSchedules failure logging", () => {
+  beforeEach(() => {
+    mockCreate.mockReset();
+    mockGetHandle.mockReset();
+    mockScheduleList.mockReset();
+    silentLogger.error.mockReset();
+  });
+
+  it("logs a create failure as the Error and reports it as a string", async () => {
+    const createFailure = Object.assign(new Error("permission denied for schedule"), {
+      code: "PERMISSION_DENIED",
+    });
+    mockScheduleList.mockReturnValue(createMockListIterator([]));
+    mockCreate.mockRejectedValue(createFailure);
+
+    const { syncSchedules } = await import("../sync-schedules");
+    const result = await syncSchedules({
+      temporalConfig: { address: "localhost:7233", namespace: "default" },
+      schedules: [makeDefinition({ scheduleId: "doomed-schedule" })],
+      logger: silentLogger,
+    });
+
+    expect(silentLogger.error).toHaveBeenCalledWith("Failed to sync schedule", {
+      scheduleId: "doomed-schedule",
+      error: createFailure,
+    });
+    expect(result.errors).toEqual([
+      { scheduleId: "doomed-schedule", error: "permission denied for schedule" },
+    ]);
+  });
+
+  it("logs a delete failure as the Error and reports it as a string", async () => {
+    const deleteFailure = new Error("schedule is running");
+    mockScheduleList.mockReturnValue(
+      createMockListIterator([
+        {
+          scheduleId: "orphan-schedule",
+          memo: { [MANAGED_BY_MEMO_KEY]: MANAGED_BY_MEMO_VALUE },
+        },
+      ]),
+    );
+    mockGetHandle.mockReturnValue({ delete: vi.fn().mockRejectedValue(deleteFailure) });
+
+    const { syncSchedules } = await import("../sync-schedules");
+    const result = await syncSchedules({
+      temporalConfig: { address: "localhost:7233", namespace: "default" },
+      schedules: [],
+      logger: silentLogger,
+    });
+
+    expect(silentLogger.error).toHaveBeenCalledWith("Failed to delete schedule", {
+      scheduleId: "orphan-schedule",
+      error: deleteFailure,
+    });
+    expect(result.errors).toEqual([
+      { scheduleId: "orphan-schedule", error: "schedule is running" },
+    ]);
+  });
+});
+
+// A schedule's initialData is encoded by this client and decoded by the workers, so the
+// client syncSchedules opens needs the same converter every other client gets.
+describe("syncSchedules dataConverter", () => {
+  beforeEach(() => {
+    mockCreate.mockReset();
+    mockScheduleList.mockReset();
+    clientOptions.length = 0;
+  });
+
+  it("passes the dataConverter to the Client it opens", async () => {
+    const dataConverter = { failureConverterPath: "/srv/scrubbing-failure-converter.js" };
+    mockScheduleList.mockReturnValue(createMockListIterator([]));
+    mockCreate.mockResolvedValue(undefined);
+
+    const { syncSchedules } = await import("../sync-schedules");
+    await syncSchedules({
+      temporalConfig: { address: "localhost:7233", namespace: "default", dataConverter },
+      schedules: [makeDefinition()],
+      logger: silentLogger,
+    });
+
+    expect(clientOptions.at(-1)?.dataConverter).toBe(dataConverter);
+  });
+
+  it("omits the key entirely when no converter is configured", async () => {
+    mockScheduleList.mockReturnValue(createMockListIterator([]));
+    mockCreate.mockResolvedValue(undefined);
+
+    const { syncSchedules } = await import("../sync-schedules");
+    await syncSchedules({
+      temporalConfig: { address: "localhost:7233", namespace: "default" },
+      schedules: [makeDefinition()],
+      logger: silentLogger,
+    });
+
+    expect(clientOptions.at(-1)).not.toHaveProperty("dataConverter");
   });
 });

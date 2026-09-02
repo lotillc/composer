@@ -19,6 +19,7 @@ import type {
   ScheduleUpdateOptions,
 } from "@temporalio/client";
 import { Client, Connection, ScheduleAlreadyRunning } from "@temporalio/client";
+import type { DataConverter } from "@temporalio/common";
 import { defaultLogger } from "../../defaults";
 import type { ComposerLogger } from "../../types";
 import { MANAGED_BY_MEMO_KEY, MANAGED_BY_MEMO_VALUE } from "./constants";
@@ -32,6 +33,11 @@ export interface TemporalScheduleConfig {
   address: string;
   /** Temporal namespace (e.g., "default") */
   namespace: string;
+  /**
+   * Custom payload and failure converters. A schedule's `initialData` is encoded by this
+   * client and decoded by the workers, so it has to match theirs.
+   */
+  dataConverter?: DataConverter;
 }
 
 /**
@@ -133,7 +139,11 @@ export async function syncSchedules(config: SyncSchedulesConfig): Promise<SyncSc
 
   const connection = await Connection.connect({ address: temporalConfig.address });
   try {
-    const client = new Client({ connection, namespace: temporalConfig.namespace });
+    const client = new Client({
+      connection,
+      namespace: temporalConfig.namespace,
+      ...(temporalConfig.dataConverter ? { dataConverter: temporalConfig.dataConverter } : {}),
+    });
 
     // Collect all composer-managed schedules currently on the server
     const existingManagedIds = new Set<string>();
@@ -179,9 +189,11 @@ export async function syncSchedules(config: SyncSchedulesConfig): Promise<SyncSc
           result.created.push(scheduleId);
         }
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        logger.error("Failed to sync schedule", { scheduleId, error: errorMessage });
-        result.errors.push({ scheduleId, error: errorMessage });
+        logger.error("Failed to sync schedule", { scheduleId, error: err });
+        result.errors.push({
+          scheduleId,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 
@@ -198,12 +210,11 @@ export async function syncSchedules(config: SyncSchedulesConfig): Promise<SyncSc
           }
           result.deleted.push(existingId);
         } catch (err) {
-          const errorMessage = err instanceof Error ? err.message : String(err);
-          logger.error("Failed to delete schedule", {
+          logger.error("Failed to delete schedule", { scheduleId: existingId, error: err });
+          result.errors.push({
             scheduleId: existingId,
-            error: errorMessage,
+            error: err instanceof Error ? err.message : String(err),
           });
-          result.errors.push({ scheduleId: existingId, error: errorMessage });
         }
       }
     }

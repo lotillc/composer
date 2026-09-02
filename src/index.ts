@@ -18,6 +18,8 @@ export {
   type AsyncStepRuntime,
   type AsyncWorkflowOptions,
   type Composer,
+  type ComposerConfig,
+  type ComposerWorkerInterceptors,
   createComposer,
   createWorkflow,
   type DurationString,
@@ -103,5 +105,5 @@ export {
   WorkflowErrorHandlerFailure,
   WorkflowStepError,
 } from "./internal/errors";
-export type { ComposerLogger } from "./internal/types";
+export type { ComposerLogger, TraceErrorMessage } from "./internal/types";
 export type { WorkflowExecutionStatusName } from "@temporalio/client";

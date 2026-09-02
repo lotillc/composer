@@ -24,8 +24,10 @@
  */
 
 import { dirname, resolve } from "node:path";
+import type { DataConverter } from "@temporalio/common";
 import { VersioningBehavior } from "@temporalio/common";
 import { NativeConnection, Worker } from "@temporalio/worker";
+import type { ComposerWorkerInterceptors } from "../../context-provider";
 import type { Workflow } from "../../dag-sync-workflow";
 import { defaultLogger } from "../../defaults";
 import type { ComposerLogger } from "../../types";
@@ -102,6 +104,17 @@ export interface WorkflowWorkerConfig {
    * If not provided, defaults to the console-based defaultLogger.
    */
   logger?: ComposerLogger;
+
+  /**
+   * Custom payload and failure converters. Must match the activity workers' and the
+   * client's, or the three cannot decode each other's payloads and failures.
+   */
+  dataConverter?: DataConverter;
+
+  /**
+   * Interceptors forwarded to `Worker.create`. Only `workflowModules` applies to this worker.
+   */
+  interceptors?: ComposerWorkerInterceptors;
 }
 
 /**
@@ -171,6 +184,7 @@ export async function createWorkflowWorkers(
   // normally. Try removing the hook + getTemporalWorkflowNodeModulesDir and
   // verify the workflow worker still starts.
   const temporalNodeModulesDir = getTemporalWorkflowNodeModulesDir();
+  const workflowInterceptorModules = config.interceptors?.workflowModules;
 
   // Create workers for each task queue
   // Note: Temporal requires one Worker per task queue, but they all load the same workflows
@@ -182,6 +196,10 @@ export async function createWorkflowWorkers(
         taskQueue,
         workflowsPath,
         maxConcurrentWorkflowTaskExecutions: finalConfig.maxConcurrentWorkflowTaskExecutions,
+        ...(config.dataConverter ? { dataConverter: config.dataConverter } : {}),
+        ...(workflowInterceptorModules
+          ? { interceptors: { workflowModules: workflowInterceptorModules } }
+          : {}),
         // Enable Build ID versioning for safe rainbow deploys when a git hash is available.
         // PINNED ensures workflows started on a specific version continue using that version.
         ...(config.buildId
@@ -281,9 +299,7 @@ export async function runWorkflowWorkers(config: WorkflowWorkerConfig): Promise<
   try {
     await Promise.all(workers.map((worker) => worker.run()));
   } catch (error) {
-    logger.error("Workflow Workers error", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    logger.error("Workflow Workers error", { error });
     throw error;
   }
 }

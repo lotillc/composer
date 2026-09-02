@@ -173,8 +173,9 @@ describe("startActivityWorker", () => {
 
   describe("Error Handling", () => {
     it("should exit with code 1 if runActivityWorkers fails", async () => {
+      const startFailure = new Error("Worker failed to start");
       const composer = createMockComposer({
-        runActivityWorkers: vi.fn().mockRejectedValue(new Error("Worker failed to start")),
+        runActivityWorkers: vi.fn().mockRejectedValue(startFailure),
       });
 
       await startActivityWorker(composer, {
@@ -186,13 +187,14 @@ describe("startActivityWorker", () => {
       expect(mockExit).toHaveBeenCalledWith(1);
       expect(composer.logger.error).toHaveBeenCalledWith(
         "Failed to start Activity Workers",
-        expect.objectContaining({ error: "Worker failed to start" }),
+        expect.objectContaining({ error: startFailure }),
       );
     });
 
     it("should exit with code 1 if ensureNamespaceExists fails", async () => {
+      const namespaceFailure = new Error("Cannot connect to Temporal");
       const composer = createMockComposer();
-      mockEnsureNamespaceExists.mockRejectedValue(new Error("Cannot connect to Temporal"));
+      mockEnsureNamespaceExists.mockRejectedValue(namespaceFailure);
 
       await startActivityWorker(composer, {
         taskQueues: ["standard-tasks"],
@@ -203,7 +205,7 @@ describe("startActivityWorker", () => {
       expect(mockExit).toHaveBeenCalledWith(1);
       expect(composer.logger.error).toHaveBeenCalledWith(
         "Failed to start Activity Workers",
-        expect.objectContaining({ error: "Cannot connect to Temporal" }),
+        expect.objectContaining({ error: namespaceFailure }),
       );
     });
 

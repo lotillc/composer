@@ -18,6 +18,8 @@ export {
 export type {
   AsyncWorkflowOptions,
   Composer,
+  ComposerConfig,
+  ComposerWorkerInterceptors,
   StepContextProvider,
   SyncComposer,
   TemporalConfig,

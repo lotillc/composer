@@ -259,7 +259,8 @@ describe("syncSchedulesViaLambda", () => {
     });
 
     it("exits 1 when the AWS SDK throws during invocation", async () => {
-      mocks.lambdaSend.mockRejectedValue(new Error("network unreachable"));
+      const invokeFailure = new Error("network unreachable");
+      mocks.lambdaSend.mockRejectedValue(invokeFailure);
 
       const composer = createMockComposer();
 
@@ -276,7 +277,7 @@ describe("syncSchedulesViaLambda", () => {
         "Failed to invoke schedule-sync Lambda",
         expect.objectContaining({
           lambdaFunctionName: "test-schedule-sync",
-          error: "network unreachable",
+          error: invokeFailure,
         }),
       );
     });

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createComposer, createWorkflow } from "../internal";
+import { WorkflowBatchError } from "../internal/errors";
 import { createMockSpan, mockLogger, mockMetrics, mockTracer } from "./observability-mocks";
 import { createTestStep, noOpContextProvider, type TestBag } from "./test-utils";
 
@@ -500,6 +501,78 @@ describe("Observability End-to-End Component Tests", () => {
           ]),
         }),
       );
+    });
+  });
+
+  // A step error's message is whatever the step threw -- for a database driver, the fully
+  // parameter-inlined SQL. It goes to the logger, which the consumer can scrub; it reaches a
+  // span only through the renderer the consumer supplies.
+  describe("Error message routing", () => {
+    const inlinedSql = `insert into "user" ("email") values ('jane@example.com')`;
+
+    const failingWorkflow = () =>
+      createWorkflow<TestBag>("leaky-workflow")
+        .requires("input")
+        .build([
+          createTestStep("failingStep", ["input"], ["processed"], () => {
+            throw new Error(inlinedSql);
+          }),
+        ]);
+
+    const spanAttributes = () =>
+      mockTracer.startSpan.mock.results
+        .map((result) => vi.mocked(result.value.setAttributes).mock.calls)
+        .flat(2);
+
+    it("keeps the raw message off every span by default", async () => {
+      const composer = createComposer({
+        contextProvider: noOpContextProvider,
+        logger: mockLogger,
+      });
+
+      await composer.runSyncWorkflow(failingWorkflow(), { input: "test" });
+
+      expect(JSON.stringify(spanAttributes())).not.toContain("jane@example.com");
+      // The failure still names itself on the span -- only the message is withheld.
+      expect(spanAttributes()).toContainEqual(
+        expect.objectContaining({ "workflow.error.type": "WorkflowBatchError" }),
+      );
+    });
+
+    it("puts the renderer's text on the span when one is configured", async () => {
+      const composer = createComposer({
+        contextProvider: noOpContextProvider,
+        logger: mockLogger,
+        traceErrorMessage: (error) => error.message.replace(/'[^']*'/g, "'?'"),
+      });
+
+      await composer.runSyncWorkflow(failingWorkflow(), { input: "test" });
+
+      const serialized = JSON.stringify(spanAttributes());
+      expect(serialized).not.toContain("jane@example.com");
+      expect(serialized).toContain("values ('?')");
+    });
+
+    // The projection this replaced was `{ name, message, stack }`, which severed the chain
+    // below the top-level wrapper -- leaving a serializer nothing to classify on.
+    it("hands the logger the Error itself, its cause chain reachable", async () => {
+      const composer = createComposer({
+        contextProvider: noOpContextProvider,
+        logger: mockLogger,
+      });
+
+      const { error } = await composer.runSyncWorkflow(failingWorkflow(), { input: "test" });
+
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        "Workflow execution failed",
+        expect.objectContaining({ error }),
+      );
+
+      const logged = vi.mocked(mockLogger.error).mock.calls.at(-1)?.[1]?.error;
+      expect(logged).toBeInstanceOf(WorkflowBatchError);
+      const stepError = (logged as WorkflowBatchError).errors[0];
+      expect(stepError?.originalError).toBeInstanceOf(Error);
+      expect(stepError?.originalError.message).toContain("jane@example.com");
     });
   });
 });

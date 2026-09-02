@@ -99,9 +99,7 @@ export async function startWorkflowWorker<TContext>(
       workflows: options.workflows,
     });
   } catch (error) {
-    logger.error("Failed to start Workflow Workers", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    logger.error("Failed to start Workflow Workers", { error });
     process.exit(1);
   }
 }

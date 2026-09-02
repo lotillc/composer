@@ -183,7 +183,7 @@ export async function syncSchedulesViaLambda<TContext>(
   } catch (error) {
     logger.error("Failed to invoke schedule-sync Lambda", {
       lambdaFunctionName: options.lambdaFunctionName,
-      error: error instanceof Error ? error.message : String(error),
+      error,
     });
     process.exit(1);
   }
