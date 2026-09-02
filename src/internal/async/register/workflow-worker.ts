@@ -30,6 +30,7 @@ import { NativeConnection, Worker } from "@temporalio/worker";
 import type { ComposerWorkerInterceptors } from "../../context-provider";
 import type { Workflow } from "../../dag-sync-workflow";
 import { defaultLogger } from "../../defaults";
+import { errorForLog } from "../../error-for-log";
 import type { ComposerLogger } from "../../types";
 import { writeWorkflowSourceFile } from "./generate-workflow-source";
 
@@ -299,7 +300,7 @@ export async function runWorkflowWorkers(config: WorkflowWorkerConfig): Promise<
   try {
     await Promise.all(workers.map((worker) => worker.run()));
   } catch (error) {
-    logger.error("Workflow Workers error", { error });
+    logger.error("Workflow Workers error", { error: errorForLog(error) });
     throw error;
   }
 }

@@ -12,6 +12,7 @@ import {
 import type { Step } from "./dag-sync-step";
 import type { Workflow } from "./dag-sync-workflow";
 import { createDefaultMetrics } from "./defaults";
+import { safeErrorCode, safeErrorName } from "./error-for-log";
 import { enableDebugLogging } from "./errors";
 import type {
   ComposerLogger,
@@ -38,16 +39,16 @@ function renderTraceMessage(
 ): string | undefined {
   if (!traceErrorMessage) return undefined;
   try {
-    return traceErrorMessage(error);
+    const rendered = traceErrorMessage(error);
+    return typeof rendered === "string" ? rendered : undefined;
   } catch {
     return undefined;
   }
 }
 
 // Span attributes bypass whatever redaction a consumer applies to its logs, so the error
-// message is attached only when the consumer supplies a renderer that vouches for it. Name
-// and code always go on: a code is an identifier, not prose, and between them they say what
-// failed without quoting anything the step touched.
+// message is attached only when the consumer supplies a renderer that vouches for it. A name
+// or code only goes on when it is identifier-shaped; both are otherwise user-controlled text.
 function recordSpanError(
   span: Span,
   prefix: string,
@@ -55,16 +56,17 @@ function recordSpanError(
   traceErrorMessage: TraceErrorMessage | undefined,
 ): void {
   const message = renderTraceMessage(error, traceErrorMessage);
-  const code = (error as { code?: unknown }).code;
+  const name = safeErrorName(error.name);
+  const code = safeErrorCode((error as { code?: unknown }).code);
   span.setAttributes({
     [`${prefix}.status`]: "error",
-    [`${prefix}.error.type`]: error.name,
-    ...(typeof code === "string" ? { [`${prefix}.error.code`]: code } : {}),
+    [`${prefix}.error.type`]: name,
+    ...(code === undefined ? {} : { [`${prefix}.error.code`]: code }),
     ...(message === undefined ? {} : { [`${prefix}.error.message`]: message }),
   });
   // Never the Error itself: recordException would copy `message` and the stack -- whose header
   // line repeats it -- onto the span as `exception.*`.
-  span.recordException(message === undefined ? { name: error.name } : { name: error.name, message });
+  span.recordException(message === undefined ? { name } : { name, message });
   span.setStatus({
     code: SpanStatusCode.ERROR,
     ...(message === undefined ? {} : { message }),

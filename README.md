@@ -342,13 +342,13 @@ logger into it. Those lines are outside this seam.
 Span attributes go straight to the trace backend without passing through the logger, so
 whatever redaction the logger applies does not reach them. Composer cannot vouch for a step
 error's message, so by default it attaches **no message to any span** -- only
-`workflow.error.type` / `step.error.type`, the error's name -- and `recordException` is called
-with a name-only exception rather than the `Error`, whose `stack` header line repeats the
-message.
+`workflow.error.type` / `step.error.type`, a built-in or Composer error name (otherwise `Error`)
+-- and `recordException` is called with a name-only exception rather than the `Error`, whose
+`stack` header line repeats the message.
 
-Spans still carry `*.error.type` (the error's name) and `*.error.code` where the error has a
-string `code`, so a failure is still identifiable in a trace. The span status description is
-empty unless a message is rendered.
+Spans still carry `*.error.type` and `*.error.code` where the error supplies a Composer code or
+a five-digit SQLSTATE, so a failure is still identifiable in a trace. The span status description
+is empty unless a message is rendered.
 
 Supply `traceErrorMessage` to put text back on the span, on your terms:
 

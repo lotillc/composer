@@ -25,6 +25,7 @@
 
 import type { Composer } from "../../context-provider";
 import type { Workflow } from "../../dag-sync-workflow";
+import { errorForLog } from "../../error-for-log";
 import { ensureNamespaceExists } from "../utils/ensure-namespace";
 
 /**
@@ -100,7 +101,7 @@ export async function startActivityWorker<TContext>(
       workflows: options.workflows,
     });
   } catch (error) {
-    logger.error("Failed to start Activity Workers", { error });
+    logger.error("Failed to start Activity Workers", { error: errorForLog(error) });
     process.exit(1);
   }
 }

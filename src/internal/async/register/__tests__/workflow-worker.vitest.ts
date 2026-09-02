@@ -222,6 +222,18 @@ describe("Workflow Workers", () => {
 
       expect(logger.error).toHaveBeenCalledWith("Workflow Workers error", { error: runFailure });
     });
+
+    it("does not pass a non-Error worker failure object's fields to the logger", async () => {
+      const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+      const rejection = { password: "customer-secret" };
+      mockWorkerInstance.run.mockRejectedValue(rejection);
+
+      await expect(runWorkflowWorkers(createTestConfig({ logger }))).rejects.toBe(rejection);
+
+      const loggedError = logger.error.mock.calls[0]?.[1]?.error as Error;
+      expect(loggedError.message).toBe("A non-Error value was thrown");
+      expect(loggedError).not.toBe(rejection);
+    });
   });
 
   describe("Failure scrubbing seams", () => {

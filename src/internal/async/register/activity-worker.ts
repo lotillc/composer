@@ -36,6 +36,7 @@ import type { FanOutMetadata } from "../../dag-sync-fanout";
 import type { AsyncStepRuntime, Step } from "../../dag-sync-step";
 import type { Workflow } from "../../dag-sync-workflow";
 import { defaultLogger } from "../../defaults";
+import { errorForLog } from "../../error-for-log";
 import type { ComposerLogger } from "../../types";
 import { denamespaceSyntheticSteps } from "../build-scripts/utils/common";
 import { isFanOut } from "../build-scripts/utils/type-guards";
@@ -161,7 +162,7 @@ async function fetchEcsTaskMetadata(logger: ComposerLogger): Promise<EcsTaskMeta
     }
     return parseEcsTaskMetadata(await response.json());
   } catch (error) {
-    logger.debug("Failed to fetch ECS task metadata", { error });
+    logger.debug("Failed to fetch ECS task metadata", { error: errorForLog(error) });
     return undefined;
   }
 }
@@ -365,7 +366,7 @@ function createActivitiesFromWorkflows<TContext>(
         });
         return result;
       } catch (error) {
-        stepError = error instanceof Error ? error : new Error(String(error));
+        stepError = errorForLog(error);
         // The Error itself, not its message: flattening strips the structured fields (a
         // driver error's `code`, `severity`, `table`, `constraint`) that the injected
         // logger's serializer needs to classify the failure and rebuild a safe message.
@@ -396,7 +397,7 @@ function createActivitiesFromWorkflows<TContext>(
               activityName,
               stepName,
               workflowId,
-              error: cleanupError,
+              error: errorForLog(cleanupError),
               // Name only: the step error is logged in full by the line above, and a second
               // copy of its message is a second thing to redact.
               originalStepErrorName: stepError?.name,
@@ -648,7 +649,7 @@ export async function runActivityWorkers<TContext = unknown>(
       try {
         worker.shutdown();
       } catch (error) {
-        logger.debug("Activity Worker shutdown request ignored", { error });
+        logger.debug("Activity Worker shutdown request ignored", { error: errorForLog(error) });
       }
     }
     logger.info("Activity Worker shutdown requested", {
@@ -684,7 +685,7 @@ export async function runActivityWorkers<TContext = unknown>(
     if (isShuttingDown) {
       return;
     }
-    logger.error("Activity Workers error", { error });
+    logger.error("Activity Workers error", { error: errorForLog(error) });
     throw error;
   }
 }

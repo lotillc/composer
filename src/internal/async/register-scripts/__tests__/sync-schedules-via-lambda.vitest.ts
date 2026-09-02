@@ -227,18 +227,16 @@ describe("syncSchedulesViaLambda", () => {
       expect(mockExit).toHaveBeenCalledWith(1);
       expect(composer.logger.error).toHaveBeenCalledWith("Schedule failed to sync", {
         scheduleId: "broken-1",
-        error: "boom",
       });
       expect(composer.logger.error).toHaveBeenCalledWith("Schedule failed to sync", {
         scheduleId: "broken-2",
-        error: "kaboom",
       });
     });
 
     it("exits 1 when the Lambda returns a FunctionError", async () => {
       mocks.lambdaSend.mockResolvedValue({
         FunctionError: "Unhandled",
-        Payload: encodePayload({ errorType: "ValidationError", errorMessage: "bad payload" }),
+        Payload: new Uint8Array([0xff]),
       });
 
       const composer = createMockComposer();
@@ -252,9 +250,25 @@ describe("syncSchedulesViaLambda", () => {
       ).rejects.toThrow("process.exit(1)");
 
       expect(mockExit).toHaveBeenCalledWith(1);
+      expect(composer.logger.error).toHaveBeenCalledWith("Schedule-sync Lambda returned FunctionError", {
+        functionError: "Unhandled",
+      });
+    });
+
+    it("exits generically when a successful Lambda response is not JSON", async () => {
+      mocks.lambdaSend.mockResolvedValue({ Payload: new Uint8Array([0xff]) });
+      const composer = createMockComposer();
+
+      await expect(
+        syncSchedulesViaLambda(composer, {
+          schedules: [makeDefinition({ environments: ["prod"] })],
+          lambdaFunctionName: "test-schedule-sync",
+          currentEnvironment: "prod",
+        }),
+      ).rejects.toThrow("process.exit(1)");
+
       expect(composer.logger.error).toHaveBeenCalledWith(
-        "Schedule-sync Lambda returned FunctionError",
-        expect.objectContaining({ functionError: "Unhandled" }),
+        "Schedule-sync Lambda returned a malformed response",
       );
     });
 

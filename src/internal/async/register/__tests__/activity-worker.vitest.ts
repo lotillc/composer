@@ -350,6 +350,30 @@ describe("Activity Worker", () => {
         ).rejects.toThrow("Step business logic failed");
       });
 
+      it("does not stringify a non-Error step rejection for logger metadata", async () => {
+        const logger = makeLogger();
+        const rejection = { toString: () => "customer-secret@example.com" };
+        mockStepRun.mockRejectedValueOnce(rejection);
+
+        await createActivityWorkers(createTestConfig({ logger }));
+
+        const createCall = mockWorkerCreate.mock.calls[0]?.[0];
+        expect(createCall).toBeDefined();
+        const activityFn = createCall!.activities.testStep;
+
+        await expect(
+          (activityFn as (a: unknown, b: unknown) => Promise<unknown>)({}, { input: "test" }),
+        ).rejects.toBe(rejection);
+        expect(logger.error).toHaveBeenCalledWith(
+          "Activity execution failed",
+          expect.objectContaining({
+            error: expect.objectContaining({ message: "A non-Error value was thrown" }),
+          }),
+        );
+        const loggedError = logger.error.mock.calls[0]?.[1]?.error as Error;
+        expect(loggedError.message).not.toContain("customer-secret@example.com");
+      });
+
       // The error code has to land in ApplicationFailure.type: that is the only
       // field Temporal compares against RetryPolicy.nonRetryableErrorTypes, so
       // this mapping is what makes `asyncRetry.nonRetryableErrorTypes` match.

@@ -191,6 +191,26 @@ describe("startWorkflowWorker", () => {
       );
     });
 
+    it("does not pass a non-Error worker failure object's fields to the logger", async () => {
+      const rejection = { password: "customer-secret" };
+      const composer = createMockComposer({
+        runWorkflowWorkers: vi.fn().mockRejectedValue(rejection),
+      });
+
+      await startWorkflowWorker(composer, {
+        taskQueues: ["workflow-tasks"],
+        maxConcurrentWorkflowTaskExecutions: 100,
+        workflows: mockWorkflows,
+      });
+
+      expect(composer.logger.error).toHaveBeenCalledWith(
+        "Failed to start Workflow Workers",
+        expect.objectContaining({
+          error: expect.objectContaining({ message: "A non-Error value was thrown" }),
+        }),
+      );
+    });
+
     it("should exit with code 1 if ensureNamespaceExists fails", async () => {
       const namespaceFailure = new Error("Cannot connect to Temporal");
       const composer = createMockComposer();

@@ -21,6 +21,7 @@ import type {
 import { Client, Connection, ScheduleAlreadyRunning } from "@temporalio/client";
 import type { DataConverter } from "@temporalio/common";
 import { defaultLogger } from "../../defaults";
+import { errorForLog } from "../../error-for-log";
 import type { ComposerLogger } from "../../types";
 import { MANAGED_BY_MEMO_KEY, MANAGED_BY_MEMO_VALUE } from "./constants";
 import type { ScheduleDefinition } from "./define-schedule";
@@ -189,7 +190,7 @@ export async function syncSchedules(config: SyncSchedulesConfig): Promise<SyncSc
           result.created.push(scheduleId);
         }
       } catch (err) {
-        logger.error("Failed to sync schedule", { scheduleId, error: err });
+        logger.error("Failed to sync schedule", { scheduleId, error: errorForLog(err) });
         result.errors.push({
           scheduleId,
           error: err instanceof Error ? err.message : String(err),
@@ -210,7 +211,10 @@ export async function syncSchedules(config: SyncSchedulesConfig): Promise<SyncSc
           }
           result.deleted.push(existingId);
         } catch (err) {
-          logger.error("Failed to delete schedule", { scheduleId: existingId, error: err });
+          logger.error("Failed to delete schedule", {
+            scheduleId: existingId,
+            error: errorForLog(err),
+          });
           result.errors.push({
             scheduleId: existingId,
             error: err instanceof Error ? err.message : String(err),

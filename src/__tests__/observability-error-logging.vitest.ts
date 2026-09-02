@@ -359,8 +359,12 @@ describe("Observability Error Logging", () => {
       expect(logCall.error.message).toContain("failingStep");
     });
 
-    it("should handle non-Error objects thrown from steps", async () => {
-      const nonErrorObject = { code: 500, message: "Something went wrong" };
+    it("does not send stringified non-Error throws to the workflow logger", async () => {
+      const nonErrorObject = {
+        code: 500,
+        message: "Something went wrong",
+        toString: () => "customer-secret@example.com",
+      };
       const failingStep = createTestStep("failingStep", ["input"], ["processed"], () => {
         throw nonErrorObject;
       });
@@ -375,15 +379,16 @@ describe("Observability Error Logging", () => {
       const batchError = error as WorkflowBatchError;
       expect(batchError.errors).toHaveLength(1);
 
-      // Non-Error objects are wrapped in WorkflowStepError inside the batch
+      // Non-Error values get a generic Error before they reach the wrapper/logger.
       const stepError = batchError.errors[0]!;
       expect(stepError).toBeInstanceOf(WorkflowStepError);
-      expect(stepError.message).toContain("[object Object]");
-      expect(stepError.originalError.message).toContain("[object Object]");
+      expect(stepError.message).toContain("A non-Error value was thrown");
+      expect(stepError.originalError.message).toBe("A non-Error value was thrown");
 
       const logCall = firstWorkflowFailureLog();
       expect(logCall.error.name).toBe("WorkflowBatchError");
       expect(logCall.error.message).toContain("failingStep");
+      expect(logCall.error.message).not.toContain("customer-secret@example.com");
     });
   });
 

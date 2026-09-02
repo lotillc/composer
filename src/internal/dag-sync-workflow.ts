@@ -98,6 +98,7 @@ import type { FanOutMetadata } from "./dag-sync-fanout";
 import { isFanOutStep } from "./dag-sync-fanout";
 import type { AsyncStepRuntime, Step } from "./dag-sync-step";
 import { defaultLogger } from "./defaults";
+import { errorForLog } from "./error-for-log";
 import { WorkflowBatchError, WorkflowErrorHandlerFailure, WorkflowStepError } from "./errors";
 import {
   type ExecutionContext,
@@ -1428,7 +1429,7 @@ export async function runSyncWorkflow<
             return { stepName: step.name, output: stepOutput };
           } catch (error) {
             // Wrap error with workflow context
-            stepError = error instanceof Error ? error : new Error(String(error));
+            stepError = errorForLog(error);
             const workflowError = new WorkflowStepError({
               workflowId: workflowId,
               stepName: step.name,
@@ -1456,7 +1457,7 @@ export async function runSyncWorkflow<
                 log.error("afterStep cleanup failed", {
                   stepName: step.name,
                   workflowId,
-                  error: cleanupError,
+                  error: errorForLog(cleanupError),
                   // Name only: the step error is logged in full by the workflow failure line,
                   // and a second copy of its message is a second thing to redact.
                   originalStepErrorName: stepError?.name,
@@ -1569,7 +1570,7 @@ export async function runSyncWorkflow<
           // If we can't create context, proceed without it
           log.warn("Failed to create context for error handler", {
             workflowId,
-            error: contextError,
+            error: errorForLog(contextError),
           });
         }
       }
@@ -1587,7 +1588,7 @@ export async function runSyncWorkflow<
           } catch (cleanupError) {
             log.error("afterStep cleanup failed for error handler", {
               workflowId,
-              error: cleanupError,
+              error: errorForLog(cleanupError),
             });
           }
         }
@@ -1609,7 +1610,7 @@ export async function runSyncWorkflow<
           } catch (cleanupError) {
             log.error("afterStep cleanup failed for error handler", {
               workflowId,
-              error: cleanupError,
+              error: errorForLog(cleanupError),
             });
           }
         }

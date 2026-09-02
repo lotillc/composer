@@ -456,6 +456,26 @@ describe("syncSchedules failure logging", () => {
       { scheduleId: "orphan-schedule", error: "schedule is running" },
     ]);
   });
+
+  it("does not hand a non-Error rejection object's fields to the logger", async () => {
+    const rejection = { password: "do-not-log", query: "select secret" };
+    mockScheduleList.mockReturnValue(createMockListIterator([]));
+    mockCreate.mockRejectedValue(rejection);
+
+    const { syncSchedules } = await import("../sync-schedules");
+    await syncSchedules({
+      temporalConfig: { address: "localhost:7233", namespace: "default" },
+      schedules: [makeDefinition({ scheduleId: "non-error-rejection" })],
+      logger: silentLogger,
+    });
+
+    expect(silentLogger.error).toHaveBeenCalledWith("Failed to sync schedule", {
+      scheduleId: "non-error-rejection",
+      error: expect.objectContaining({ message: "A non-Error value was thrown" }),
+    });
+    const loggedError = silentLogger.error.mock.calls[0]?.[1]?.error;
+    expect(loggedError).not.toBe(rejection);
+  });
 });
 
 // A schedule's initialData is encoded by this client and decoded by the workers, so the

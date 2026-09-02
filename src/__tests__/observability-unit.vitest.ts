@@ -779,6 +779,29 @@ describe("Observability Functions", () => {
       expect(handle.workflowSpan.end).toHaveBeenCalled();
     });
 
+    it("should fall back to no message when a JavaScript renderer returns a non-string", () => {
+      const handle = startWorkflowObservability(
+        workflowId("wf-id"),
+        mockWorkflow,
+        {},
+        mockLogger,
+        (() => ({ unsafe: true })) as unknown as (error: Error) => string | undefined,
+      );
+
+      expect(() =>
+        endWorkflowObservability(
+          handle,
+          { success: false, error: inlinedSql },
+          { totalSteps: 1, batchNumber: 1 },
+        ),
+      ).not.toThrow();
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+      });
+    });
+
     // A code is an identifier, not prose -- it is the triage signal that survives withholding
     // the message.
     it("should attach the error's code when it has one", () => {
@@ -812,6 +835,26 @@ describe("Observability Functions", () => {
         "workflow.status": "error",
         "workflow.error.type": "Error",
       });
+    });
+
+    it("does not put arbitrary error names or codes on the span", () => {
+      const coded = Object.assign(new Error("insert into ..."), {
+        name: "CUSTOMER_SECRET_TOKEN_ABC123",
+        code: "CUSTOMER_SECRET_TOKEN_ABC123",
+      });
+      const handle = startWorkflowObservability(workflowId("wf-id"), mockWorkflow, {}, mockLogger);
+
+      endWorkflowObservability(
+        handle,
+        { success: false, error: coded },
+        { totalSteps: 1, batchNumber: 1 },
+      );
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+      });
+      expect(handle.workflowSpan.recordException).toHaveBeenCalledWith({ name: "Error" });
     });
 
     // The failure log is the sink a consumer's logger can scrub; the Error goes there whole.
