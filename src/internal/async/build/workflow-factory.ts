@@ -19,6 +19,7 @@
 
 import * as wf from "@temporalio/workflow";
 import type { DurationString } from "../../dag-sync-step";
+import { safeErrorCode, safeErrorName } from "../../error-for-log";
 
 /**
  * Input structure for our generated Temporal workflows.
@@ -95,31 +96,44 @@ interface ApplicationFailureLike extends ErrorWithCause {
   details?: Array<{ code?: string; parentCodes?: readonly string[]; data?: unknown }>;
 }
 
-/** A code is an identifier: SCREAMING_SNAKE like CONTENT_REJECTED, or a SQLSTATE like 23505. */
-const ERROR_CODE = /^[A-Z0-9_]{2,50}$/;
-
 /**
  * LotiError formats messages as "CODE: message" - extract code from message if not available elsewhere.
  *
- * Only an identifier-shaped prefix is accepted. A bare length cutoff laundered arbitrary
- * message text into `code` -- `constraint "u_email": Key (email)=(jane@x.com)` yields a
- * 20-character prefix quoting the row -- and `code` is emitted where the message is withheld.
+ * A prefix is still untrusted text. It must be one of the safe codes allowed by the same policy
+ * that protects default trace fields before it can leave the workflow sandbox.
  */
 function extractCodeFromMessage(message: string | undefined): string | undefined {
   if (!message) return undefined;
   const colonIndex = message.indexOf(": ");
   if (colonIndex <= 0) return undefined;
   const candidate = message.substring(0, colonIndex);
-  return ERROR_CODE.test(candidate) ? candidate : undefined;
+  return safeErrorCode(candidate);
 }
 
 /** Code carried by the error a FanOut throws when any of its children fail. */
 export const FANOUT_CHILD_FAILURE_CODE = "FANOUT_CHILD_FAILURE";
 
-/** A thrown value's string `code`, if it carries one. Safe to log: codes are identifiers. */
+/** A thrown value's approved code, if it carries one. */
 function codeOf(value: unknown): string | undefined {
   const code = (value as { code?: unknown } | null | undefined)?.code;
-  return typeof code === "string" ? code : undefined;
+  return safeErrorCode(code);
+}
+
+function firstSafeCode(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const code = safeErrorCode(value);
+    if (code !== undefined) return code;
+  }
+  return undefined;
+}
+
+function safeParentCodes(values: readonly string[] | undefined): readonly string[] | undefined {
+  if (!Array.isArray(values)) return undefined;
+  const codes = values?.flatMap((value) => {
+    const code = safeErrorCode(value);
+    return code === undefined ? [] : [code];
+  });
+  return codes && codes.length > 0 ? codes : undefined;
 }
 
 /**
@@ -151,12 +165,16 @@ function buildCauseChain(
   const cause = err.cause as ApplicationFailureLike;
   const lotiDetails = extractLotiDetails(cause);
   // The message is read only to recover a `CODE: message` prefix; it is not carried forward.
-  const code =
-    cause.code ?? cause.type ?? lotiDetails?.code ?? extractCodeFromMessage(cause.message);
+  const code = firstSafeCode(
+    cause.code,
+    cause.type,
+    lotiDetails?.code,
+    extractCodeFromMessage(cause.message),
+  );
   return {
     code,
-    parentCodes: lotiDetails?.parentCodes,
-    type: cause.name,
+    parentCodes: safeParentCodes(lotiDetails?.parentCodes),
+    type: safeErrorName(cause.name),
     cause: buildCauseChain(cause, depth + 1),
   };
 }
@@ -170,17 +188,18 @@ function buildStepFailureInfo(stepName: string, rawError: unknown): StepFailureI
   // ActivityFailure wraps our ApplicationFailure in cause
   const causeError = error?.cause as ApplicationFailureLike | undefined;
   const lotiDetails = extractLotiDetails(causeError) ?? extractLotiDetails(error);
-  const code =
-    error?.code ??
-    causeError?.type ??
-    lotiDetails?.code ??
-    extractCodeFromMessage(causeError?.message ?? error?.message);
+  const code = firstSafeCode(
+    error?.code,
+    causeError?.type,
+    lotiDetails?.code,
+    extractCodeFromMessage(causeError?.message ?? error?.message),
+  );
 
   return {
     stepName,
     code,
-    parentCodes: lotiDetails?.parentCodes,
-    type: error?.name ?? "Error",
+    parentCodes: safeParentCodes(lotiDetails?.parentCodes),
+    type: safeErrorName(error?.name),
     cause: buildCauseChain(error, 0),
   };
 }
@@ -645,7 +664,7 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
                 // Error was transformed
                 resultError = {
                   message: handlerResult.error.message,
-                  code: handlerResult.error.code,
+                  code: safeErrorCode(handlerResult.error.code),
                   type: "TransformedError",
                   batchNumber,
                 };
@@ -658,7 +677,7 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
               wf.log.error("Error handler activity failed", {
                 workflowId,
                 activityName: plan.errorHandlerActivityName,
-                errorName: handlerError instanceof Error ? handlerError.name : typeof handlerError,
+                errorName: handlerError instanceof Error ? safeErrorName(handlerError.name) : typeof handlerError,
                 errorCode: codeOf(handlerError),
               });
               // Handler crashed - wrap both errors

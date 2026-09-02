@@ -1828,6 +1828,40 @@ describe("WorkflowFactory", () => {
         expect(error?.errors?.[0]?.code).toBe("CONTENT_REJECTED");
       });
 
+      it("does not serialize arbitrary names, codes, or parent codes", async () => {
+        const secret = "CUSTOMER_SECRET_TOKEN";
+        mocks.activityFunctions["failingStep-abc"] = vi.fn(async () => {
+          const root = Object.assign(new Error(inlinedSql), { name: secret, code: "A1B2C" });
+          const application = Object.assign(new Error("ApplicationFailure"), {
+            type: "A1B2C",
+            details: [{ code: "A1B2C", parentCodes: ["A1B2C", "23505"] }],
+            cause: root,
+          });
+          throw Object.assign(new Error("ActivityFailure"), { name: secret, cause: application });
+        });
+
+        const failure = await failureFrom(planFor([failingStep]));
+        const serialized = JSON.stringify(failure.details);
+
+        expect(serialized).not.toContain(secret);
+        expect(serialized).not.toContain("A1B2C");
+        expect(serialized).toContain("23505");
+      });
+
+      it("keeps the original failure when parentCodes is malformed", async () => {
+        mocks.activityFunctions["failingStep-abc"] = vi.fn(async () => {
+          throw Object.assign(new Error(inlinedSql), {
+            details: [{ code: "23505", parentCodes: "not-an-array" }],
+          });
+        });
+
+        const failure = await failureFrom(planFor([failingStep]));
+        const { error } = failure.details?.[0] as { error: TemporalWorkflowResult["error"] };
+
+        expect(error?.errors?.[0]?.parentCodes).toBeUndefined();
+        expect(JSON.stringify(failure.details)).not.toContain("insert into");
+      });
+
       it("does not repeat a crashed error handler's message", async () => {
         mocks.activityFunctions["errorHandler"] = vi.fn(async () => {
           throw Object.assign(new Error(inlinedSql), { code: "23505" });
@@ -1843,6 +1877,22 @@ describe("WorkflowFactory", () => {
         // The failure still says which handler broke and on which batch.
         expect(failure.type).toBe("WorkflowErrorHandlerFailure");
         expect(failure.message).toContain("batch 1");
+      });
+
+      it("does not put an unapproved handler error name or code in Runtime logs", async () => {
+        mocks.activityFunctions["errorHandler"] = vi.fn(async () => {
+          throw Object.assign(new Error(inlinedSql), {
+            name: "CUSTOMER_SECRET_TOKEN",
+            code: "A1B2C",
+          });
+        });
+
+        await failureFrom({ ...planFor([failingStep]), errorHandlerActivityName: "errorHandler" });
+
+        expect(mocks.log.error).toHaveBeenCalledWith(
+          "Error handler activity failed",
+          expect.objectContaining({ errorName: "Error", errorCode: undefined }),
+        );
       });
     });
 
@@ -2050,6 +2100,34 @@ describe("WorkflowFactory", () => {
         expect(mocks.log.error).toHaveBeenCalledWith(
           "FanOut: child workflow failures",
           expect.objectContaining({ failures: "child 0: 23505" }),
+        );
+      });
+
+      it("does not put an unapproved child code in the FanOut Runtime log", async () => {
+        mocks.activityFunctions[baseFanOut.mapInputActivityName] = vi.fn(async () => [{ item: "a" }]);
+        mocks.activityFunctions[baseFanOut.aggregateResultsActivityName] = vi.fn(async () => ({
+          results: [],
+        }));
+        mocks.executeChild.mockImplementation(async () => {
+          const { ChildWorkflowFailure, ApplicationFailure: AppFailure } = await import(
+            "@temporalio/workflow"
+          );
+          throw new ChildWorkflowFailure(
+            "default",
+            { workflowId: "child-wf", runId: "child-run" },
+            "child-wf",
+            "NON_RETRYABLE_FAILURE",
+            AppFailure.create({ message: "hidden", type: "A1B2C", nonRetryable: true }),
+          );
+        });
+
+        await runWorkflowExpectingResult(createWorkflowFunction(planWithFanOut(baseFanOut)), {
+          initialData: { items: ["a"] },
+        });
+
+        expect(mocks.log.error).toHaveBeenCalledWith(
+          "FanOut: child workflow failures",
+          expect.objectContaining({ failures: "child 0" }),
         );
       });
 
