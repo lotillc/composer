@@ -548,6 +548,32 @@ describe("Activity Worker", () => {
         expect(stack).toMatch(/^\s*at /);
       });
 
+      it("does not mistake multiline message content for a stack frame", async () => {
+        const secret = "customer-secret@example.com";
+        const failure = await failureFor(
+          Object.assign(new Error(`database failed\n    at ${secret}`), { code: "DB_ERROR" }),
+        );
+
+        const { stack } = failure.details?.[0] as { stack?: string };
+        expect(stack).toBeDefined();
+        expect(stack).not.toContain(secret);
+        expect(stack).toMatch(/^\s*at /);
+      });
+
+      it("omits a custom stack getter even if it resembles formatted frames", async () => {
+        const secret = "customer-secret@example.com";
+        const customStack = Object.assign(new Error("database failed"), { code: "DB_ERROR" });
+        Object.defineProperty(customStack, "stack", {
+          configurable: true,
+          get: () => `__composer_stack_frames__    at ${secret}`,
+          set: () => undefined,
+        });
+
+        const failure = await failureFor(customStack);
+
+        expect((failure.details?.[0] as { stack?: string }).stack).toBeUndefined();
+      });
+
       it("omits the stack entirely rather than emitting a bare header", async () => {
         const stackless = Object.assign(new Error(inlinedSql), { code: "DB_ERROR" });
         stackless.stack = `Error: ${inlinedSql}`;

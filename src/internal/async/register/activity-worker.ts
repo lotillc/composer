@@ -48,6 +48,8 @@ import {
 } from "../utils/is-composer-error";
 import { collectAllWorkflows } from "./generate-workflow-source";
 
+const v8StackGetter = Object.getOwnPropertyDescriptor(new Error(), "stack")?.get;
+
 interface ActiveActivitySummary {
   activityName: string;
   stepName: string;
@@ -204,13 +206,37 @@ function toCodedApplicationFailure(error: ComposerErrorInstance): ApplicationFai
 }
 
 /**
- * A stack with its `name: message` header line removed, so it carries frames and no message.
- * Best-effort: a stack that does not start with the header is kept as-is minus non-frame lines.
+ * Formats V8's structured call sites without the `name: message` header.
+ *
+ * Parsing `error.stack` cannot safely separate a multiline message from frames: a message may
+ * itself contain a line beginning with `at `. Instead, format the call sites before V8 renders
+ * the stack. If a stack was already rendered (or is custom), omit it rather than persisting
+ * untrusted message text in Temporal details.
  */
 function stackFramesOf(error: Error): string | undefined {
-  const stack = typeof error.stack === "string" ? error.stack : "";
-  const frames = stack.split("\n").filter((line) => line.trimStart().startsWith("at "));
-  return frames.length > 0 ? frames.join("\n") : undefined;
+  const stackDescriptor = Object.getOwnPropertyDescriptor(error, "stack");
+  // A custom getter could return text that resembles our formatted stack. Only V8's native
+  // lazy stack getter exposes structured call sites, so every other stack representation fails
+  // closed rather than being persisted in workflow history.
+  if (!v8StackGetter || stackDescriptor?.get !== v8StackGetter) return undefined;
+
+  const originalPrepareStackTrace = Error.prepareStackTrace;
+  const marker = "__composer_stack_frames__";
+  try {
+    Error.prepareStackTrace = (_error, callSites) =>
+      `${marker}${callSites.map((callSite) => `    at ${callSite.toString()}`).join("\n")}`;
+    const stack = error.stack;
+    if (typeof stack !== "string" || !stack.startsWith(marker)) return undefined;
+
+    const frames = stack.slice(marker.length);
+    // V8 caches the rendered stack. Keep that cache free of the implementation marker.
+    error.stack = frames;
+    return frames || undefined;
+  } catch {
+    return undefined;
+  } finally {
+    Error.prepareStackTrace = originalPrepareStackTrace;
+  }
 }
 
 /**
@@ -383,6 +409,9 @@ function createActivitiesFromWorkflows<TContext>(
         return result;
       } catch (error) {
         stepError = errorForLog(error);
+        // Capture V8's structured call sites before a logger renders and caches `error.stack`.
+        // The original error is still handed to the logger so serializers retain its fields.
+        const codedFailure = isComposerError(error) ? toCodedApplicationFailure(error) : undefined;
         // The Error itself, not its message: flattening strips the structured fields (a
         // driver error's `code`, `severity`, `table`, `constraint`) that the injected
         // logger's serializer needs to classify the failure and rebuild a safe message.
@@ -394,8 +423,8 @@ function createActivitiesFromWorkflows<TContext>(
           code: isComposerError(error) ? error.code : undefined,
         });
         // Convert structured errors to ApplicationFailure to preserve the error code through serialization
-        if (isComposerError(error)) {
-          throw toCodedApplicationFailure(error);
+        if (codedFailure) {
+          throw codedFailure;
         }
         throw error;
       } finally {
