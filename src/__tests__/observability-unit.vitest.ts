@@ -821,6 +821,23 @@ describe("Observability Functions", () => {
       });
     });
 
+    it("should attach an alphanumeric SQLSTATE code", () => {
+      const coded = Object.assign(new Error("relation missing"), { code: "42P01" });
+      const handle = startWorkflowObservability(workflowId("wf-id"), mockWorkflow, {}, mockLogger);
+
+      endWorkflowObservability(
+        handle,
+        { success: false, error: coded },
+        { totalSteps: 1, batchNumber: 1 },
+      );
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+        "workflow.error.code": "42P01",
+      });
+    });
+
     it("should omit the code attribute when the error carries a non-string code", () => {
       const coded = Object.assign(new Error("boom"), { code: 42 });
       const handle = startWorkflowObservability(workflowId("wf-id"), mockWorkflow, {}, mockLogger);
@@ -855,6 +872,22 @@ describe("Observability Functions", () => {
         "workflow.error.type": "Error",
       });
       expect(handle.workflowSpan.recordException).toHaveBeenCalledWith({ name: "Error" });
+    });
+
+    it("does not mistake a SQLSTATE-shaped arbitrary code for a PostgreSQL code", () => {
+      const coded = Object.assign(new Error("insert into ..."), { code: "A1B2C" });
+      const handle = startWorkflowObservability(workflowId("wf-id"), mockWorkflow, {}, mockLogger);
+
+      endWorkflowObservability(
+        handle,
+        { success: false, error: coded },
+        { totalSteps: 1, batchNumber: 1 },
+      );
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+      });
     });
 
     // The failure log is the sink a consumer's logger can scrub; the Error goes there whole.

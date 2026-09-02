@@ -347,8 +347,8 @@ error's message, so by default it attaches **no message to any span** -- only
 `stack` header line repeats the message.
 
 Spans still carry `*.error.type` and `*.error.code` where the error supplies a Composer code or
-a five-digit SQLSTATE, so a failure is still identifiable in a trace. The span status description
-is empty unless a message is rendered.
+a cataloged PostgreSQL SQLSTATE, so a failure is still identifiable in a trace. The span status
+description is empty unless a message is rendered.
 
 Supply `traceErrorMessage` to put text back on the span, on your terms:
 
