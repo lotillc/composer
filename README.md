@@ -314,7 +314,10 @@ driver error's `code`, `severity`, `table` and `constraint` are gone before the 
 them, leaving it only the message -- which for MikroORM/knex is the parameter-inlined SQL,
 quoting real row values.
 
-Give your logger an error serializer. `pino`'s `err` serializer, or your own:
+Give your logger an error serializer. `pino`'s `err` serializer, or your own -- but note that
+Composer's own error classes carry `bagState` (the whole workflow bag) and `originalError` as
+enumerable properties. A serializer that walks enumerable own properties will emit both. Pick
+the fields you want rather than dumping the object:
 
 ```typescript
 const composer = createComposer({
@@ -329,6 +332,11 @@ const composer = createComposer({
 A logger that `JSON.stringify`s its metadata will render an `Error` as `{}` -- that is the
 serializer's absence showing, not Composer withholding anything.
 
+This covers the logger Composer was given. It does **not** cover the async path's
+workflow-side logging: `workflow-factory.ts` logs through `@temporalio/workflow`'s `wf.log`,
+which Temporal routes to its own `Runtime` logger, and Composer does not wire the injected
+logger into it. Those lines are outside this seam.
+
 ### Error Messages on Trace Spans
 
 Span attributes go straight to the trace backend without passing through the logger, so
@@ -338,15 +346,27 @@ error's message, so by default it attaches **no message to any span** -- only
 with a name-only exception rather than the `Error`, whose `stack` header line repeats the
 message.
 
+Spans still carry `*.error.type` (the error's name) and `*.error.code` where the error has a
+string `code`, so a failure is still identifiable in a trace. The span status description is
+empty unless a message is rendered.
+
 Supply `traceErrorMessage` to put text back on the span, on your terms:
 
 ```typescript
 const composer = createComposer({
   contextProvider,
   // Return undefined for an error whose message should stay off the span.
-  traceErrorMessage: (error) => describeError(error).message,
+  traceErrorMessage: (error) => {
+    const cause = error instanceof WorkflowStepError ? error.originalError : error;
+    return isDriverError(cause) ? `${cause.name} ${cause.code}` : cause.message;
+  },
 });
 ```
+
+The error handed to the renderer is Composer's own wrapper, and `WorkflowStepError`'s message
+embeds the original's -- so `(error) => error.message` puts back exactly what withholding it
+avoided. Classify on `.originalError` / `.cause`. If the renderer throws, Composer falls back
+to attaching no message rather than letting it replace the workflow's own error.
 
 The full `Error` still reaches the logger either way; this controls the trace sink only. It
 applies to sync workflow runs -- async runs use Temporal's own observability.
@@ -381,7 +401,27 @@ const composer = createComposer({
 `dataConverter` reaches both worker types **and** the client -- a converter installed only on
 the workers leaves the client unable to decode what they wrote. Of `interceptors`, `activity`
 goes to activity workers and `workflowModules` to workflow workers; neither is forwarded to
-the worker that cannot run it.
+the worker that cannot run it. The `syncSchedules` client gets the converter too -- a
+schedule's `initialData` is encoded there and decoded by the workers.
+
+The types you need to write either seam (`DataConverter`, `FailureConverter`, `PayloadCodec`,
+`ActivityInterceptorsFactory`) are re-exported from `@lotiai/composer`, so you do not need a
+direct dependency on the Temporal packages.
+
+**A failure converter has more to scrub than `message` and `stackTrace`.** Composer puts raw
+error text in three further places a converter must handle:
+
+- `toCodedApplicationFailure` copies the error's `stack` into `details[0].stack`, and a stack's
+  header line repeats the message.
+- An unhandled workflow error throws with `details: [{ bag, error }]` -- `bag` is every value
+  the workflow touched, and `error.errors[]` carries each failed step's message.
+- The error-handler activity returns `{ error: { message, code } }` as an activity **result**,
+  which the payload converter encodes, not the failure converter. Reaching that needs a
+  `payloadCodec`.
+
+Connections are cached per converter. Converter paths are compared as strings, but
+`payloadCodecs` entries are compared by object identity -- hold codec instances at module
+scope, or a new connection is opened per call.
 
 ## CLI
 
@@ -537,6 +577,8 @@ Defaults can be overridden per-deployment via `workerProfiles` in `composer.buil
 | `ComposerConfig` | Type: options accepted by `createComposer` |
 | `ComposerWorkerInterceptors` | Type: worker interceptors forwarded to Temporal |
 | `TraceErrorMessage` | Type: renders an error into span text |
+| `DataConverter`, `FailureConverter`, `PayloadCodec` | Types re-exported from `@temporalio/common` |
+| `ActivityInterceptorsFactory` and friends | Types re-exported from `@temporalio/worker` |
 | `createWorkflow` | Create a workflow with compile-time dependency validation |
 | `step` | Factory for creating type-safe steps |
 | `use` | Compose a child workflow into a parent |

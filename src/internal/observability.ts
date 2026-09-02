@@ -28,19 +28,38 @@ import type {
 const workflowTracer = trace.getTracer("composer-workflow");
 const workflowMetrics: MetricsCollector = createDefaultMetrics("composer-workflow");
 
+// The renderer is consumer code on a path that is already handling a failure. Letting it
+// throw would replace the workflow's own error with the renderer's, skipping the configured
+// error handler -- the same hazard startWorkflowObservability is wrapped against below. A
+// broken renderer degrades to the default of no message rather than losing the real error.
+function renderTraceMessage(
+  error: Error,
+  traceErrorMessage: TraceErrorMessage | undefined,
+): string | undefined {
+  if (!traceErrorMessage) return undefined;
+  try {
+    return traceErrorMessage(error);
+  } catch {
+    return undefined;
+  }
+}
+
 // Span attributes bypass whatever redaction a consumer applies to its logs, so the error
-// message is attached only when the consumer supplies a renderer that vouches for it. The
-// error name always goes on: it names the failure without quoting anything the step touched.
+// message is attached only when the consumer supplies a renderer that vouches for it. Name
+// and code always go on: a code is an identifier, not prose, and between them they say what
+// failed without quoting anything the step touched.
 function recordSpanError(
   span: Span,
   prefix: string,
   error: Error,
   traceErrorMessage: TraceErrorMessage | undefined,
 ): void {
-  const message = traceErrorMessage?.(error);
+  const message = renderTraceMessage(error, traceErrorMessage);
+  const code = (error as { code?: unknown }).code;
   span.setAttributes({
     [`${prefix}.status`]: "error",
     [`${prefix}.error.type`]: error.name,
+    ...(typeof code === "string" ? { [`${prefix}.error.code`]: code } : {}),
     ...(message === undefined ? {} : { [`${prefix}.error.message`]: message }),
   });
   // Never the Error itself: recordException would copy `message` and the stack -- whose header

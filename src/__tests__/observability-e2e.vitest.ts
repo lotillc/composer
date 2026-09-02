@@ -524,6 +524,17 @@ describe("Observability End-to-End Component Tests", () => {
         .map((result) => vi.mocked(result.value.setAttributes).mock.calls)
         .flat(2);
 
+    // recordException and setStatus are separate sinks on the same span; an assertion that
+    // only reads setAttributes would miss a message leaking through either.
+    const everythingWrittenToSpans = () =>
+      JSON.stringify(
+        mockTracer.startSpan.mock.results.map((result) => [
+          vi.mocked(result.value.setAttributes).mock.calls,
+          vi.mocked(result.value.recordException).mock.calls,
+          vi.mocked(result.value.setStatus).mock.calls,
+        ]),
+      );
+
     it("keeps the raw message off every span by default", async () => {
       const composer = createComposer({
         contextProvider: noOpContextProvider,
@@ -532,10 +543,14 @@ describe("Observability End-to-End Component Tests", () => {
 
       await composer.runSyncWorkflow(failingWorkflow(), { input: "test" });
 
-      expect(JSON.stringify(spanAttributes())).not.toContain("jane@example.com");
+      expect(everythingWrittenToSpans()).not.toContain("jane@example.com");
+      expect(everythingWrittenToSpans()).not.toContain("insert into");
       // The failure still names itself on the span -- only the message is withheld.
       expect(spanAttributes()).toContainEqual(
-        expect.objectContaining({ "workflow.error.type": "WorkflowBatchError" }),
+        expect.objectContaining({
+          "workflow.error.type": "WorkflowBatchError",
+          "workflow.error.code": "WORKFLOW_BATCH_ERROR",
+        }),
       );
     });
 

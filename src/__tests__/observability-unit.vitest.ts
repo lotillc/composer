@@ -751,6 +751,69 @@ describe("Observability Functions", () => {
       expect(JSON.stringify(recorded)).not.toContain("jane@example.com");
     });
 
+    // A renderer that throws must not become the workflow's error: that would skip the
+    // configured error handler and turn a returned failure into a thrown one.
+    it("should fall back to no message when the renderer throws", () => {
+      const handle = startWorkflowObservability(
+        workflowId("wf-id"),
+        mockWorkflow,
+        {},
+        mockLogger,
+        () => {
+          throw new Error("renderer is broken");
+        },
+      );
+
+      expect(() =>
+        endWorkflowObservability(
+          handle,
+          { success: false, error: inlinedSql },
+          { totalSteps: 1, batchNumber: 1 },
+        ),
+      ).not.toThrow();
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+      });
+      expect(handle.workflowSpan.end).toHaveBeenCalled();
+    });
+
+    // A code is an identifier, not prose -- it is the triage signal that survives withholding
+    // the message.
+    it("should attach the error's code when it has one", () => {
+      const coded = Object.assign(new Error("insert into ..."), { code: "23505" });
+      const handle = startWorkflowObservability(workflowId("wf-id"), mockWorkflow, {}, mockLogger);
+
+      endWorkflowObservability(
+        handle,
+        { success: false, error: coded },
+        { totalSteps: 1, batchNumber: 1 },
+      );
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+        "workflow.error.code": "23505",
+      });
+    });
+
+    it("should omit the code attribute when the error carries a non-string code", () => {
+      const coded = Object.assign(new Error("boom"), { code: 42 });
+      const handle = startWorkflowObservability(workflowId("wf-id"), mockWorkflow, {}, mockLogger);
+
+      endWorkflowObservability(
+        handle,
+        { success: false, error: coded },
+        { totalSteps: 1, batchNumber: 1 },
+      );
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+      });
+    });
+
     // The failure log is the sink a consumer's logger can scrub; the Error goes there whole.
     it("should still log the Error itself, message and all", () => {
       const handle = startWorkflowObservability(workflowId("wf-id"), mockWorkflow, {}, mockLogger);

@@ -109,11 +109,19 @@ export interface ComposerLogger {
  *
  * Returning `undefined` for a given error keeps that error message off the span.
  *
+ * The error handed to this is Composer's own `WorkflowStepError` / `WorkflowBatchError`
+ * wrapper, and `WorkflowStepError`'s message embeds the original's. A renderer that reads
+ * `.message` therefore sees the raw text -- classify on `.originalError` / `.cause` and
+ * build the span text from safe parts rather than trying to salvage the message.
+ *
  * @example
  * ```typescript
  * createComposer({
  *   contextProvider,
- *   traceErrorMessage: (error) => describeError(error).message,
+ *   traceErrorMessage: (error) => {
+ *     const cause = error instanceof WorkflowStepError ? error.originalError : error;
+ *     return isDriverError(cause) ? `${cause.name} ${cause.code}` : cause.message;
+ *   },
  * });
  * ```
  */

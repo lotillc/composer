@@ -107,3 +107,12 @@ export {
 } from "./internal/errors";
 export type { ComposerLogger, TraceErrorMessage } from "./internal/types";
 export type { WorkflowExecutionStatusName } from "@temporalio/client";
+// Re-exported so a consumer can type a converter or an interceptor without taking a direct
+// dependency on the Temporal packages, which pnpm would not otherwise resolve for them.
+export type { DataConverter, FailureConverter, PayloadCodec } from "@temporalio/common";
+export type {
+  ActivityExecuteInput,
+  ActivityInboundCallsInterceptor,
+  ActivityInterceptors,
+  ActivityInterceptorsFactory,
+} from "@temporalio/worker";
