@@ -516,6 +516,159 @@ describe("Activity Worker", () => {
       });
     });
 
+    // A stack opens with `name: message`, so copying `error.stack` whole put a second copy
+    // of the message in details -- where a converter scrubbing `message` and `stackTrace`
+    // would not think to look.
+    describe("Stack in failure details", () => {
+      const inlinedSql =
+        "insert into \"user\" (\"email\") values ('jane@example.com') - duplicate key";
+
+      async function failureFor(
+        error: Error,
+        logger?: ComposerLogger,
+      ): Promise<ApplicationFailure> {
+        mockStepRun.mockRejectedValueOnce(error);
+        await createActivityWorkers(createTestConfig({ logger }));
+        const activityFn = mockWorkerCreate.mock.calls[0]![0]!.activities.testStep;
+        try {
+          await (activityFn as (a: unknown, b: unknown) => Promise<unknown>)({}, {});
+        } catch (err) {
+          return err as ApplicationFailure;
+        }
+        throw new Error("activity was expected to reject");
+      }
+
+      it("carries stack frames without the message header line", async () => {
+        const failure = await failureFor(
+          Object.assign(new Error(inlinedSql), { code: "DB_ERROR" }),
+        );
+
+        const { stack } = failure.details?.[0] as { stack?: string };
+        expect(stack).toBeDefined();
+        expect(stack).not.toContain(inlinedSql);
+        expect(stack).not.toContain("Error:");
+        // Frames survive -- this withholds the message, it does not discard the stack.
+        expect(stack).toMatch(/^\s*at /);
+      });
+
+      it("does not mistake multiline message content for a stack frame", async () => {
+        const secret = "customer-secret@example.com";
+        const failure = await failureFor(
+          Object.assign(new Error(`database failed\n    at ${secret}`), { code: "DB_ERROR" }),
+        );
+
+        const { stack } = failure.details?.[0] as { stack?: string };
+        expect(stack).toBeDefined();
+        expect(stack).not.toContain(secret);
+        expect(stack).toMatch(/^\s*at /);
+      });
+
+      it("omits a custom stack getter even if it resembles formatted frames", async () => {
+        const secret = "customer-secret@example.com";
+        const customStack = Object.assign(new Error("database failed"), { code: "DB_ERROR" });
+        Object.defineProperty(customStack, "stack", {
+          configurable: true,
+          get: () => `__composer_stack_frames__    at ${secret}`,
+          set: () => undefined,
+        });
+
+        const failure = await failureFor(customStack);
+
+        expect((failure.details?.[0] as { stack?: string }).stack).toBeUndefined();
+      });
+
+      it("preserves the host's formatted stack for the logger", async () => {
+        const originalPrepareStackTrace = Error.prepareStackTrace;
+        const logger = makeLogger();
+        const error = Object.assign(new Error(inlinedSql), { code: "DB_ERROR" });
+        let loggedStack: unknown;
+        logger.error.mockImplementation((_message, metadata) => {
+          loggedStack = (metadata?.error as Error | undefined)?.stack;
+        });
+        Error.prepareStackTrace = (stackError, callSites) =>
+          `host-formatted: ${stackError.message} (${callSites.length} frames)`;
+
+        try {
+          const failure = await failureFor(error, logger);
+
+          expect(loggedStack).toBe(`host-formatted: ${inlinedSql} (10 frames)`);
+          expect((failure.details?.[0] as { stack?: string }).stack).not.toContain(inlinedSql);
+        } finally {
+          Error.prepareStackTrace = originalPrepareStackTrace;
+        }
+      });
+
+      it("preserves a non-string host-formatted stack for the logger", async () => {
+        const originalPrepareStackTrace = Error.prepareStackTrace;
+        const logger = makeLogger();
+        const error = Object.assign(new Error(inlinedSql), { code: "DB_ERROR" });
+        const hostStack = { formatted: "host stack" };
+        let loggedStack: unknown;
+        logger.error.mockImplementation((_message, metadata) => {
+          loggedStack = (metadata?.error as Error | undefined)?.stack;
+        });
+        Error.prepareStackTrace = () => hostStack;
+
+        try {
+          const failure = await failureFor(error, logger);
+
+          expect(loggedStack).toBe(hostStack);
+          expect((failure.details?.[0] as { stack?: string }).stack).not.toContain(inlinedSql);
+        } finally {
+          Error.prepareStackTrace = originalPrepareStackTrace;
+        }
+      });
+
+      it("calls the host stack formatter with Error as its receiver", async () => {
+        const originalPrepareStackTrace = Error.prepareStackTrace;
+        const logger = makeLogger();
+        const error = Object.assign(new Error(inlinedSql), { code: "DB_ERROR" });
+        let formatterThis: unknown;
+        Error.prepareStackTrace = function (stackError, callSites) {
+          formatterThis = this;
+          return `host-formatted: ${stackError.message} (${callSites.length} frames)`;
+        };
+
+        try {
+          await failureFor(error, logger);
+
+          expect(formatterThis).toBe(Error);
+        } finally {
+          Error.prepareStackTrace = originalPrepareStackTrace;
+        }
+      });
+
+      it("restores the host-formatted stack on a frozen error", async () => {
+        const originalPrepareStackTrace = Error.prepareStackTrace;
+        const logger = makeLogger();
+        const error = Object.freeze(Object.assign(new Error(inlinedSql), { code: "DB_ERROR" }));
+        let loggedStack: unknown;
+        logger.error.mockImplementation((_message, metadata) => {
+          loggedStack = (metadata?.error as Error | undefined)?.stack;
+        });
+        Error.prepareStackTrace = () => "host-formatted stack";
+
+        try {
+          const failure = await failureFor(error, logger);
+
+          expect(loggedStack).toBe("host-formatted stack");
+          expect((failure.details?.[0] as { stack?: string }).stack).not.toContain(inlinedSql);
+        } finally {
+          Error.prepareStackTrace = originalPrepareStackTrace;
+        }
+      });
+
+      it("omits the stack entirely rather than emitting a bare header", async () => {
+        const stackless = Object.assign(new Error(inlinedSql), { code: "DB_ERROR" });
+        stackless.stack = `Error: ${inlinedSql}`;
+
+        const failure = await failureFor(stackless);
+
+        expect(failure.details?.[0]).toMatchObject({ code: "DB_ERROR" });
+        expect((failure.details?.[0] as { stack?: string }).stack).toBeUndefined();
+      });
+    });
+
     describe("Failure scrubbing seams", () => {
       it("should forward a dataConverter to every worker", async () => {
         const dataConverter: DataConverter = {

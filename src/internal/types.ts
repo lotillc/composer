@@ -110,9 +110,9 @@ export interface ComposerLogger {
  * Returning `undefined` for a given error keeps that error message off the span.
  *
  * The error handed to this is Composer's own `WorkflowStepError` / `WorkflowBatchError`
- * wrapper, and `WorkflowStepError`'s message embeds the original's. A renderer that reads
- * `.message` therefore sees the raw text -- classify on `.originalError` / `.cause` and
- * build the span text from safe parts rather than trying to salvage the message.
+ * wrapper, whose message is Composer's own context and never the wrapped error's. Reading
+ * `.message` is therefore safe but says nothing about why the step failed; the original is
+ * on `.originalError` / `.cause`, and it is that message a renderer has to decide about.
  *
  * @example
  * ```typescript

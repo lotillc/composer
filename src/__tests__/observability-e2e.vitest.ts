@@ -554,11 +554,14 @@ describe("Observability End-to-End Component Tests", () => {
       );
     });
 
+    // The renderer reads `cause`, not `message`: a step wrapper's message is Composer's own
+    // context, so the original is only reachable down the chain.
     it("puts the renderer's text on the span when one is configured", async () => {
       const composer = createComposer({
         contextProvider: noOpContextProvider,
         logger: mockLogger,
-        traceErrorMessage: (error) => error.message.replace(/'[^']*'/g, "'?'"),
+        traceErrorMessage: (error) =>
+          ((error as { cause?: Error }).cause ?? error).message.replace(/'[^']*'/g, "'?'"),
       });
 
       await composer.runSyncWorkflow(failingWorkflow(), { input: "test" });
@@ -566,6 +569,19 @@ describe("Observability End-to-End Component Tests", () => {
       const serialized = JSON.stringify(spanAttributes());
       expect(serialized).not.toContain("jane@example.com");
       expect(serialized).toContain("values ('?')");
+    });
+
+    // The injected ComposerLogger covers what Composer logs on the Node side. It does not
+    // cover the async path: `wf.log` is routed by Temporal's own Runtime logger, and
+    // `Runtime.install` is process-global and single-shot, so Composer never calls it. The
+    // class is re-exported instead, for a consumer who wants those lines routed.
+    it("re-exports Runtime rather than installing one", async () => {
+      const [composer, worker] = await Promise.all([
+        import("../index"),
+        import("@temporalio/worker"),
+      ]);
+
+      expect(composer.Runtime).toBe(worker.Runtime);
     });
 
     // The projection this replaced was `{ name, message, stack }`, which severed the chain

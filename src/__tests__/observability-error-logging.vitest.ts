@@ -346,10 +346,12 @@ describe("Observability Error Logging", () => {
       const batchError = error as WorkflowBatchError;
       expect(batchError.errors).toHaveLength(1);
 
-      // The original error is preserved inside the step error
+      // The original error is preserved inside the step error -- reachable, not copied.
       const stepError = batchError.errors[0]!;
       expect(stepError).toBeInstanceOf(WorkflowStepError);
-      expect(stepError.message).toContain("Original error message");
+      expect(stepError.originalError.message).toContain("Original error message");
+      expect(stepError.cause).toBe(originalError);
+      expect(stepError.message).not.toContain("Original error message");
       expect(stepError.originalError).toBe(originalError);
       expect(stepError.cause).toBe(originalError);
 
@@ -382,7 +384,7 @@ describe("Observability Error Logging", () => {
       // Non-Error values get a generic Error before they reach the wrapper/logger.
       const stepError = batchError.errors[0]!;
       expect(stepError).toBeInstanceOf(WorkflowStepError);
-      expect(stepError.message).toContain("A non-Error value was thrown");
+      expect(stepError.message).not.toContain("[object Object]");
       expect(stepError.originalError.message).toBe("A non-Error value was thrown");
 
       const logCall = firstWorkflowFailureLog();

@@ -1,16 +1,16 @@
+import { safeErrorCode, safeErrorName } from "./error-for-log";
+
 // Hard-coded constant for controlling debug logging
 // TODO: Make this configurable via feature flags in the future
 export const enableDebugLogging = true;
 
 /**
- * Enhanced error class for workflow step failures
+ * Enhanced error class for workflow step failures.
  *
- * Provides rich context about where and why a step failed, including:
- * - Error code for matching via `matchesError()`
- * - Workflow identification for correlation
- * - Step-specific context (name, batch number, workflow path)
- * - Original error preservation with stack trace
- * - Optional bag state for debugging (controlled by enableDebugLogging)
+ * The message carries only Composer's own context. A step error's message is not
+ * Composer's to repeat -- for MikroORM/knex it is the parameter-inlined SQL, quoting
+ * real row values -- and a wrapper that inlines it puts that text everywhere the
+ * wrapper goes. The original is reachable on `cause` / `originalError`.
  */
 export class WorkflowStepError<Bag = Record<string, any>> extends Error {
   static readonly code = "WORKFLOW_STEP_ERROR" as const;
@@ -40,10 +40,9 @@ export class WorkflowStepError<Bag = Record<string, any>> extends Error {
       contextInfo += ` [subworkflow path: ${options.workflowPath.join(".")}]`;
     }
 
-    const originalMessage = options.originalError.message;
-
-    // Use standard error chaining to preserve both stack traces
-    super(`${contextInfo}: ${originalMessage}`, { cause: options.originalError });
+    // Standard error chaining preserves both stack traces and keeps the original's
+    // message reachable without copying it into this one.
+    super(contextInfo, { cause: options.originalError });
 
     // Set error name
     this.name = "WorkflowStepError";
@@ -73,12 +72,9 @@ export class WorkflowStepError<Bag = Record<string, any>> extends Error {
       workflowId: this.workflowId,
       stepName: this.stepName,
       batchNumber: this.batchNumber,
-      originalError: {
-        name: this.originalError.name,
-        message: this.originalError.message,
-        stack: this.originalError.stack,
-        code: "code" in this.originalError ? this.originalError.code : undefined,
-      },
+      // The Error itself, not a projection -- the logger's serializer decides what a
+      // step error looks like in a log line, and flattening it here pre-empts that.
+      originalError: this.originalError,
     };
 
     if (this.workflowPath && this.workflowPath.length > 0) {
@@ -147,8 +143,8 @@ export class WorkflowBatchError<Bag = Record<string, any>> extends Error {
       failedStepCount: this.errors.length,
       failedSteps: this.errors.map((e) => ({
         stepName: e.stepName,
-        code: e.code,
-        message: e.originalError.message,
+        code: safeErrorCode(e.code),
+        errorName: safeErrorName(e.originalError.name),
       })),
       bagState: this.bagState,
     };
@@ -180,7 +176,9 @@ export class WorkflowErrorHandlerFailure extends Error {
     handlerError: Error;
     workflowId: string;
   }) {
-    const message = `Workflow "${options.workflowId}" error handler failed: ${options.handlerError.message} (original error: ${options.originalError.message})`;
+    // Neither the handler's message nor the original's is repeated here; both errors are
+    // reachable on `cause` / `handlerError` / `originalError`.
+    const message = `Workflow "${options.workflowId}" error handler failed`;
 
     super(message, { cause: options.handlerError });
     this.name = "WorkflowErrorHandlerFailure";
@@ -197,12 +195,7 @@ export class WorkflowErrorHandlerFailure extends Error {
       code: this.code,
       workflowId: this.workflowId,
       originalError: this.originalError.toLogContext(),
-      handlerError: {
-        name: this.handlerError.name,
-        message: this.handlerError.message,
-        stack: this.handlerError.stack,
-        code: "code" in this.handlerError ? this.handlerError.code : undefined,
-      },
+      handlerError: this.handlerError,
     };
   }
 }

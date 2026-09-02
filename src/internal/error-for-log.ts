@@ -13,6 +13,9 @@ const SAFE_ERROR_CODES = new Set([
   "WORKFLOW_BATCH_ERROR",
   "WORKFLOW_ERROR_HANDLER_FAILURE",
   "FANOUT_CHILD_FAILURE",
+  "CONTENT_REJECTED",
+  "VALIDATION_FAILED",
+  "POLICY_ERROR",
 ]);
 
 // PostgreSQL 17's complete errcodes.txt catalog. A five-character shape alone is not enough:

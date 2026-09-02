@@ -207,7 +207,7 @@ describe("dag-sync", () => {
       // With Promise.allSettled, errors are wrapped in WorkflowBatchError
       expect(error).toBeInstanceOf(WorkflowBatchError);
       const batchError = error as WorkflowBatchError;
-      expect(batchError.errors[0]!.message).toMatch(/unexpected property "sneaky"/i);
+      expect(batchError.errors[0]!.originalError.message).toMatch(/unexpected property "sneaky"/i);
     });
 
     it("should reject when a step omits a declared provide", async () => {
@@ -223,7 +223,7 @@ describe("dag-sync", () => {
       const { error } = await testComposer.runSyncWorkflow(workflow, { input: "x" });
       expect(error).toBeInstanceOf(WorkflowBatchError);
       const batchError = error as WorkflowBatchError;
-      expect(batchError.errors[0]!.message).toMatch(
+      expect(batchError.errors[0]!.originalError.message).toMatch(
         /failed to return required property "processed"/i,
       );
     });
@@ -241,7 +241,7 @@ describe("dag-sync", () => {
       const { error } = await testComposer.runSyncWorkflow(workflow, { input: "x" });
       expect(error).toBeInstanceOf(WorkflowBatchError);
       const batchError = error as WorkflowBatchError;
-      expect(batchError.errors[0]!.message).toMatch(/non-serializable value[\s\S]*Type: Date/i);
+      expect(batchError.errors[0]!.originalError.message).toMatch(/non-serializable value[\s\S]*Type: Date/i);
     });
 
     it("should reject when a step returns a function (non-serializable)", async () => {
@@ -257,7 +257,7 @@ describe("dag-sync", () => {
       const { error } = await testComposer.runSyncWorkflow(workflow, { input: "x" });
       expect(error).toBeInstanceOf(WorkflowBatchError);
       const batchError = error as WorkflowBatchError;
-      expect(batchError.errors[0]!.message).toMatch(/non-serializable value[\s\S]*Type: function/i);
+      expect(batchError.errors[0]!.originalError.message).toMatch(/non-serializable value[\s\S]*Type: function/i);
     });
 
     it("should reject when a step returns nested Date objects", async () => {
@@ -276,7 +276,7 @@ describe("dag-sync", () => {
       const { error } = await testComposer.runSyncWorkflow(workflow, { input: "x" });
       expect(error).toBeInstanceOf(WorkflowBatchError);
       const batchError = error as WorkflowBatchError;
-      expect(batchError.errors[0]!.message).toMatch(
+      expect(batchError.errors[0]!.originalError.message).toMatch(
         /non-serializable value.*root\.processed\.nested\.date/i,
       );
     });
@@ -833,8 +833,8 @@ describe("dag-sync", () => {
       const batchError = error as WorkflowBatchError;
       // Both errors should be collected
       expect(batchError.errors).toHaveLength(2);
-      expect(batchError.errors[0]!.message).toContain("error");
-      expect(batchError.errors[1]!.message).toContain("error");
+      expect(batchError.errors[0]!.originalError.message).toContain("error");
+      expect(batchError.errors[1]!.originalError.message).toContain("error");
     });
   });
 
