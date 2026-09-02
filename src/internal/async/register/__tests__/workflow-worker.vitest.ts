@@ -5,6 +5,7 @@
  * are passed directly and plans are generated from them.
  */
 
+import type { DataConverter } from "@temporalio/common";
 import type { MockedFunction } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -26,6 +27,8 @@ type WorkerCreateOptions = {
   taskQueue: string;
   workflowsPath: string;
   maxConcurrentWorkflowTaskExecutions: number;
+  dataConverter?: DataConverter;
+  interceptors?: { workflowModules?: string[] };
 };
 
 const mockConnect = vi.hoisted(() => vi.fn<(options: ConnectionOptions) => Promise<MockConnection>>());
@@ -203,6 +206,74 @@ describe("Workflow Workers", () => {
       mockWorkerInstance.run.mockRejectedValue(new Error("Worker failed"));
 
       await expect(runWorkflowWorkers(createTestConfig())).rejects.toThrow("Worker failed");
+    });
+
+    it("should log a worker run failure as the Error itself", async () => {
+      const logger = {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      };
+      const runFailure = new Error("Worker failed");
+      mockWorkerInstance.run.mockRejectedValue(runFailure);
+
+      await expect(runWorkflowWorkers(createTestConfig({ logger }))).rejects.toThrow(runFailure);
+
+      expect(logger.error).toHaveBeenCalledWith("Workflow Workers error", { error: runFailure });
+    });
+
+    it("does not pass a non-Error worker failure object's fields to the logger", async () => {
+      const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+      const rejection = { password: "customer-secret" };
+      mockWorkerInstance.run.mockRejectedValue(rejection);
+
+      await expect(runWorkflowWorkers(createTestConfig({ logger }))).rejects.toBe(rejection);
+
+      const loggedError = logger.error.mock.calls[0]?.[1]?.error as Error;
+      expect(loggedError.message).toBe("A non-Error value was thrown");
+      expect(loggedError).not.toBe(rejection);
+    });
+  });
+
+  describe("Failure scrubbing seams", () => {
+    // The workflow worker decodes what the activity workers encoded, so the converter has to
+    // be the same on both -- one installed only on the activity side is undecodable here.
+    it("should forward a dataConverter to the worker", async () => {
+      const dataConverter: DataConverter = {
+        failureConverterPath: "/srv/scrubbing-failure-converter.js",
+      };
+
+      await createWorkflowWorkers(createTestConfig({ dataConverter }));
+
+      expect(mockWorkerCreate.mock.calls[0]?.[0].dataConverter).toBe(dataConverter);
+    });
+
+    it("should forward workflow interceptor modules to the worker", async () => {
+      await createWorkflowWorkers(
+        createTestConfig({ interceptors: { workflowModules: ["./wf-interceptors"] } }),
+      );
+
+      expect(mockWorkerCreate.mock.calls[0]?.[0].interceptors).toEqual({
+        workflowModules: ["./wf-interceptors"],
+      });
+    });
+
+    it("should omit both keys when neither seam is configured", async () => {
+      await createWorkflowWorkers(createTestConfig());
+
+      const options = mockWorkerCreate.mock.calls[0]?.[0];
+      expect(options).toBeDefined();
+      expect(options).not.toHaveProperty("dataConverter");
+      expect(options).not.toHaveProperty("interceptors");
+    });
+
+    // Activity interceptor factories run in the activity worker's process; this worker
+    // executes no activities, so forwarding them would register dead interceptors.
+    it("should not forward activity interceptors to a workflow worker", async () => {
+      await createWorkflowWorkers(createTestConfig({ interceptors: { activity: [vi.fn()] } }));
+
+      expect(mockWorkerCreate.mock.calls[0]?.[0]).not.toHaveProperty("interceptors");
     });
   });
 });

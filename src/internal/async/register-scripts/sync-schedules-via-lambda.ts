@@ -11,8 +11,8 @@
  * composer-instance's `sync-schedules` script.
  *
  * Supports two modes:
- * - `"invoke"` (default): invokes the Lambda synchronously, logs tail logs
- *   from the response, and exits `1` on any failure path (FunctionError,
+ * - `"invoke"` (default): invokes the Lambda synchronously and exits `1` on
+ *   any failure path (FunctionError,
  *   per-schedule errors, or SDK errors).
  * - `"emit"`: prints the JSON payload to stdout and exits `0` without
  *   invoking. Useful for capturing the payload as a CI artifact or for
@@ -35,6 +35,7 @@
  */
 import { InvokeCommand, type InvokeCommandOutput, LambdaClient } from "@aws-sdk/client-lambda";
 import type { Composer } from "../../context-provider";
+import { errorForLog } from "../../error-for-log";
 import type { ScheduleDefinition } from "../schedule/define-schedule";
 import type { SyncSchedulesResult } from "../schedule/sync-schedules";
 
@@ -183,26 +184,30 @@ export async function syncSchedulesViaLambda<TContext>(
   } catch (error) {
     logger.error("Failed to invoke schedule-sync Lambda", {
       lambdaFunctionName: options.lambdaFunctionName,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorForLog(error),
     });
     process.exit(1);
   }
-
-  if (response.LogResult) {
-    const logs = Buffer.from(response.LogResult, "base64").toString("utf-8");
-    logger.info("Schedule-sync Lambda tail logs", { logs });
-  }
-
-  const responsePayload: unknown = response.Payload
-    ? JSON.parse(new TextDecoder().decode(response.Payload))
-    : null;
 
   if (response.FunctionError) {
     logger.error("Schedule-sync Lambda returned FunctionError", {
       functionError: response.FunctionError,
-      payload: responsePayload,
     });
     process.exit(1);
+    return;
+  }
+
+  let responsePayload: unknown;
+  try {
+    responsePayload = response.Payload
+      ? JSON.parse(new TextDecoder().decode(response.Payload))
+      : null;
+  } catch {
+    // A successful invocation must return the documented JSON result. Do not log its raw body:
+    // it is remote, unclassified content and can itself contain a failure's sensitive message.
+    logger.error("Schedule-sync Lambda returned a malformed response");
+    process.exit(1);
+    return;
   }
 
   const result = responsePayload as (SyncSchedulesResult & Record<string, unknown>) | null;
@@ -217,8 +222,10 @@ export async function syncSchedulesViaLambda<TContext>(
   });
 
   if (result?.errors && result.errors.length > 0) {
-    for (const { scheduleId, error } of result.errors) {
-      logger.error("Schedule failed to sync", { scheduleId, error });
+    for (const { scheduleId } of result.errors) {
+      // Lambda results contain caller-facing error text. Keep that text out of the injected
+      // logger, whose Error serializer has no structured error to classify here.
+      logger.error("Schedule failed to sync", { scheduleId });
     }
     process.exit(1);
   }

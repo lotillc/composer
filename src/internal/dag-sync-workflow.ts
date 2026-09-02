@@ -98,6 +98,7 @@ import type { FanOutMetadata } from "./dag-sync-fanout";
 import { isFanOutStep } from "./dag-sync-fanout";
 import type { AsyncStepRuntime, Step } from "./dag-sync-step";
 import { defaultLogger } from "./defaults";
+import { errorForLog } from "./error-for-log";
 import { WorkflowBatchError, WorkflowErrorHandlerFailure, WorkflowStepError } from "./errors";
 import {
   type ExecutionContext,
@@ -108,7 +109,7 @@ import {
   startStepObservability,
   startWorkflowObservability,
 } from "./observability";
-import type { ComposerLogger, UUIDV7 } from "./types";
+import type { ComposerLogger, TraceErrorMessage, UUIDV7 } from "./types";
 import { planWorkflowBatches } from "./workflow-planning";
 
 // ============================================================================
@@ -1217,6 +1218,7 @@ export async function runSyncWorkflow<
   contextProvider?: StepContextProvider<unknown>,
   logger?: ComposerLogger,
   enableDeepFreeze?: boolean,
+  traceErrorMessage?: TraceErrorMessage,
 ): Promise<
   WorkflowResult<
     InferWorkflowResult<Bag, Steps, never, Extract<keyof Config, keyof Bag>> & Partial<Bag>
@@ -1235,6 +1237,7 @@ export async function runSyncWorkflow<
   contextProvider?: StepContextProvider<unknown>,
   logger?: ComposerLogger,
   enableDeepFreeze?: boolean,
+  traceErrorMessage?: TraceErrorMessage,
 ): Promise<
   WorkflowResult<InferWorkflowResult<Bag, Steps, RequiredInitial, Extract<keyof Config, keyof Bag>>>
 >;
@@ -1253,6 +1256,7 @@ export async function runSyncWorkflow<
   contextProvider?: StepContextProvider<unknown>,
   logger?: ComposerLogger,
   enableDeepFreeze?: boolean,
+  traceErrorMessage?: TraceErrorMessage,
 ): Promise<
   WorkflowResult<
     InferWorkflowResult<Bag, Steps, RequiredInitialData, Extract<keyof ConfiguredValues, keyof Bag>>
@@ -1275,7 +1279,13 @@ export async function runSyncWorkflow<
   // Start workflow observability, catching any initialization errors
   let workflowHandle: ReturnType<typeof startWorkflowObservability>;
   try {
-    workflowHandle = startWorkflowObservability(workflowId, wf, initialData, log);
+    workflowHandle = startWorkflowObservability(
+      workflowId,
+      wf,
+      initialData,
+      log,
+      traceErrorMessage,
+    );
   } catch (observabilityError) {
     // Observability initialization failed - return error without throwing
     const error =
@@ -1374,6 +1384,7 @@ export async function runSyncWorkflow<
                 contextProvider,
                 log,
                 deepFreeze_,
+                traceErrorMessage,
               );
             } else {
               // Build input object with only the fields this step needs
@@ -1418,7 +1429,7 @@ export async function runSyncWorkflow<
             return { stepName: step.name, output: stepOutput };
           } catch (error) {
             // Wrap error with workflow context
-            stepError = error instanceof Error ? error : new Error(String(error));
+            stepError = errorForLog(error);
             const workflowError = new WorkflowStepError({
               workflowId: workflowId,
               stepName: step.name,
@@ -1446,9 +1457,10 @@ export async function runSyncWorkflow<
                 log.error("afterStep cleanup failed", {
                   stepName: step.name,
                   workflowId,
-                  cleanupError:
-                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-                  originalStepError: stepError?.message,
+                  error: errorForLog(cleanupError),
+                  // Name only: the step error is logged in full by the workflow failure line,
+                  // and a second copy of its message is a second thing to redact.
+                  originalStepErrorName: stepError?.name,
                 });
               }
             }
@@ -1558,8 +1570,7 @@ export async function runSyncWorkflow<
           // If we can't create context, proceed without it
           log.warn("Failed to create context for error handler", {
             workflowId,
-            contextError:
-              contextError instanceof Error ? contextError.message : String(contextError),
+            error: errorForLog(contextError),
           });
         }
       }
@@ -1577,8 +1588,7 @@ export async function runSyncWorkflow<
           } catch (cleanupError) {
             log.error("afterStep cleanup failed for error handler", {
               workflowId,
-              cleanupError:
-                cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+              error: errorForLog(cleanupError),
             });
           }
         }
@@ -1600,8 +1610,7 @@ export async function runSyncWorkflow<
           } catch (cleanupError) {
             log.error("afterStep cleanup failed for error handler", {
               workflowId,
-              cleanupError:
-                cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+              error: errorForLog(cleanupError),
             });
           }
         }
@@ -1645,6 +1654,7 @@ async function executeFanOut(
   contextProvider?: StepContextProvider<unknown>,
   logger?: ComposerLogger,
   enableDeepFreeze?: boolean,
+  traceErrorMessage?: TraceErrorMessage,
 ): Promise<Record<string, unknown>> {
   const { childWorkflow, mapInput, aggregateResults, concurrency } = metadata;
   const inputs = mapInput(currentBag);
@@ -1669,6 +1679,7 @@ async function executeFanOut(
         contextProvider,
         logger,
         enableDeepFreeze,
+        traceErrorMessage,
       );
 
       if (childResult.error) {

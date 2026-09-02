@@ -48,6 +48,7 @@ import {
   StandardUnit,
 } from "@aws-sdk/client-cloudwatch";
 import type { NativeConnection } from "@temporalio/worker";
+import { errorForLog } from "../../error-for-log";
 import type { ComposerLogger } from "../../types";
 
 const DEFAULT_CLOUDWATCH_NAMESPACE = "Composer";
@@ -168,7 +169,7 @@ function startTaskScaleInProtection(config: {
     } catch (error) {
       logger.warn("Failed to update ECS task scale-in protection", {
         protected: protectedState,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorForLog(error),
       });
     }
   };
@@ -289,10 +290,7 @@ export function startTaskQueueMetrics(config: TaskQueueMetricsConfig): TaskQueue
 
           backlogCount = Number(response.stats?.approximateBacklogCount ?? 0);
         } catch (error: unknown) {
-          logger.warn("Failed to describe task queue", {
-            taskQueue,
-            error: error instanceof Error ? error.message : String(error),
-          });
+          logger.warn("Failed to describe task queue", { taskQueue, error: errorForLog(error) });
         }
 
         metricData.push(
@@ -322,9 +320,7 @@ export function startTaskQueueMetrics(config: TaskQueueMetricsConfig): TaskQueue
         );
       }
     } catch (error: unknown) {
-      logger.warn("Failed to publish task queue metrics", {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      logger.warn("Failed to publish task queue metrics", { error: errorForLog(error) });
     }
 
     scheduleNextPublish();

@@ -23,6 +23,7 @@
  * @module sync-schedules
  */
 import type { Composer } from "../../context-provider";
+import { errorForLog } from "../../error-for-log";
 import type { ScheduleDefinition } from "../schedule/define-schedule";
 
 /**
@@ -129,14 +130,16 @@ export async function runScheduleSync<TContext>(
     });
 
     if (result.errors.length > 0) {
-      for (const { scheduleId, error } of result.errors) {
-        logger.error("Schedule failed to sync", { scheduleId, error });
+      for (const { scheduleId } of result.errors) {
+        // The result is a caller-facing report and keeps its message for the caller. Do not
+        // replay that unclassified text through the injected logger.
+        logger.error("Schedule failed to sync", { scheduleId });
       }
       process.exit(1);
     }
   } catch (error) {
     logger.error("Failed to sync Temporal schedules", {
-      error: error instanceof Error ? error.message : String(error),
+      error: errorForLog(error),
     });
     process.exit(1);
   }

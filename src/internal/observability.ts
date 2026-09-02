@@ -12,14 +12,66 @@ import {
 import type { Step } from "./dag-sync-step";
 import type { Workflow } from "./dag-sync-workflow";
 import { createDefaultMetrics } from "./defaults";
+import { safeErrorCode, safeErrorName } from "./error-for-log";
 import { enableDebugLogging } from "./errors";
-import type { ComposerLogger, Counter, Histogram, MetricsCollector, UUIDV7 } from "./types";
+import type {
+  ComposerLogger,
+  Counter,
+  Histogram,
+  MetricsCollector,
+  TraceErrorMessage,
+  UUIDV7,
+} from "./types";
 
 // Module-level observability singletons for sync workflow execution.
 // Tracing and metrics use @opentelemetry/api directly -- if the user has an OTel SDK
 // configured, these automatically collect data. If not, they are safe no-ops.
 const workflowTracer = trace.getTracer("composer-workflow");
 const workflowMetrics: MetricsCollector = createDefaultMetrics("composer-workflow");
+
+// The renderer is consumer code on a path that is already handling a failure. Letting it
+// throw would replace the workflow's own error with the renderer's, skipping the configured
+// error handler -- the same hazard startWorkflowObservability is wrapped against below. A
+// broken renderer degrades to the default of no message rather than losing the real error.
+function renderTraceMessage(
+  error: Error,
+  traceErrorMessage: TraceErrorMessage | undefined,
+): string | undefined {
+  if (!traceErrorMessage) return undefined;
+  try {
+    const rendered = traceErrorMessage(error);
+    return typeof rendered === "string" ? rendered : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Span attributes bypass whatever redaction a consumer applies to its logs, so the error
+// message is attached only when the consumer supplies a renderer that vouches for it. A name
+// or code only goes on when it is identifier-shaped; both are otherwise user-controlled text.
+function recordSpanError(
+  span: Span,
+  prefix: string,
+  error: Error,
+  traceErrorMessage: TraceErrorMessage | undefined,
+): void {
+  const message = renderTraceMessage(error, traceErrorMessage);
+  const name = safeErrorName(error.name);
+  const code = safeErrorCode((error as { code?: unknown }).code);
+  span.setAttributes({
+    [`${prefix}.status`]: "error",
+    [`${prefix}.error.type`]: name,
+    ...(code === undefined ? {} : { [`${prefix}.error.code`]: code }),
+    ...(message === undefined ? {} : { [`${prefix}.error.message`]: message }),
+  });
+  // Never the Error itself: recordException would copy `message` and the stack -- whose header
+  // line repeats it -- onto the span as `exception.*`.
+  span.recordException(message === undefined ? { name } : { name, message });
+  span.setStatus({
+    code: SpanStatusCode.ERROR,
+    ...(message === undefined ? {} : { message }),
+  });
+}
 
 // Result types for end functions
 export type ObservabilityResult =
@@ -34,6 +86,7 @@ export interface WorkflowObservabilityHandle {
   workflowStartTime: number;
   workflowName: string;
   logger: ComposerLogger;
+  traceErrorMessage?: TraceErrorMessage;
   // Pre-initialized metrics for reuse
   executionsCounter: Counter;
   durationHistogram: Histogram;
@@ -48,6 +101,7 @@ export interface BatchObservabilityHandle {
   workflowName: string;
   batchNumber: number;
   batchSize: number;
+  traceErrorMessage?: TraceErrorMessage;
   // Cache of active SubWorkflow spans within this batch
   subworkflowSpans: Map<string, SubWorkflowObservabilityHandle>;
 }
@@ -68,6 +122,7 @@ export interface StepObservabilityHandle {
   stepName: string;
   stepDurationHistogram: Histogram;
   stepExecutionsCounter: Counter;
+  traceErrorMessage?: TraceErrorMessage;
 }
 
 // Workflow observability functions
@@ -76,6 +131,7 @@ export function startWorkflowObservability(
   workflow: Workflow<any, any, any>,
   initialData: any,
   logger: ComposerLogger,
+  traceErrorMessage?: TraceErrorMessage,
 ): WorkflowObservabilityHandle {
   // Create workflow-level span
   const workflowSpan = workflowTracer.startSpan(`workflow.${workflow.name}`, {
@@ -122,6 +178,7 @@ export function startWorkflowObservability(
     workflowStartTime,
     workflowName: workflow.name,
     logger,
+    traceErrorMessage,
     executionsCounter,
     durationHistogram,
     stepExecutionsCounter,
@@ -192,11 +249,10 @@ export function endWorkflowObservability(
       workflowName: handle.workflowName,
       workflowId: handle.workflowId,
       duration: workflowDuration,
-      error: {
-        name: result.error.name,
-        message: result.error.message,
-        stack: result.error.stack,
-      },
+      // The Error itself, not a projection of it: flattening here strips the structured fields
+      // (a driver error's `code`, `severity`, `table`, `constraint`) that the injected logger's
+      // serializer needs to classify the failure and rebuild a message from safe parts.
+      error: result.error,
       failureContext: {
         stepName: executionContext.stepName,
         stepNumber: executionContext.stepNumber,
@@ -215,18 +271,7 @@ export function endWorkflowObservability(
 
     handle.logger.error("Workflow execution failed", logContext);
 
-    // Add workflow error attributes
-    handle.workflowSpan.setAttributes({
-      "workflow.status": "error",
-      "workflow.error.message": result.error.message,
-    });
-    handle.workflowSpan.recordException(result.error);
-
-    // Set span status to ERROR
-    handle.workflowSpan.setStatus({
-      code: SpanStatusCode.ERROR,
-      message: result.error.message,
-    });
+    recordSpanError(handle.workflowSpan, "workflow", result.error, handle.traceErrorMessage);
   }
 
   handle.workflowSpan.end();
@@ -268,6 +313,7 @@ export function startBatchObservability(
     workflowName: workflowHandle.workflowName,
     batchNumber,
     batchSize: stepNames.length,
+    traceErrorMessage: workflowHandle.traceErrorMessage,
     subworkflowSpans: new Map(),
   };
 }
@@ -286,18 +332,7 @@ export function endBatchObservability(
     // Set span status to OK
     handle.batchSpan.setStatus({ code: SpanStatusCode.OK });
   } else {
-    // Add batch error attributes
-    handle.batchSpan.setAttributes({
-      "workflow.batch.status": "error",
-      "workflow.batch.error.message": result.error.message,
-    });
-    handle.batchSpan.recordException(result.error);
-
-    // Set span status to ERROR
-    handle.batchSpan.setStatus({
-      code: SpanStatusCode.ERROR,
-      message: result.error.message,
-    });
+    recordSpanError(handle.batchSpan, "workflow.batch", result.error, handle.traceErrorMessage);
   }
 
   // End all SubWorkflow spans before ending the batch span
@@ -426,6 +461,7 @@ export function startStepObservability(
     stepName: step.name,
     stepDurationHistogram: workflowHandle.stepDurationHistogram,
     stepExecutionsCounter: workflowHandle.stepExecutionsCounter,
+    traceErrorMessage: workflowHandle.traceErrorMessage,
   };
 }
 
@@ -469,18 +505,7 @@ export function endStepObservability(
       "step.status": "error",
     });
 
-    // Add step error attributes
-    handle.stepSpan.setAttributes({
-      "step.status": "error",
-      "step.error.message": result.error.message,
-    });
-    handle.stepSpan.recordException(result.error);
-
-    // Set span status to ERROR
-    handle.stepSpan.setStatus({
-      code: SpanStatusCode.ERROR,
-      message: result.error.message,
-    });
+    recordSpanError(handle.stepSpan, "step", result.error, handle.traceErrorMessage);
   }
 
   handle.stepSpan.end();

@@ -1,3 +1,4 @@
+import { SpanStatusCode } from "@opentelemetry/api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createWorkflow, type Step, type Workflow } from "../internal";
@@ -249,11 +250,7 @@ describe("Observability Functions", () => {
             workflowName: "test-workflow",
             workflowId: "test-wf-id",
             duration: expect.any(Number),
-            error: {
-              name: "Error",
-              message: "Test error",
-              stack: expect.any(String),
-            },
+            error: testError,
             failureContext: expect.objectContaining({
               stepName: "testStep",
               stepNumber: 1,
@@ -355,9 +352,9 @@ describe("Observability Functions", () => {
 
         expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
           "workflow.status": "error",
-          "workflow.error.message": "Test error",
+          "workflow.error.type": "Error",
         });
-        expect(handle.workflowSpan.recordException).toHaveBeenCalledWith(testError);
+        expect(handle.workflowSpan.recordException).toHaveBeenCalledWith({ name: "Error" });
         expect(handle.workflowSpan.end).toHaveBeenCalled();
       });
     });
@@ -443,9 +440,9 @@ describe("Observability Functions", () => {
 
         expect(handle.batchSpan.setAttributes).toHaveBeenCalledWith({
           "workflow.batch.status": "error",
-          "workflow.batch.error.message": "Batch error",
+          "workflow.batch.error.type": "Error",
         });
-        expect(handle.batchSpan.recordException).toHaveBeenCalledWith(testError);
+        expect(handle.batchSpan.recordException).toHaveBeenCalledWith({ name: "Error" });
         expect(handle.batchSpan.end).toHaveBeenCalled();
       });
     });
@@ -597,9 +594,9 @@ describe("Observability Functions", () => {
 
         expect(handle.stepSpan.setAttributes).toHaveBeenCalledWith({
           "step.status": "error",
-          "step.error.message": "Step error",
+          "step.error.type": "Error",
         });
-        expect(handle.stepSpan.recordException).toHaveBeenCalledWith(testError);
+        expect(handle.stepSpan.recordException).toHaveBeenCalledWith({ name: "Error" });
         expect(handle.stepSpan.end).toHaveBeenCalled();
       });
 
@@ -651,6 +648,262 @@ describe("Observability Functions", () => {
       expect(handle1.workflowName).toBe("workflow-1");
       expect(handle2.workflowName).toBe("workflow-2");
       expect(handle1.workflowSpan).not.toBe(handle2.workflowSpan);
+    });
+  });
+
+  // Span attributes are written straight to the trace backend, so nothing a consumer's
+  // logger redacts applies to them. Composer attaches a message only when told how.
+  describe("traceErrorMessage", () => {
+    const inlinedSql = new Error(`insert into "user" ("email") values ('jane@example.com')`);
+
+    it("should attach a message the renderer returns, on the workflow span", () => {
+      const handle = startWorkflowObservability(
+        workflowId("wf-id"),
+        mockWorkflow,
+        {},
+        mockLogger,
+        () => "database error table=user",
+      );
+
+      endWorkflowObservability(
+        handle,
+        { success: false, error: inlinedSql },
+        { totalSteps: 1, batchNumber: 1 },
+      );
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+        "workflow.error.message": "database error table=user",
+      });
+      expect(handle.workflowSpan.recordException).toHaveBeenCalledWith({
+        name: "Error",
+        message: "database error table=user",
+      });
+      expect(handle.workflowSpan.setStatus).toHaveBeenCalledWith({
+        code: SpanStatusCode.ERROR,
+        message: "database error table=user",
+      });
+    });
+
+    it("should attach no message when the renderer declines this error", () => {
+      const handle = startWorkflowObservability(
+        workflowId("wf-id"),
+        mockWorkflow,
+        {},
+        mockLogger,
+        () => undefined,
+      );
+
+      endWorkflowObservability(
+        handle,
+        { success: false, error: inlinedSql },
+        { totalSteps: 1, batchNumber: 1 },
+      );
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+      });
+      expect(handle.workflowSpan.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.ERROR });
+    });
+
+    it("should reach batch and step spans, which end without the workflow handle in scope", () => {
+      const handle = startWorkflowObservability(
+        workflowId("wf-id"),
+        mockWorkflow,
+        {},
+        mockLogger,
+        (error) => `scrubbed:${error.name}`,
+      );
+      const batchHandle = startBatchObservability(handle, 1, ["testStep"]);
+      const stepHandle = startStepObservability(handle, batchHandle, mockStep);
+
+      endStepObservability(stepHandle, { success: false, error: inlinedSql });
+      endBatchObservability(batchHandle, { success: false, error: inlinedSql });
+
+      expect(stepHandle.stepSpan.setAttributes).toHaveBeenCalledWith({
+        "step.status": "error",
+        "step.error.type": "Error",
+        "step.error.message": "scrubbed:Error",
+      });
+      expect(batchHandle.batchSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.batch.status": "error",
+        "workflow.batch.error.type": "Error",
+        "workflow.batch.error.message": "scrubbed:Error",
+      });
+    });
+
+    // recordException would otherwise copy `message` and the stack -- whose header line
+    // repeats the message -- onto the span as `exception.*`.
+    it("should never hand the Error itself to recordException", () => {
+      const handle = startWorkflowObservability(workflowId("wf-id"), mockWorkflow, {}, mockLogger);
+
+      endWorkflowObservability(
+        handle,
+        { success: false, error: inlinedSql },
+        { totalSteps: 1, batchNumber: 1 },
+      );
+
+      const recorded = vi.mocked(handle.workflowSpan.recordException).mock.calls[0]?.[0];
+      expect(recorded).not.toBe(inlinedSql);
+      expect(recorded).not.toHaveProperty("stack");
+      expect(JSON.stringify(recorded)).not.toContain("jane@example.com");
+    });
+
+    // A renderer that throws must not become the workflow's error: that would skip the
+    // configured error handler and turn a returned failure into a thrown one.
+    it("should fall back to no message when the renderer throws", () => {
+      const handle = startWorkflowObservability(
+        workflowId("wf-id"),
+        mockWorkflow,
+        {},
+        mockLogger,
+        () => {
+          throw new Error("renderer is broken");
+        },
+      );
+
+      expect(() =>
+        endWorkflowObservability(
+          handle,
+          { success: false, error: inlinedSql },
+          { totalSteps: 1, batchNumber: 1 },
+        ),
+      ).not.toThrow();
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+      });
+      expect(handle.workflowSpan.end).toHaveBeenCalled();
+    });
+
+    it("should fall back to no message when a JavaScript renderer returns a non-string", () => {
+      const handle = startWorkflowObservability(
+        workflowId("wf-id"),
+        mockWorkflow,
+        {},
+        mockLogger,
+        (() => ({ unsafe: true })) as unknown as (error: Error) => string | undefined,
+      );
+
+      expect(() =>
+        endWorkflowObservability(
+          handle,
+          { success: false, error: inlinedSql },
+          { totalSteps: 1, batchNumber: 1 },
+        ),
+      ).not.toThrow();
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+      });
+    });
+
+    // A code is an identifier, not prose -- it is the triage signal that survives withholding
+    // the message.
+    it("should attach the error's code when it has one", () => {
+      const coded = Object.assign(new Error("insert into ..."), { code: "23505" });
+      const handle = startWorkflowObservability(workflowId("wf-id"), mockWorkflow, {}, mockLogger);
+
+      endWorkflowObservability(
+        handle,
+        { success: false, error: coded },
+        { totalSteps: 1, batchNumber: 1 },
+      );
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+        "workflow.error.code": "23505",
+      });
+    });
+
+    it("should attach an alphanumeric SQLSTATE code", () => {
+      const coded = Object.assign(new Error("relation missing"), { code: "42P01" });
+      const handle = startWorkflowObservability(workflowId("wf-id"), mockWorkflow, {}, mockLogger);
+
+      endWorkflowObservability(
+        handle,
+        { success: false, error: coded },
+        { totalSteps: 1, batchNumber: 1 },
+      );
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+        "workflow.error.code": "42P01",
+      });
+    });
+
+    it("should omit the code attribute when the error carries a non-string code", () => {
+      const coded = Object.assign(new Error("boom"), { code: 42 });
+      const handle = startWorkflowObservability(workflowId("wf-id"), mockWorkflow, {}, mockLogger);
+
+      endWorkflowObservability(
+        handle,
+        { success: false, error: coded },
+        { totalSteps: 1, batchNumber: 1 },
+      );
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+      });
+    });
+
+    it("does not put arbitrary error names or codes on the span", () => {
+      const coded = Object.assign(new Error("insert into ..."), {
+        name: "CUSTOMER_SECRET_TOKEN_ABC123",
+        code: "CUSTOMER_SECRET_TOKEN_ABC123",
+      });
+      const handle = startWorkflowObservability(workflowId("wf-id"), mockWorkflow, {}, mockLogger);
+
+      endWorkflowObservability(
+        handle,
+        { success: false, error: coded },
+        { totalSteps: 1, batchNumber: 1 },
+      );
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+      });
+      expect(handle.workflowSpan.recordException).toHaveBeenCalledWith({ name: "Error" });
+    });
+
+    it("does not mistake a SQLSTATE-shaped arbitrary code for a PostgreSQL code", () => {
+      const coded = Object.assign(new Error("insert into ..."), { code: "A1B2C" });
+      const handle = startWorkflowObservability(workflowId("wf-id"), mockWorkflow, {}, mockLogger);
+
+      endWorkflowObservability(
+        handle,
+        { success: false, error: coded },
+        { totalSteps: 1, batchNumber: 1 },
+      );
+
+      expect(handle.workflowSpan.setAttributes).toHaveBeenCalledWith({
+        "workflow.status": "error",
+        "workflow.error.type": "Error",
+      });
+    });
+
+    // The failure log is the sink a consumer's logger can scrub; the Error goes there whole.
+    it("should still log the Error itself, message and all", () => {
+      const handle = startWorkflowObservability(workflowId("wf-id"), mockWorkflow, {}, mockLogger);
+
+      endWorkflowObservability(
+        handle,
+        { success: false, error: inlinedSql },
+        { totalSteps: 1, batchNumber: 1 },
+      );
+
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        "Workflow execution failed",
+        expect.objectContaining({ error: inlinedSql }),
+      );
     });
   });
 });

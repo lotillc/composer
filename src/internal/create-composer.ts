@@ -83,7 +83,7 @@ export function createComposer<TContext>(config: ComposerConfig<TContext>): Sync
 export function createComposer<TContext>(
   config: ComposerConfig<TContext>,
 ): SyncComposer<TContext> | Composer<TContext> {
-  const { contextProvider, deepFreeze, temporal } = config;
+  const { contextProvider, deepFreeze, temporal, traceErrorMessage } = config;
 
   // Resolve effective logger (use provided or default) before defining closures
   // so all closures capture the resolved logger consistently.
@@ -133,6 +133,7 @@ export function createComposer<TContext>(
       internalContextProvider,
       resolvedLogger,
       deepFreeze,
+      traceErrorMessage,
     ) as Promise<WorkflowResult<Bag>>;
   }
 
@@ -208,6 +209,7 @@ export function createComposer<TContext>(
         clientConfig: {
           address: temporalConfig.serverAddress,
           namespace: temporalConfig.namespace,
+          dataConverter: temporalConfig.dataConverter,
         },
         versioningOverride: workflowVersioningOverride,
         awaitCheckpoint: options?.awaitCheckpoint,
@@ -257,6 +259,7 @@ export function createComposer<TContext>(
         clientConfig: {
           address: temporalConfig.serverAddress,
           namespace: temporalConfig.namespace,
+          dataConverter: temporalConfig.dataConverter,
         },
         versioningOverride: workflowVersioningOverride,
       },
@@ -273,6 +276,7 @@ export function createComposer<TContext>(
       return describeWorkflowTemporal(workflowId as UUIDV7, {
         address: temporalConfig.serverAddress,
         namespace: temporalConfig.namespace,
+        dataConverter: temporalConfig.dataConverter,
       });
     },
 
@@ -280,6 +284,7 @@ export function createComposer<TContext>(
       const description = await describeWorkflowTemporal(workflowId as UUIDV7, {
         address: temporalConfig.serverAddress,
         namespace: temporalConfig.namespace,
+        dataConverter: temporalConfig.dataConverter,
       });
       return description?.status === "RUNNING";
     },
@@ -294,6 +299,8 @@ export function createComposer<TContext>(
         namespace: temporalConfig.namespace,
         deploymentSeriesName: seriesNames.activities,
         buildId: temporalConfig.buildId,
+        dataConverter: temporalConfig.dataConverter,
+        interceptors: temporalConfig.interceptors,
         ...config,
         contextProvider: internalContextProvider,
         logger: resolvedLogger,
@@ -310,6 +317,8 @@ export function createComposer<TContext>(
         namespace: temporalConfig.namespace,
         deploymentSeriesName: seriesNames.workflows,
         buildId: temporalConfig.buildId,
+        dataConverter: temporalConfig.dataConverter,
+        interceptors: temporalConfig.interceptors,
         ...config,
         logger: resolvedLogger,
       });
@@ -320,6 +329,7 @@ export function createComposer<TContext>(
         temporalConfig: {
           address: temporalConfig.serverAddress,
           namespace: temporalConfig.namespace,
+          dataConverter: temporalConfig.dataConverter,
         },
         schedules,
         dryRun: options?.dryRun,

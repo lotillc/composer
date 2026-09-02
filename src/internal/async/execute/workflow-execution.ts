@@ -24,7 +24,12 @@ import {
 import type { UUIDV7 } from "../../types";
 import type { TemporalWorkflowResult } from "../build/workflow-factory";
 import { awaitCheckpointUpdate } from "../build/workflow-factory";
-import { createTemporalClient, executeWorkflow, executeWorkflowAndWait } from "./temporal-client";
+import {
+  createTemporalClient,
+  executeWorkflow,
+  executeWorkflowAndWait,
+  type TemporalClientConfig,
+} from "./temporal-client";
 
 /**
  * Options for Temporal workflow execution.
@@ -35,10 +40,7 @@ export interface TemporalExecutionOptions {
   /**
    * Temporal server connection configuration.
    */
-  clientConfig: {
-    address: string;
-    namespace: string;
-  };
+  clientConfig: TemporalClientConfig;
 
   /**
    * Versioning override for Worker Versioning.

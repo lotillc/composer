@@ -93,3 +93,36 @@ export interface ComposerLogger {
   error(message: string, metadata?: Record<string, unknown>): void;
   debug(message: string, metadata?: Record<string, unknown>): void;
 }
+
+// ============================================================================
+// Trace Redaction
+// ============================================================================
+
+/**
+ * Renders an error into the text Composer attaches to a trace span.
+ *
+ * Span attributes are written straight to the trace backend, so nothing a logger
+ * redacts applies to them. Composer cannot know whether a step's error message is
+ * safe -- a database driver, for one, inlines row values into it -- so by default it
+ * attaches no message at all and spans carry only the error's name. Supply this to
+ * put text back on the span, scrubbed or raw as you decide.
+ *
+ * Returning `undefined` for a given error keeps that error message off the span.
+ *
+ * The error handed to this is Composer's own `WorkflowStepError` / `WorkflowBatchError`
+ * wrapper, and `WorkflowStepError`'s message embeds the original's. A renderer that reads
+ * `.message` therefore sees the raw text -- classify on `.originalError` / `.cause` and
+ * build the span text from safe parts rather than trying to salvage the message.
+ *
+ * @example
+ * ```typescript
+ * createComposer({
+ *   contextProvider,
+ *   traceErrorMessage: (error) => {
+ *     const cause = error instanceof WorkflowStepError ? error.originalError : error;
+ *     return isDriverError(cause) ? `${cause.name} ${cause.code}` : cause.message;
+ *   },
+ * });
+ * ```
+ */
+export type TraceErrorMessage = (error: Error) => string | undefined;
