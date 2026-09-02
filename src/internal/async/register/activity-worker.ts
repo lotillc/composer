@@ -222,15 +222,25 @@ function stackFramesOf(error: Error): string | undefined {
 
   const originalPrepareStackTrace = Error.prepareStackTrace;
   const marker = "__composer_stack_frames__";
+  let hostFormattedStack: unknown;
+  let hostFormatterRan = false;
   try {
-    Error.prepareStackTrace = (_error, callSites) =>
-      `${marker}${callSites.map((callSite) => `    at ${callSite.toString()}`).join("\n")}`;
+    Error.prepareStackTrace = (stackError, callSites) => {
+      // V8 caches the formatter result. Render the host's formatter now so the original Error
+      // still has the stack its logger and hooks expect after we retain only frames for Temporal.
+      hostFormatterRan = true;
+      hostFormattedStack = originalPrepareStackTrace.call(Error, stackError, callSites);
+      return `${marker}${callSites.map((callSite) => `    at ${callSite.toString()}`).join("\n")}`;
+    };
     const stack = error.stack;
     if (typeof stack !== "string" || !stack.startsWith(marker)) return undefined;
 
     const frames = stack.slice(marker.length);
-    // V8 caches the rendered stack. Keep that cache free of the implementation marker.
-    error.stack = frames;
+    if (hostFormatterRan) {
+      // `Error.prepareStackTrace` may deliberately return any value, not only a string.
+      // Preserve that exact host result rather than leaving our internal marker cached.
+      error.stack = hostFormattedStack as string;
+    }
     return frames || undefined;
   } catch {
     return undefined;
