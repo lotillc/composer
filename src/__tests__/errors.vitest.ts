@@ -188,6 +188,34 @@ describe("WorkflowBatchError", () => {
     expect(context.failedSteps[0]).not.toHaveProperty("message");
     expect(JSON.stringify(context.failedSteps)).not.toContain("first");
   });
+
+  it("does not copy an arbitrary original error name into log context", () => {
+    const original = Object.assign(new Error("safe message"), { name: "customer-secret@example.com" });
+    const stepError = new WorkflowStepError({
+      workflowId: "test",
+      stepName: "failingStep",
+      batchNumber: 1,
+      originalError: original,
+      bagState: {},
+    });
+
+    const context = createBatchError([stepError]).toLogContext();
+    expect(context.failedSteps[0]?.errorName).toBe("Error");
+  });
+
+  it("does not copy an arbitrary original error code into log context", () => {
+    const original = Object.assign(new Error("safe message"), { code: "CUSTOMER_SECRET_TOKEN" });
+    const stepError = new WorkflowStepError({
+      workflowId: "test",
+      stepName: "failingStep",
+      batchNumber: 1,
+      originalError: original,
+      bagState: {},
+    });
+
+    const context = createBatchError([stepError]).toLogContext();
+    expect(context.failedSteps[0]?.code).toBeUndefined();
+  });
 });
 
 describe("WorkflowErrorHandlerFailure", () => {

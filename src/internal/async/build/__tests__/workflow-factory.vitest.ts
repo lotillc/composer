@@ -1828,7 +1828,7 @@ describe("WorkflowFactory", () => {
         expect(error?.errors?.[0]?.code).toBe("CONTENT_REJECTED");
       });
 
-      it("does not serialize arbitrary names, codes, or parent codes", async () => {
+      it("sanitizes arbitrary names while preserving identifier-shaped classifier codes", async () => {
         const secret = "CUSTOMER_SECRET_TOKEN";
         mocks.activityFunctions["failingStep-abc"] = vi.fn(async () => {
           const root = Object.assign(new Error(inlinedSql), { name: secret, code: "A1B2C" });
@@ -1844,7 +1844,7 @@ describe("WorkflowFactory", () => {
         const serialized = JSON.stringify(failure.details);
 
         expect(serialized).not.toContain(secret);
-        expect(serialized).not.toContain("A1B2C");
+        expect(serialized).toContain("A1B2C");
         expect(serialized).toContain("23505");
       });
 
@@ -1879,7 +1879,7 @@ describe("WorkflowFactory", () => {
         expect(failure.message).toContain("batch 1");
       });
 
-      it("does not put an unapproved handler error name or code in Runtime logs", async () => {
+      it("sanitizes an unapproved handler error name while retaining its classifier code", async () => {
         mocks.activityFunctions["errorHandler"] = vi.fn(async () => {
           throw Object.assign(new Error(inlinedSql), {
             name: "CUSTOMER_SECRET_TOKEN",
@@ -1891,7 +1891,7 @@ describe("WorkflowFactory", () => {
 
         expect(mocks.log.error).toHaveBeenCalledWith(
           "Error handler activity failed",
-          expect.objectContaining({ errorName: "Error", errorCode: undefined }),
+          expect.objectContaining({ errorName: "Error", errorCode: "A1B2C" }),
         );
       });
     });
@@ -2103,7 +2103,7 @@ describe("WorkflowFactory", () => {
         );
       });
 
-      it("does not put an unapproved child code in the FanOut Runtime log", async () => {
+      it("keeps an identifier-shaped child classifier code in the FanOut Runtime log", async () => {
         mocks.activityFunctions[baseFanOut.mapInputActivityName] = vi.fn(async () => [{ item: "a" }]);
         mocks.activityFunctions[baseFanOut.aggregateResultsActivityName] = vi.fn(async () => ({
           results: [],
@@ -2127,7 +2127,7 @@ describe("WorkflowFactory", () => {
 
         expect(mocks.log.error).toHaveBeenCalledWith(
           "FanOut: child workflow failures",
-          expect.objectContaining({ failures: "child 0" }),
+          expect.objectContaining({ failures: "child 0: A1B2C" }),
         );
       });
 

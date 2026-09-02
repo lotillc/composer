@@ -19,7 +19,7 @@
 
 import * as wf from "@temporalio/workflow";
 import type { DurationString } from "../../dag-sync-step";
-import { safeErrorCode, safeErrorName } from "../../error-for-log";
+import { safeErrorName } from "../../error-for-log";
 
 /**
  * Input structure for our generated Temporal workflows.
@@ -99,29 +99,41 @@ interface ApplicationFailureLike extends ErrorWithCause {
 /**
  * LotiError formats messages as "CODE: message" - extract code from message if not available elsewhere.
  *
- * A prefix is still untrusted text. It must be one of the safe codes allowed by the same policy
- * that protects default trace fields before it can leave the workflow sandbox.
+ * A code is a documented application classifier here, so it may be preserved when it has the
+ * identifier shape the error-matching contract guarantees. Unlike a name or message, arbitrary
+ * prose cannot become one through this path. Default trace attributes have a stricter policy.
  */
 function extractCodeFromMessage(message: string | undefined): string | undefined {
   if (!message) return undefined;
   const colonIndex = message.indexOf(": ");
   if (colonIndex <= 0) return undefined;
   const candidate = message.substring(0, colonIndex);
-  return safeErrorCode(candidate);
+  return workflowErrorCode(candidate);
 }
 
 /** Code carried by the error a FanOut throws when any of its children fail. */
 export const FANOUT_CHILD_FAILURE_CODE = "FANOUT_CHILD_FAILURE";
 
-/** A thrown value's approved code, if it carries one. */
-function codeOf(value: unknown): string | undefined {
-  const code = (value as { code?: unknown } | null | undefined)?.code;
-  return safeErrorCode(code);
+const WORKFLOW_ERROR_CODE = /^[A-Z0-9_]{2,50}$/;
+
+function workflowErrorCode(value: unknown): string | undefined {
+  return typeof value === "string" && WORKFLOW_ERROR_CODE.test(value) ? value : undefined;
+}
+
+/** A thrown value's classifier code, walking Temporal's wrapper chain when necessary. */
+function codeOf(value: unknown, depth = 0): string | undefined {
+  if (value === null || typeof value !== "object" || depth >= 5) return undefined;
+  const error = value as { code?: unknown; type?: unknown; cause?: unknown };
+  return (
+    workflowErrorCode(error.code) ??
+    codeOf(error.cause, depth + 1) ??
+    workflowErrorCode(error.type)
+  );
 }
 
 function firstSafeCode(...values: unknown[]): string | undefined {
   for (const value of values) {
-    const code = safeErrorCode(value);
+    const code = workflowErrorCode(value);
     if (code !== undefined) return code;
   }
   return undefined;
@@ -130,7 +142,7 @@ function firstSafeCode(...values: unknown[]): string | undefined {
 function safeParentCodes(values: readonly string[] | undefined): readonly string[] | undefined {
   if (!Array.isArray(values)) return undefined;
   const codes = values?.flatMap((value) => {
-    const code = safeErrorCode(value);
+    const code = workflowErrorCode(value);
     return code === undefined ? [] : [code];
   });
   return codes && codes.length > 0 ? codes : undefined;
@@ -664,7 +676,7 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
                 // Error was transformed
                 resultError = {
                   message: handlerResult.error.message,
-                  code: safeErrorCode(handlerResult.error.code),
+                  code: workflowErrorCode(handlerResult.error.code),
                   type: "TransformedError",
                   batchNumber,
                 };

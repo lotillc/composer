@@ -1,3 +1,5 @@
+import { safeErrorCode, safeErrorName } from "./error-for-log";
+
 // Hard-coded constant for controlling debug logging
 // TODO: Make this configurable via feature flags in the future
 export const enableDebugLogging = true;
@@ -141,8 +143,8 @@ export class WorkflowBatchError<Bag = Record<string, any>> extends Error {
       failedStepCount: this.errors.length,
       failedSteps: this.errors.map((e) => ({
         stepName: e.stepName,
-        code: e.code,
-        errorName: e.originalError.name,
+        code: safeErrorCode(e.code),
+        errorName: safeErrorName(e.originalError.name),
       })),
       bagState: this.bagState,
     };
