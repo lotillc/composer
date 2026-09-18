@@ -15,7 +15,12 @@ import { realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import type { DurationString, Step, StepRetryPolicy } from "../../dag-sync-step";
+import type {
+  DurationString,
+  Step,
+  StepPollPolicy,
+  StepRetryPolicy,
+} from "../../dag-sync-step";
 import { DEFAULT_CHECKPOINT_TIMEOUT_MS, type Workflow } from "../../dag-sync-workflow";
 import { planWorkflowBatches } from "../../workflow-planning";
 import type { StepActivityConfig, WorkflowPlan } from "../build/workflow-factory";
@@ -33,8 +38,14 @@ function buildActivityConfig(step: Step<any, any, any>): StepActivityConfig | un
     asyncStartToCloseTimeout?: DurationString;
     asyncHeartbeatTimeout?: DurationString;
     asyncRetry?: StepRetryPolicy;
+    asyncPoll?: StepPollPolicy;
   };
-  if (!typed.asyncStartToCloseTimeout && !typed.asyncHeartbeatTimeout && !typed.asyncRetry) {
+  if (
+    !typed.asyncStartToCloseTimeout &&
+    !typed.asyncHeartbeatTimeout &&
+    !typed.asyncRetry &&
+    !typed.asyncPoll
+  ) {
     return undefined;
   }
   return {
@@ -43,6 +54,7 @@ function buildActivityConfig(step: Step<any, any, any>): StepActivityConfig | un
     }),
     ...(typed.asyncHeartbeatTimeout && { heartbeatTimeout: typed.asyncHeartbeatTimeout }),
     ...(typed.asyncRetry && { retry: typed.asyncRetry }),
+    ...(typed.asyncPoll && { poll: typed.asyncPoll }),
   };
 }
 

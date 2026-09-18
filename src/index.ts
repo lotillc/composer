@@ -35,6 +35,7 @@ export {
   type ScheduleSpec,
   type Step,
   type StepContextProvider,
+  type StepPollPolicy,
   type StepRetryPolicy,
   type SyncComposer,
   type SyncSchedulesResult,
@@ -101,10 +102,13 @@ export { findPackageRoot } from "./internal/async/utils/find-package-root";
 export {
   type ErrorMatchTarget,
   matchesError,
+  StepNotReadyError,
+  StepPollTimeoutError,
   WorkflowBatchError,
   WorkflowErrorHandlerFailure,
   WorkflowStepError,
 } from "./internal/errors";
+export { STEP_NOT_READY_CODE, STEP_POLL_TIMEOUT_CODE } from "./internal/poll-codes";
 export type { ComposerLogger, TraceErrorMessage } from "./internal/types";
 export type { WorkflowExecutionStatusName } from "@temporalio/client";
 // Re-exported so a consumer can type a converter or an interceptor without taking a direct

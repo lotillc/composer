@@ -461,6 +461,32 @@ describe("Activity Worker", () => {
 
       // A driver error's structured fields are what a consumer's serializer classifies on:
       // flattening to `error.message` here leaves it only the inlined SQL to pattern-match.
+      it("logs a polling step's not-ready signal below error severity", async () => {
+        const logger = makeLogger();
+        const notReady = Object.assign(new Error("Step not ready"), {
+          code: "COMPOSER_STEP_NOT_READY",
+        });
+        mockStepRun.mockRejectedValueOnce(notReady);
+
+        await createActivityWorkers(createTestConfig({ logger }));
+        const activityFn = mockWorkerCreate.mock.calls[0]?.[0].activities.testStep;
+
+        await expect(
+          (activityFn as (a: unknown, b: unknown) => Promise<unknown>)({}, { input: "test" }),
+        ).rejects.toBeInstanceOf(ApplicationFailure);
+
+        // A healthy long poll throws once per tick; at error severity it would page
+        // someone every few seconds.
+        expect(logger.error).not.toHaveBeenCalledWith(
+          "Activity execution failed",
+          expect.anything(),
+        );
+        expect(logger.debug).toHaveBeenCalledWith(
+          "Activity execution failed",
+          expect.objectContaining({ code: "COMPOSER_STEP_NOT_READY" }),
+        );
+      });
+
       it("should log the failure as the Error itself, structured fields intact", async () => {
         const logger = makeLogger();
         const driverError = Object.assign(new Error('insert into "user" ... - detail: Key ...'), {
