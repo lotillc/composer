@@ -122,7 +122,9 @@ export const awaitClearance = step<MyBag, MyContext>()({
 });
 ```
 
-The interval grows by `backoffCoefficient` (default 2), is capped at `maximumInterval`, and carries 20% jitter so a shared dependency is not polled in lockstep. `timeout` bounds the total elapsed wait and is checked before each sleep, so it is a real ceiling; exceeding it fails the step with code `COMPOSER_STEP_POLL_TIMEOUT` (exported as `STEP_POLL_TIMEOUT_CODE`) — map it if you classify failures by code.
+The interval grows by `backoffCoefficient` (default 2), is capped at `maximumInterval`, and carries 20% jitter so a shared dependency is not polled in lockstep. `timeout` is a wall-clock ceiling measured against the workflow clock — it counts the time attempts spend running, not only the time spent sleeping — and is checked before each sleep so the final wait cannot overshoot it. Exceeding it fails the step with code `COMPOSER_STEP_POLL_TIMEOUT` (exported as `STEP_POLL_TIMEOUT_CODE`) — map it if you classify failures by code.
+
+A not-ready signal is logged at debug rather than error, so a healthy long poll does not emit an error line per tick. The schedule itself is validated before the loop runs: a sub-1 or non-finite `backoffCoefficient`, or a non-positive interval, is rejected rather than silently collapsing every wait to the 1ms floor.
 
 Polling does not spend the step's retry budget: `COMPOSER_STEP_NOT_READY` is added to the activity's `nonRetryableErrorTypes` automatically, so Temporal hands control back to the workflow on the first signal rather than retrying first. `asyncRetry` keeps covering genuine transient failures, and any `nonRetryableErrorTypes` the step declares are preserved alongside the signal.
 

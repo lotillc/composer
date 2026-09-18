@@ -37,6 +37,7 @@ import type { AsyncStepRuntime, Step } from "../../dag-sync-step";
 import type { Workflow } from "../../dag-sync-workflow";
 import { defaultLogger } from "../../defaults";
 import { errorForLog } from "../../error-for-log";
+import { STEP_NOT_READY_CODE } from "../../poll-codes";
 import type { ComposerLogger } from "../../types";
 import { denamespaceSyntheticSteps } from "../build-scripts/utils/common";
 import { isFanOut } from "../build-scripts/utils/type-guards";
@@ -422,15 +423,19 @@ function createActivitiesFromWorkflows<TContext>(
         // Capture V8's structured call sites before a logger renders and caches `error.stack`.
         // The original error is still handed to the logger so serializers retain its fields.
         const codedFailure = isComposerError(error) ? toCodedApplicationFailure(error) : undefined;
+        const code = isComposerError(error) ? error.code : undefined;
+        // A polling step signals "not ready" by throwing on every expected attempt. At
+        // error severity a healthy poll would page someone once per tick.
+        const log = code === STEP_NOT_READY_CODE ? logger.debug : logger.error;
         // The Error itself, not its message: flattening strips the structured fields (a
         // driver error's `code`, `severity`, `table`, `constraint`) that the injected
         // logger's serializer needs to classify the failure and rebuild a safe message.
-        logger.error("Activity execution failed", {
+        log.call(logger, "Activity execution failed", {
           activityName,
           stepName,
           workflowId,
           error: stepError,
-          code: isComposerError(error) ? error.code : undefined,
+          code,
         });
         // Convert structured errors to ApplicationFailure to preserve the error code through serialization
         if (codedFailure) {

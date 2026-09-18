@@ -84,6 +84,7 @@ const mocks = vi.hoisted(() => ({
   // backoff schedule is asserted directly and the suite stays instant.
   sleep: vi.fn(async (_duration: number | string) => {}),
   sleptMs: [] as number[],
+  nowMs: 0,
   activityFunctions: {} as Record<string, MockedFunction<ActivityFn>>,
   registeredHandlers: new Map<symbol, (...args: unknown[]) => unknown>(),
 }));
@@ -207,10 +208,15 @@ describe("WorkflowFactory", () => {
         // Default: immediately resolve
       });
 
-      // Record requested waits rather than performing them.
+      // Record requested waits rather than performing them, and advance a controlled
+      // clock by the slept amount -- which is what Temporal does to workflow time, and
+      // is what makes the poll loop's deadline reachable without real waiting.
       mocks.sleptMs = [];
+      mocks.nowMs = 1_700_000_000_000;
+      vi.spyOn(Date, "now").mockImplementation(() => mocks.nowMs);
       mocks.sleep.mockImplementation(async (duration: number | string) => {
         mocks.sleptMs.push(duration as number);
+        mocks.nowMs += duration as number;
       });
     });
 
@@ -2753,6 +2759,77 @@ describe("WorkflowFactory", () => {
         expect(error).toBeUndefined();
         expect(mocks.sleptMs[0]).toBeGreaterThanOrEqual(400);
         expect(mocks.sleptMs[0]).toBeLessThanOrEqual(600);
+      });
+
+      it("counts time spent running the activity toward the timeout, not just sleeps", async () => {
+        // Each attempt burns 4s of workflow time before signalling. A budget measured
+        // from sleeps alone would let a "10 seconds" bound run for minutes.
+        mocks.activityFunctions.waitForJob = mockActivity(async () => {
+          mocks.nowMs += 4_000;
+          throw notReadyFailure();
+        });
+
+        const { error } = await runWorkflowExpectingResult(
+          createWorkflowFunction(
+            pollingPlan({
+              poll: {
+                initialInterval: "1 second",
+                maximumInterval: "1 second",
+                timeout: "10 seconds",
+              },
+            }),
+          ),
+          { initialData: {} },
+        );
+
+        expect(error?.errors?.[0]?.code).toBe("COMPOSER_STEP_POLL_TIMEOUT");
+        // Two attempts cost 8s of execution plus ~1s of sleep, so the third is refused.
+        // Counting sleeps alone would have allowed nine.
+        expect(mocks.sleptMs.length).toBeLessThanOrEqual(2);
+      });
+
+      it("accepts every duration representation the DurationString type permits", async () => {
+        mocks.activityFunctions.waitForJob = mockActivity(async () => ({ jobResult: "done" }));
+
+        const { error } = await runWorkflowExpectingResult(
+          createWorkflowFunction(
+            pollingPlan({
+              // `${number}` admits a leading dot, an exponent and a sign.
+              poll: {
+                initialInterval: ".5s" as never,
+                maximumInterval: "1e3ms" as never,
+                timeout: "1m",
+              },
+            }),
+          ),
+          { initialData: {} },
+        );
+
+        expect(error).toBeUndefined();
+      });
+
+      it("rejects a poll schedule that would hammer the dependency", async () => {
+        mocks.activityFunctions.waitForJob = mockActivity(async () => {
+          throw notReadyFailure();
+        });
+
+        // backoffCoefficient 0 collapses every wait to the 1ms floor.
+        const { error } = await runWorkflowExpectingResult(
+          createWorkflowFunction(
+            pollingPlan({
+              poll: {
+                initialInterval: "1 second",
+                maximumInterval: "30 seconds",
+                timeout: "5 minutes",
+                backoffCoefficient: 0,
+              },
+            }),
+          ),
+          { initialData: {} },
+        );
+
+        expect(error).toBeDefined();
+        expect(mocks.sleep).not.toHaveBeenCalled();
       });
 
       it("leaves a step without asyncPoll completely unchanged", async () => {

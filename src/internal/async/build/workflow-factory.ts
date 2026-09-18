@@ -143,13 +143,14 @@ const DURATION_UNIT_MS: Record<string, number> = {
 /**
  * Parses a `DurationString` to milliseconds.
  *
- * Hand-rolled rather than imported: this module is bundled into Temporal's
- * deterministic sandbox and takes nothing but `@temporalio/workflow`. The grammar is
- * closed by the `DurationString` type, so the parse is total for anything type-checked.
+ * Hand-rolled rather than imported: this module is bundled into Temporal's deterministic
+ * sandbox and takes nothing but `@temporalio/workflow`. The numeric part accepts
+ * everything the type's `${number}` admits -- sign, leading dot, exponent -- because the
+ * type permits `".5s"` and `"1e3ms"` and a narrower parser would reject valid input.
  */
 function durationToMs(duration: DurationString): number {
-  const match = /^(\d+(?:\.\d+)?)\s*([a-z]+)$/.exec(duration.trim());
-  const unitMs = match ? DURATION_UNIT_MS[match[2]!] : undefined;
+  const match = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*([a-z]+)$/i.exec(duration.trim());
+  const unitMs = match ? DURATION_UNIT_MS[match[2]!.toLowerCase()] : undefined;
   if (!match || unitMs === undefined) {
     throw new Error(`Unparseable duration: ${duration}`);
   }
@@ -186,17 +187,37 @@ function notReadyReason(error: unknown): string | undefined {
  * than reading a clock, and the jitter draws from Temporal's seeded PRNG, so replay is
  * deterministic.
  */
+function validatePollConfig(stepName: string, poll: PollConfig): void {
+  const coefficient = poll.backoffCoefficient ?? 2;
+  if (!Number.isFinite(coefficient) || coefficient < 1) {
+    throw new Error(
+      `Step "${stepName}": asyncPoll.backoffCoefficient must be a finite number >= 1, got ${coefficient}`,
+    );
+  }
+  for (const field of ["initialInterval", "maximumInterval", "timeout"] as const) {
+    const value = durationToMs(poll[field]);
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new Error(`Step "${stepName}": asyncPoll.${field} must be a positive duration`);
+    }
+  }
+}
+
 async function runWithPolling<T>(
   stepName: string,
   poll: PollConfig,
   invoke: () => Promise<T>,
 ): Promise<T> {
-  const timeoutMs = durationToMs(poll.timeout);
+  validatePollConfig(stepName, poll);
+
   const maximumIntervalMs = durationToMs(poll.maximumInterval);
   const coefficient = poll.backoffCoefficient ?? 2;
+  // Date.now() is the workflow clock inside the sandbox: monotonic across replay and
+  // identical on every replay, so a deadline built from it stays deterministic while
+  // counting the time activities spend running, not just the time we spend sleeping.
+  const startedAtMs = Date.now();
+  const deadlineMs = startedAtMs + durationToMs(poll.timeout);
 
   let intervalMs = durationToMs(poll.initialInterval);
-  let elapsedMs = 0;
   let attempts = 0;
 
   for (;;) {
@@ -209,10 +230,11 @@ async function runWithPolling<T>(
       const jitterFactor = 1 + (Math.random() * 2 - 1) * POLL_JITTER;
       const cappedMs = Math.min(intervalMs, maximumIntervalMs);
       const delayMs = Math.max(1, Math.round(cappedMs * jitterFactor));
+      const elapsedMs = Date.now() - startedAtMs;
 
       // Checked before sleeping, so `timeout` is a real ceiling rather than one the
       // final wait is allowed to overshoot.
-      if (elapsedMs + delayMs > timeoutMs) {
+      if (Date.now() + delayMs > deadlineMs) {
         throw wf.ApplicationFailure.create({
           type: STEP_POLL_TIMEOUT_CODE,
           message: `Step "${stepName}" still not ready after ${attempts} polls over ${elapsedMs}ms`,
@@ -230,7 +252,6 @@ async function runWithPolling<T>(
       });
 
       await wf.sleep(delayMs);
-      elapsedMs += delayMs;
       intervalMs = Math.min(intervalMs * coefficient, maximumIntervalMs);
     }
   }
