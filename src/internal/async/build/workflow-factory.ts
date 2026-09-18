@@ -20,6 +20,7 @@
 import * as wf from "@temporalio/workflow";
 import type { DurationString } from "../../dag-sync-step";
 import { safeErrorName } from "../../error-for-log";
+import { STEP_NOT_READY_CODE, STEP_POLL_TIMEOUT_CODE } from "../../poll-codes";
 
 /**
  * Input structure for our generated Temporal workflows.
@@ -113,6 +114,127 @@ function extractCodeFromMessage(message: string | undefined): string | undefined
 
 /** Code carried by the error a FanOut throws when any of its children fail. */
 export const FANOUT_CHILD_FAILURE_CODE = "FANOUT_CHILD_FAILURE";
+
+// ============================================================================
+// Workflow-side polling
+// ============================================================================
+
+/** Fraction of each wait randomized, so a shared dependency is not polled in lockstep. */
+const POLL_JITTER = 0.2;
+
+type PollConfig = NonNullable<StepActivityConfig["poll"]>;
+
+const DURATION_UNIT_MS: Record<string, number> = {
+  ms: 1,
+  s: 1000,
+  second: 1000,
+  seconds: 1000,
+  m: 60_000,
+  minute: 60_000,
+  minutes: 60_000,
+  h: 3_600_000,
+  hour: 3_600_000,
+  hours: 3_600_000,
+  d: 86_400_000,
+  day: 86_400_000,
+  days: 86_400_000,
+};
+
+/**
+ * Parses a `DurationString` to milliseconds.
+ *
+ * Hand-rolled rather than imported: this module is bundled into Temporal's
+ * deterministic sandbox and takes nothing but `@temporalio/workflow`. The grammar is
+ * closed by the `DurationString` type, so the parse is total for anything type-checked.
+ */
+function durationToMs(duration: DurationString): number {
+  const match = /^(\d+(?:\.\d+)?)\s*([a-z]+)$/.exec(duration.trim());
+  const unitMs = match ? DURATION_UNIT_MS[match[2]!] : undefined;
+  if (!match || unitMs === undefined) {
+    throw new Error(`Unparseable duration: ${duration}`);
+  }
+  return Number(match[1]) * unitMs;
+}
+
+/**
+ * True when a step signalled "not ready" rather than failing.
+ *
+ * Temporal wraps it as ActivityFailure -> ApplicationFailure with `type` set to the
+ * error's code, so this reuses the same chain walk the failure classifier uses.
+ */
+function isStepNotReady(error: unknown): boolean {
+  return codeOf(error) === STEP_NOT_READY_CODE;
+}
+
+/** The `reason` a StepNotReadyError carried, if it survived serialization. */
+function notReadyReason(error: unknown): string | undefined {
+  const failure = error as ApplicationFailureLike | undefined;
+  // Temporal wraps the ApplicationFailure in an ActivityFailure, so look at both levels.
+  for (const candidate of [failure, failure?.cause as ApplicationFailureLike | undefined]) {
+    const data = (candidate?.details?.[0] as { data?: { reason?: unknown } } | undefined)?.data;
+    if (typeof data?.reason === "string") return data.reason;
+  }
+  return undefined;
+}
+
+/**
+ * Runs `invoke` until it stops signalling "not ready", sleeping on a Temporal timer
+ * between attempts.
+ *
+ * Each attempt is an ordinary activity invocation that ends, so the worker releases its
+ * slot for the whole wait. Elapsed time accumulates the intervals actually slept rather
+ * than reading a clock, and the jitter draws from Temporal's seeded PRNG, so replay is
+ * deterministic.
+ */
+async function runWithPolling<T>(
+  stepName: string,
+  poll: PollConfig,
+  invoke: () => Promise<T>,
+): Promise<T> {
+  const timeoutMs = durationToMs(poll.timeout);
+  const maximumIntervalMs = durationToMs(poll.maximumInterval);
+  const coefficient = poll.backoffCoefficient ?? 2;
+
+  let intervalMs = durationToMs(poll.initialInterval);
+  let elapsedMs = 0;
+  let attempts = 0;
+
+  for (;;) {
+    try {
+      return await invoke();
+    } catch (error) {
+      if (!isStepNotReady(error)) throw error;
+      attempts++;
+
+      const jitterFactor = 1 + (Math.random() * 2 - 1) * POLL_JITTER;
+      const cappedMs = Math.min(intervalMs, maximumIntervalMs);
+      const delayMs = Math.max(1, Math.round(cappedMs * jitterFactor));
+
+      // Checked before sleeping, so `timeout` is a real ceiling rather than one the
+      // final wait is allowed to overshoot.
+      if (elapsedMs + delayMs > timeoutMs) {
+        throw wf.ApplicationFailure.create({
+          type: STEP_POLL_TIMEOUT_CODE,
+          message: `Step "${stepName}" still not ready after ${attempts} polls over ${elapsedMs}ms`,
+          details: [{ code: STEP_POLL_TIMEOUT_CODE, data: { stepName, attempts, elapsedMs } }],
+          nonRetryable: true,
+        });
+      }
+
+      wf.log.debug("Step not ready; waiting before re-invoking", {
+        stepName,
+        attempts,
+        delayMs,
+        elapsedMs,
+        reason: notReadyReason(error),
+      });
+
+      await wf.sleep(delayMs);
+      elapsedMs += delayMs;
+      intervalMs = Math.min(intervalMs * coefficient, maximumIntervalMs);
+    }
+  }
+}
 
 const WORKFLOW_ERROR_CODE = /^[A-Z0-9_]{2,50}$/;
 
@@ -266,6 +388,13 @@ export interface StepActivityConfig {
      * `ApplicationFailure.type`. Mirrors `StepRetryPolicy.nonRetryableErrorTypes`.
      */
     nonRetryableErrorTypes?: string[];
+  };
+  /** Workflow-side poll policy. Mirrors `StepPollPolicy`. */
+  poll?: {
+    initialInterval: DurationString;
+    maximumInterval: DurationString;
+    timeout: DurationString;
+    backoffCoefficient?: number;
   };
 }
 
@@ -461,7 +590,12 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
       const ensureActivityProxy = (taskQueue: string, config?: StepActivityConfig) => {
         const key = getProxyKey(taskQueue, config);
         if (!activityProxiesByKey.has(key)) {
-          const nonRetryableErrorTypes = config?.retry?.nonRetryableErrorTypes;
+          // A polling step's "not ready" signal must not be retried by Temporal, or the
+          // step would burn its own attempts before control returns to the workflow loop.
+          // Its asyncRetry budget then still covers genuine transient failures.
+          const nonRetryableErrorTypes = config?.poll
+            ? [...(config.retry?.nonRetryableErrorTypes ?? []), STEP_NOT_READY_CODE]
+            : config?.retry?.nonRetryableErrorTypes;
           const activities = wf.proxyActivities<{
             [key: string]: (...args: any[]) => Promise<any>;
           }>({
@@ -519,7 +653,10 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
               throw new Error(`Activity not found: ${step.activityName}`);
             }
 
-            const stepOutput = await activityFn(input, stepInput);
+            const poll = step.activityConfig?.poll;
+            const stepOutput = poll
+              ? await runWithPolling(step.name, poll, () => activityFn(input, stepInput))
+              : await activityFn(input, stepInput);
 
             wf.log.debug(`Step completed`, {
               stepName: step.name,

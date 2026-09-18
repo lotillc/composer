@@ -80,6 +80,10 @@ const mocks = vi.hoisted(() => ({
   setHandler: vi.fn((_update: symbol, _handler: (...args: unknown[]) => unknown) => {}),
   condition: vi.fn(async (_fn: () => boolean) => {}),
   executeChild: vi.fn(async (_workflowType: string, _options?: Record<string, unknown>) => ({})),
+  // Records the durations the poll loop asks for instead of really waiting, so the
+  // backoff schedule is asserted directly and the suite stays instant.
+  sleep: vi.fn(async (_duration: number | string) => {}),
+  sleptMs: [] as number[],
   activityFunctions: {} as Record<string, MockedFunction<ActivityFn>>,
   registeredHandlers: new Map<symbol, (...args: unknown[]) => unknown>(),
 }));
@@ -108,6 +112,9 @@ vi.mock("@temporalio/workflow", async (importOriginal) => {
     },
     get executeChild() {
       return mocks.executeChild;
+    },
+    get sleep() {
+      return mocks.sleep;
     },
   };
 });
@@ -198,6 +205,12 @@ describe("WorkflowFactory", () => {
       // Reset condition to immediately resolve (simulating checkpoint already reached)
       mocks.condition.mockImplementation(async (_fn: () => boolean) => {
         // Default: immediately resolve
+      });
+
+      // Record requested waits rather than performing them.
+      mocks.sleptMs = [];
+      mocks.sleep.mockImplementation(async (duration: number | string) => {
+        mocks.sleptMs.push(duration as number);
       });
     });
 
@@ -2550,6 +2563,210 @@ describe("WorkflowFactory", () => {
 
         // And the successful step's output should be in the bag
         expect(bag.success).toBe("value");
+      });
+    });
+
+    describe("Workflow-side polling (asyncPoll)", () => {
+      const POLL: NonNullable<StepActivityConfig["poll"]> = {
+        initialInterval: "2 seconds",
+        maximumInterval: "30 seconds",
+        timeout: "5 minutes",
+      };
+
+      function notReadyFailure(reason?: string): ApplicationFailure {
+        return ApplicationFailure.create({
+          type: "COMPOSER_STEP_NOT_READY",
+          message: "Step not ready",
+          details: [
+            { code: "COMPOSER_STEP_NOT_READY", parentCodes: [], data: reason ? { reason } : undefined },
+          ],
+          nonRetryable: false,
+        });
+      }
+
+      function pollingPlan(
+        activityConfig: StepActivityConfig = { poll: POLL },
+      ): WorkflowPlan {
+        const batch: StepBatch = {
+          steps: [
+            {
+              name: "waitForJob",
+              activityName: "waitForJob",
+              needs: [],
+              provides: ["jobResult"],
+              taskQueue: "standard-tasks",
+              activityConfig,
+            },
+          ],
+        };
+        return { name: "pollingWorkflow", batches: [batch] };
+      }
+
+      it("re-invokes the step after a timer instead of failing the workflow", async () => {
+        let attempts = 0;
+        mocks.activityFunctions.waitForJob = mockActivity(async () => {
+          attempts++;
+          if (attempts < 3) throw notReadyFailure("still_processing");
+          return { jobResult: "done" };
+        });
+
+        const { bag, error } = await runWorkflowExpectingResult(
+          createWorkflowFunction(pollingPlan()),
+          { initialData: {} },
+        );
+
+        expect(error).toBeUndefined();
+        expect(bag.jobResult).toBe("done");
+        expect(attempts).toBe(3);
+        // Two waits for three attempts: the loop sleeps only between invocations.
+        expect(mocks.sleptMs).toHaveLength(2);
+      });
+
+      it("grows the interval by the coefficient and caps it at maximumInterval", async () => {
+        mocks.activityFunctions.waitForJob = mockActivity(async () => {
+          throw notReadyFailure();
+        });
+
+        await runWorkflowExpectingResult(
+          createWorkflowFunction(
+            pollingPlan({
+              poll: {
+                initialInterval: "1 second",
+                maximumInterval: "4 seconds",
+                timeout: "1 minute",
+              },
+            }),
+          ),
+          { initialData: {} },
+        );
+
+        // Jitter is +/-20%, so assert the schedule by band rather than exact value.
+        const bands: Array<[number, number]> = [
+          [800, 1200],
+          [1600, 2400],
+          [3200, 4800],
+          [3200, 4800],
+          [3200, 4800],
+        ];
+        expect(mocks.sleptMs.length).toBeGreaterThanOrEqual(bands.length);
+        bands.forEach(([low, high], index) => {
+          expect(mocks.sleptMs[index]).toBeGreaterThanOrEqual(low);
+          expect(mocks.sleptMs[index]).toBeLessThanOrEqual(high);
+        });
+        // Capped: no wait ever exceeds maximumInterval plus its jitter.
+        for (const slept of mocks.sleptMs) {
+          expect(slept).toBeLessThanOrEqual(4800);
+        }
+      });
+
+      it("fails the step with a poll-timeout code once the wall-clock bound is spent", async () => {
+        mocks.activityFunctions.waitForJob = mockActivity(async () => {
+          throw notReadyFailure("still_processing");
+        });
+
+        const { error } = await runWorkflowExpectingResult(
+          createWorkflowFunction(
+            pollingPlan({
+              poll: {
+                initialInterval: "1 second",
+                maximumInterval: "2 seconds",
+                timeout: "10 seconds",
+              },
+            }),
+          ),
+          { initialData: {} },
+        );
+
+        expect(error?.errors?.[0]?.code).toBe("COMPOSER_STEP_POLL_TIMEOUT");
+        // The bound is honoured, not overshot by a final wait.
+        const total = mocks.sleptMs.reduce((sum, value) => sum + value, 0);
+        expect(total).toBeLessThanOrEqual(10_000);
+      });
+
+      it("propagates a genuine failure on the first throw without polling", async () => {
+        const activity = mockActivity(async () => {
+          throw codedApplicationFailure("PROVIDER_FAILED");
+        });
+        mocks.activityFunctions.waitForJob = activity;
+
+        const { error } = await runWorkflowExpectingResult(
+          createWorkflowFunction(pollingPlan()),
+          { initialData: {} },
+        );
+
+        expect(error?.errors?.[0]?.code).toBe("PROVIDER_FAILED");
+        expect(mocks.sleep).not.toHaveBeenCalled();
+      });
+
+      it("marks the not-ready signal non-retryable so Temporal returns control to the loop", async () => {
+        applyTemporalRetrySemantics();
+        let attempts = 0;
+        mocks.activityFunctions.waitForJob = mockActivity(async () => {
+          attempts++;
+          if (attempts < 2) throw notReadyFailure();
+          return { jobResult: "done" };
+        });
+
+        await runWorkflowExpectingResult(createWorkflowFunction(pollingPlan()), {
+          initialData: {},
+        });
+
+        const retry = (mocks.proxyActivities.mock.calls[0]?.[0] as { retry?: { nonRetryableErrorTypes?: string[] } })
+          ?.retry;
+        expect(retry?.nonRetryableErrorTypes).toContain("COMPOSER_STEP_NOT_READY");
+        // Not-ready cost one attempt, not the step's whole retry budget.
+        expect(attempts).toBe(2);
+      });
+
+      it("keeps the step's own nonRetryableErrorTypes alongside the signal", async () => {
+        mocks.activityFunctions.waitForJob = mockActivity(async () => ({ jobResult: "done" }));
+
+        await runWorkflowExpectingResult(
+          createWorkflowFunction(
+            pollingPlan({ poll: POLL, retry: { nonRetryableErrorTypes: ["CONTENT_REJECTED"] } }),
+          ),
+          { initialData: {} },
+        );
+
+        const retry = (mocks.proxyActivities.mock.calls[0]?.[0] as { retry?: { nonRetryableErrorTypes?: string[] } })
+          ?.retry;
+        expect(retry?.nonRetryableErrorTypes).toEqual(["CONTENT_REJECTED", "COMPOSER_STEP_NOT_READY"]);
+      });
+
+      it("accepts short-form durations as well as long-form", async () => {
+        let attempts = 0;
+        mocks.activityFunctions.waitForJob = mockActivity(async () => {
+          attempts++;
+          if (attempts < 2) throw notReadyFailure();
+          return { jobResult: "done" };
+        });
+
+        const { error } = await runWorkflowExpectingResult(
+          createWorkflowFunction(
+            pollingPlan({
+              poll: { initialInterval: "500ms", maximumInterval: "2s", timeout: "1m" },
+            }),
+          ),
+          { initialData: {} },
+        );
+
+        expect(error).toBeUndefined();
+        expect(mocks.sleptMs[0]).toBeGreaterThanOrEqual(400);
+        expect(mocks.sleptMs[0]).toBeLessThanOrEqual(600);
+      });
+
+      it("leaves a step without asyncPoll completely unchanged", async () => {
+        mocks.activityFunctions.waitForJob = mockActivity(async () => ({ jobResult: "done" }));
+
+        await runWorkflowExpectingResult(createWorkflowFunction(pollingPlan({})), {
+          initialData: {},
+        });
+
+        const options = mocks.proxyActivities.mock.calls[0]?.[0] as {
+          retry?: { nonRetryableErrorTypes?: string[] };
+        };
+        expect(options.retry?.nonRetryableErrorTypes).toBeUndefined();
+        expect(mocks.sleep).not.toHaveBeenCalled();
       });
     });
   });

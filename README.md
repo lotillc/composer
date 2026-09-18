@@ -92,6 +92,40 @@ export const generateImage = step<MyBag, MyContext>()({
 
 `nonRetryableErrorTypes` is matched by exact string against the thrown error's `code` property. When a step throws an error carrying a `code`, the framework maps that code onto `ApplicationFailure.type`, which is the field Temporal compares against the policy — so an error with `code: "CONTENT_REJECTED"` fails the activity on its first attempt when `"CONTENT_REJECTED"` is listed. Errors without a `code` are never matched and stay retryable.
 
+#### Waiting on an External System (Async Only)
+
+A step that polls a long-running external job should not sleep inside the activity: a worker has few activity slots (15 on the `standard` profile), so when the dependency degrades every slot fills with sleeping pollers and unrelated activities starve behind them.
+
+`asyncPoll` moves the wait to the workflow. The step throws `StepNotReadyError` when its work is not finished; the workflow waits on a Temporal timer and re-invokes the activity. Each attempt is an ordinary activity invocation that ends, so the slot is released across the wait.
+
+```typescript
+import { step, StepNotReadyError } from "@lotiai/composer";
+
+export const awaitClearance = step<MyBag, MyContext>()({
+  name: "awaitClearance",
+  needs: ["jobId"],
+  provides: ["clearance"],
+  // Sized for a single HTTP call, because the step no longer waits.
+  asyncStartToCloseTimeout: "60 seconds",
+  asyncPoll: {
+    initialInterval: "2 seconds",
+    maximumInterval: "30 seconds",
+    timeout: "5 minutes",
+  },
+  run: async (ctx, bag) => {
+    const status = await ctx.api.getJob(bag.jobId);
+    if (status.state === "processing") {
+      throw new StepNotReadyError({ reason: "job_processing" });
+    }
+    return { clearance: status.result };
+  },
+});
+```
+
+The interval grows by `backoffCoefficient` (default 2), is capped at `maximumInterval`, and carries 20% jitter so a shared dependency is not polled in lockstep. `timeout` bounds the total elapsed wait and is checked before each sleep, so it is a real ceiling; exceeding it fails the step with code `COMPOSER_STEP_POLL_TIMEOUT` (exported as `STEP_POLL_TIMEOUT_CODE`) — map it if you classify failures by code.
+
+Polling does not spend the step's retry budget: `COMPOSER_STEP_NOT_READY` is added to the activity's `nonRetryableErrorTypes` automatically, so Temporal hands control back to the workflow on the first signal rather than retrying first. `asyncRetry` keeps covering genuine transient failures, and any `nonRetryableErrorTypes` the step declares are preserved alongside the signal.
+
 ### Workflow
 
 A **workflow** is a collection of steps with automatic dependency resolution. The framework builds a DAG, plans parallel execution batches, and validates all dependencies at compile-time.

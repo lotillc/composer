@@ -50,6 +50,43 @@ export interface AsyncStepRuntime {
 }
 
 /**
+ * Per-step poll policy. Makes a step that waits on an external system cost an
+ * activity slot only for the calls it actually makes.
+ *
+ * The step throws `StepNotReadyError` when its work is not finished. The workflow
+ * catches it, waits on a Temporal timer, then re-invokes the activity -- so the slot
+ * is released across the wait instead of being held by a sleeping poller. The wait
+ * grows by `backoffCoefficient`, is capped at `maximumInterval`, and carries 20%
+ * jitter so a degraded dependency does not receive synchronized retries.
+ *
+ * `timeout` bounds the total elapsed wait; exceeding it throws `StepPollTimeoutError`.
+ * The step's `asyncRetry` budget is untouched by polling and still covers genuine
+ * transient failures.
+ *
+ * Only used for Temporal (async) execution. Sync execution ignores it, where a
+ * `StepNotReadyError` is simply a failure.
+ *
+ * @example
+ * ```typescript
+ * asyncPoll: {
+ *   initialInterval: "2 seconds",
+ *   maximumInterval: "30 seconds",
+ *   timeout: "5 minutes",
+ * }
+ * ```
+ */
+export interface StepPollPolicy {
+  /** Wait before the first re-invocation. */
+  initialInterval: DurationString;
+  /** Ceiling the growing interval is clamped to. */
+  maximumInterval: DurationString;
+  /** Wall-clock bound across all waits; exceeding it fails the step. */
+  timeout: DurationString;
+  /** Interval growth per poll. Defaults to 2. */
+  backoffCoefficient?: number;
+}
+
+/**
  * Per-step retry policy override. All fields are optional; unset fields
  * fall back to the framework defaults (3 attempts, coefficient 2, 1s initial, 60s max).
  */
@@ -139,6 +176,12 @@ export type Step<
    * Only used for Temporal (async) execution. Sync execution ignores it.
    */
   asyncRetry?: StepRetryPolicy;
+  /**
+   * Per-step poll policy. When set, the step may throw `StepNotReadyError` to have
+   * the workflow wait on a timer and re-invoke it, without holding an activity slot.
+   * Only used for Temporal (async) execution. Sync execution ignores it.
+   */
+  asyncPoll?: StepPollPolicy;
   /**
    * Workflow path tracks the logical ancestry of this step for observability.
    * Used to create proper span hierarchy even when steps are flattened.
@@ -468,6 +511,7 @@ export function step<Bag extends Record<string, any>, Context = unknown>() {
     asyncStartToCloseTimeout?: DurationString;
     asyncHeartbeatTimeout?: DurationString;
     asyncRetry?: StepRetryPolicy;
+    asyncPoll?: StepPollPolicy;
     run: (
       context: Context & AsyncStepRuntime,
       bag: Pick<Bag, Needs[number]>,

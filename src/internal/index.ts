@@ -35,6 +35,7 @@ export {
   type AsyncStepRuntime,
   type DurationString,
   type Step,
+  type StepPollPolicy,
   type StepRetryPolicy,
   step,
 } from "./dag-sync-step";

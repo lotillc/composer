@@ -1,4 +1,5 @@
 import { safeErrorCode, safeErrorName } from "./error-for-log";
+import { STEP_NOT_READY_CODE, STEP_POLL_TIMEOUT_CODE } from "./poll-codes";
 
 // Hard-coded constant for controlling debug logging
 // TODO: Make this configurable via feature flags in the future
@@ -197,6 +198,60 @@ export class WorkflowErrorHandlerFailure extends Error {
       originalError: this.originalError.toLogContext(),
       handlerError: this.handlerError,
     };
+  }
+}
+
+/**
+ * Thrown by a step whose work is not finished yet, to drive `asyncPoll`.
+ *
+ * The workflow catches it, waits on a Temporal timer, then re-invokes the activity.
+ * The activity slot is released across the wait, so a step polling an external system
+ * costs a slot only for the calls it actually makes.
+ *
+ * A step without `asyncPoll` gains nothing from throwing it: there it is an ordinary
+ * failure and the step's retry policy applies as usual.
+ */
+export class StepNotReadyError extends Error {
+  static readonly code = STEP_NOT_READY_CODE;
+
+  public readonly code: string = STEP_NOT_READY_CODE;
+  /** Optional classifier for why the work is not ready; surfaced in workflow logs. */
+  public readonly reason?: string;
+  /** Mirrors `reason` onto `data`, which is the field Temporal carries to the workflow. */
+  public readonly data?: { reason: string };
+
+  constructor(options: { reason?: string } = {}) {
+    super(options.reason ? `Step not ready: ${options.reason}` : "Step not ready");
+    this.name = "StepNotReadyError";
+    this.reason = options.reason;
+    this.data = options.reason ? { reason: options.reason } : undefined;
+  }
+}
+
+/**
+ * Thrown by the workflow when a polling step is still not ready at `asyncPoll.timeout`.
+ *
+ * This one does reach the workflow error handler, so a consumer that classifies
+ * failures by code should map STEP_POLL_TIMEOUT_CODE rather than let it fall through
+ * to whatever its default is.
+ */
+export class StepPollTimeoutError extends Error {
+  static readonly code = STEP_POLL_TIMEOUT_CODE;
+
+  public readonly code: string = STEP_POLL_TIMEOUT_CODE;
+  public readonly stepName: string;
+  public readonly attempts: number;
+  public readonly elapsedMs: number;
+
+  constructor(options: { stepName: string; attempts: number; elapsedMs: number; reason?: string }) {
+    const suffix = options.reason ? ` (last reason: ${options.reason})` : "";
+    super(
+      `Step "${options.stepName}" still not ready after ${options.attempts} polls over ${options.elapsedMs}ms${suffix}`,
+    );
+    this.name = "StepPollTimeoutError";
+    this.stepName = options.stepName;
+    this.attempts = options.attempts;
+    this.elapsedMs = options.elapsedMs;
   }
 }
 
