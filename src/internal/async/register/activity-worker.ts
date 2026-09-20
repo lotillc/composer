@@ -268,8 +268,9 @@ export interface ActivityWorkerConfig<TContext = unknown> {
   namespace: string;
 
   /**
-   * Deployment series name for Worker Versioning (e.g., "orders-service-activities").
-   * Derived from the service name via getDeploymentSeriesNames().
+   * Worker Deployment name for Worker Versioning (e.g., "orders-service-workers").
+   * Derived from the service name via getWorkerDeploymentName(); shared by a
+   * service's workflow and activity workers so their task queues belong to one version.
    */
   deploymentSeriesName: string;
 

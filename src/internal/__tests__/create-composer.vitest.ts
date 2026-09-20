@@ -17,6 +17,7 @@ const mockDescribeWorkflow = vi.mocked(temporalClient.describeWorkflow);
 const mockRunActivityWorkers = vi.mocked(activityWorker.runActivityWorkers);
 const mockSyncSchedules = vi.mocked(scheduleSync.syncSchedules);
 const mockRunWorkflowWorkers = vi.mocked(workflowWorker.runWorkflowWorkers);
+const mockExecuteWorkflow = vi.mocked(temporalClient.executeWorkflow);
 
 const composer = createComposer({
   contextProvider: noOpContextProvider,
@@ -144,6 +145,73 @@ describe("createComposer scrubbing seams", () => {
     expect(mockDescribeWorkflow).toHaveBeenCalledWith(
       "wf-1",
       expect.objectContaining({ dataConverter }),
+    );
+  });
+});
+
+describe("worker deployment identity", () => {
+  const workflows: Workflow<any, any, any>[] = [];
+  const versioned = createComposer({
+    contextProvider: noOpContextProvider,
+    temporal: {
+      serverAddress: "localhost:7233",
+      namespace: "test",
+      serviceName: "test-service",
+      buildId: "preview-abc1234",
+    },
+  });
+
+  beforeEach(() => {
+    mockRunActivityWorkers.mockReset().mockResolvedValue(undefined);
+    mockRunWorkflowWorkers.mockReset().mockResolvedValue(undefined);
+    mockExecuteWorkflow.mockReset().mockResolvedValue(
+      undefined as unknown as Awaited<ReturnType<typeof temporalClient.executeWorkflow>>,
+    );
+  });
+
+  // Both worker types must land in one Worker Deployment, otherwise the activity
+  // task queues are not members of the workflow's pinned version and Temporal
+  // routes every step to whatever is Current -- the exact skew this guards.
+  it("registers activity and workflow workers under the same deployment name", async () => {
+    await versioned.runActivityWorkers({
+      taskQueues: ["standard-tasks"],
+      maxConcurrentActivityTaskExecutions: 10,
+      workflows,
+    });
+    await versioned.runWorkflowWorkers({
+      taskQueues: ["workflow-tasks"],
+      maxConcurrentWorkflowTaskExecutions: 100,
+      workflows,
+    });
+
+    const activityName = mockRunActivityWorkers.mock.calls[0]?.[0]?.deploymentSeriesName;
+    const workflowName = mockRunWorkflowWorkers.mock.calls[0]?.[0]?.deploymentSeriesName;
+
+    expect(activityName).toBe("test-service-workers");
+    expect(workflowName).toBe(activityName);
+  });
+
+  it("pins async starts to the deployment the workers register under", async () => {
+    await versioned.runWorkflowWorkers({
+      taskQueues: ["workflow-tasks"],
+      maxConcurrentWorkflowTaskExecutions: 100,
+      workflows,
+    });
+    await versioned.runAsyncWorkflow(
+      { name: "test-workflow", steps: [] } as unknown as Workflow<any, any, any>,
+      {},
+      { workflowId: "01234567-89ab-cdef-0123-456789abcdef", startOnly: true },
+    );
+
+    expect(mockExecuteWorkflow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        versioningOverride: {
+          pinnedTo: {
+            buildId: "preview-abc1234",
+            deploymentName: mockRunWorkflowWorkers.mock.calls[0]?.[0]?.deploymentSeriesName,
+          },
+        },
+      }),
     );
   });
 });

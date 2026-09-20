@@ -162,9 +162,9 @@ export interface TemporalConfig {
   /** Temporal namespace (e.g. "default") */
   namespace: string;
   /**
-   * Service name used as the base for Worker Versioning deployment series
-   * (e.g., "orders-service"). Activity and workflow workers derive their
-   * series names as "{serviceName}-activities" and "{serviceName}-workflows".
+   * Service name used as the base for the Worker Versioning deployment name
+   * (e.g., "orders-service" -> "orders-service-workers"). Activity and workflow
+   * workers share it so their task queues belong to the same version.
    */
   serviceName: string;
   /**

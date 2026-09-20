@@ -88,8 +88,9 @@ export interface WorkflowWorkerConfig {
   maxConcurrentWorkflowTaskExecutions?: number;
 
   /**
-   * Deployment series name for Worker Versioning (e.g., "orders-service-workflows").
-   * Derived from the service name via getDeploymentSeriesNames().
+   * Worker Deployment name for Worker Versioning (e.g., "orders-service-workers").
+   * Derived from the service name via getWorkerDeploymentName(); shared by a
+   * service's workflow and activity workers so their task queues belong to one version.
    */
   deploymentSeriesName: string;
 
