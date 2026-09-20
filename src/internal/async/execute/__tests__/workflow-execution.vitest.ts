@@ -738,6 +738,77 @@ describe("executeWorkflowTemporal", () => {
       expect(mockExecuteWorkflow).not.toHaveBeenCalled();
     });
   });
+
+  describe("Versioning Override", () => {
+    const versioningOverride = {
+      pinnedTo: { buildId: "preview-abc1234", deploymentName: "test-service-workers" },
+    };
+
+    it("should pin the start when startOnly is true", async () => {
+      const workflow = { name: "test-workflow", steps: [] } as Workflow<Record<string, unknown>>;
+      mockExecuteWorkflow.mockResolvedValue({
+        workflowId: mockWorkflowId,
+      } as unknown as Awaited<ReturnType<typeof temporalClient.executeWorkflow>>);
+
+      await executeWorkflowTemporal(
+        workflow,
+        {},
+        {
+          workflowId: mockWorkflowId,
+          clientConfig: mockClientConfig,
+          startOnly: true,
+          versioningOverride,
+        },
+      );
+
+      expect(mockExecuteWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ versioningOverride }),
+      );
+    });
+
+    it("should pin the start when awaitCheckpoint is set", async () => {
+      const workflow = {
+        name: "test-workflow",
+        steps: [],
+        checkpoints: [{ name: "ready", afterStep: "someStep" }],
+      } as unknown as Workflow<any, any, any>;
+      mockExecuteWorkflow.mockResolvedValue({
+        workflowId: mockWorkflowId,
+      } as unknown as Awaited<ReturnType<typeof temporalClient.executeWorkflow>>);
+      mockCreateTemporalClient.mockResolvedValue({
+        workflow: { getHandle: () => ({ executeUpdate: async () => ({}) }) },
+      } as unknown as Awaited<ReturnType<typeof temporalClient.createTemporalClient>>);
+
+      await executeWorkflowTemporal(
+        workflow,
+        {},
+        {
+          workflowId: mockWorkflowId,
+          clientConfig: mockClientConfig,
+          awaitCheckpoint: "ready",
+          versioningOverride,
+        },
+      );
+
+      expect(mockExecuteWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ versioningOverride }),
+      );
+    });
+
+    it("should pin the start when waiting for completion", async () => {
+      const workflow = { name: "test-workflow", steps: [] } as Workflow<Record<string, unknown>>;
+
+      await executeWorkflowTemporal(
+        workflow,
+        {},
+        { workflowId: mockWorkflowId, clientConfig: mockClientConfig, versioningOverride },
+      );
+
+      expect(mockExecuteWorkflowAndWait).toHaveBeenCalledWith(
+        expect.objectContaining({ versioningOverride }),
+      );
+    });
+  });
 });
 
 describe("startWorkflowTemporal", () => {

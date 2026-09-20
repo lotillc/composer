@@ -1,30 +1,34 @@
 /**
- * Temporal Worker Versioning deployment series naming conventions.
+ * Temporal Worker Versioning deployment naming conventions.
  *
  * Exposed as a dedicated subpath export (@lotiai/composer/temporal-naming) so
  * infrastructure Lambdas can import these lightweight constants without pulling
  * in the full Composer framework or Temporal SDK.
  */
 
-export const WORKER_DEPLOYMENT_SUFFIXES = {
+export const WORKER_DEPLOYMENT_SUFFIX = "workers" as const;
+
+/**
+ * Deployment suffixes from the retired per-worker-type scheme. Retained only so
+ * the drain checker can still parse versions deployed before the merge; delete
+ * once no `-workflows`/`-activities` version records remain.
+ */
+export const LEGACY_WORKER_DEPLOYMENT_SUFFIXES = {
   ACTIVITIES: "activities",
   WORKFLOWS: "workflows",
 } as const;
 
 /**
- * Derives the Temporal Worker Versioning deployment series names from a service name.
+ * Derives the Temporal Worker Deployment name from a service name.
  *
- * Each service runs two worker types (activity and workflow), each with its own
- * deployment series for independent versioning. CI uses these same names when
- * calling setCurrentDeployment after a deploy.
+ * A service's workflow and activity workers share one deployment so that their
+ * task queues are members of the same Worker Deployment Version. That is what
+ * keeps a Pinned Workflow's activities on the workflow's own version instead of
+ * making them Independent Activities routed to whatever is Current.
  *
  * @example
- * getDeploymentSeriesNames("orders-service")
- * // => { activities: "orders-service-activities", workflows: "orders-service-workflows" }
+ * getWorkerDeploymentName("orders-service") // => "orders-service-workers"
  */
-export function getDeploymentSeriesNames(serviceName: string) {
-  return {
-    activities: `${serviceName}-${WORKER_DEPLOYMENT_SUFFIXES.ACTIVITIES}`,
-    workflows: `${serviceName}-${WORKER_DEPLOYMENT_SUFFIXES.WORKFLOWS}`,
-  };
+export function getWorkerDeploymentName(serviceName: string): string {
+  return `${serviceName}-${WORKER_DEPLOYMENT_SUFFIX}`;
 }

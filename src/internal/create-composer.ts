@@ -9,7 +9,7 @@
  */
 
 import { v7 as uuidv7 } from "uuid";
-import { getDeploymentSeriesNames } from "../temporal-naming";
+import { getWorkerDeploymentName } from "../temporal-naming";
 import { describeWorkflow as describeWorkflowTemporal } from "./async/execute/temporal-client";
 import { executeWorkflowTemporal, startWorkflowTemporal } from "./async/execute/workflow-execution";
 import { runActivityWorkers as runActivityWorkersInternal } from "./async/register/activity-worker";
@@ -155,12 +155,12 @@ export function createComposer<TContext>(
   // Construct versioningOverride for workflow starts when buildId is set.
   // This pins new workflows to the same deployment version as the workers,
   // eliminating the TOCTOU gap that would require a separate setCurrentDeployment call.
-  const seriesNames = getDeploymentSeriesNames(temporalConfig.serviceName);
+  const deploymentName = getWorkerDeploymentName(temporalConfig.serviceName);
   const workflowVersioningOverride = temporalConfig.buildId
     ? {
         pinnedTo: {
           buildId: temporalConfig.buildId,
-          deploymentName: seriesNames.workflows,
+          deploymentName,
         },
       }
     : undefined;
@@ -297,7 +297,7 @@ export function createComposer<TContext>(
       return runActivityWorkersInternal({
         serverAddress: temporalConfig.serverAddress,
         namespace: temporalConfig.namespace,
-        deploymentSeriesName: seriesNames.activities,
+        deploymentSeriesName: deploymentName,
         buildId: temporalConfig.buildId,
         dataConverter: temporalConfig.dataConverter,
         interceptors: temporalConfig.interceptors,
@@ -315,7 +315,7 @@ export function createComposer<TContext>(
       return runWorkflowWorkersInternal({
         serverAddress: temporalConfig.serverAddress,
         namespace: temporalConfig.namespace,
-        deploymentSeriesName: seriesNames.workflows,
+        deploymentSeriesName: deploymentName,
         buildId: temporalConfig.buildId,
         dataConverter: temporalConfig.dataConverter,
         interceptors: temporalConfig.interceptors,

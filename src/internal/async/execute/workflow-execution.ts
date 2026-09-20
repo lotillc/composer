@@ -139,6 +139,7 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
         input: workflowInput,
         taskQueue: "workflow-tasks",
         clientConfig,
+        versioningOverride: options.versioningOverride,
       });
 
       return { bag: mergedInitialData as Bag, error: undefined };
@@ -199,6 +200,7 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
       input: workflowInput,
       taskQueue: "workflow-tasks",
       clientConfig,
+      versioningOverride: options.versioningOverride,
     });
 
     return result as WorkflowResult<Bag>;
