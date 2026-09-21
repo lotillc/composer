@@ -60,7 +60,8 @@
     "./schedule-sync": {
       "types": "./dist/schedule-sync.d.ts",
       "default": "./dist/schedule-sync.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "publishConfig": {
     "access": "public",
