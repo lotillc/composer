@@ -1,5 +1,5 @@
-import { safeErrorCode, safeErrorName } from "./error-for-log";
-import { STEP_NOT_READY_CODE, STEP_POLL_TIMEOUT_CODE } from "./poll-codes";
+import { safeErrorCode, safeErrorName } from "./error-for-log.js";
+import { STEP_NOT_READY_CODE, STEP_POLL_TIMEOUT_CODE } from "./poll-codes.js";
 
 // Hard-coded constant for controlling debug logging
 // TODO: Make this configurable via feature flags in the future

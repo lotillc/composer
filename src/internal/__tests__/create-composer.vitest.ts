@@ -1,17 +1,17 @@
 import type { DataConverter } from "@temporalio/common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { noOpContextProvider } from "../../__tests__/test-utils";
-import * as temporalClient from "../async/execute/temporal-client";
-import * as activityWorker from "../async/register/activity-worker";
-import * as scheduleSync from "../async/schedule/sync-schedules";
-import * as workflowWorker from "../async/register/workflow-worker";
-import { createComposer } from "../create-composer";
-import type { Workflow } from "../dag-sync-workflow";
+import { noOpContextProvider } from "../../__tests__/test-utils.js";
+import * as temporalClient from "../async/execute/temporal-client.js";
+import * as activityWorker from "../async/register/activity-worker.js";
+import * as scheduleSync from "../async/schedule/sync-schedules.js";
+import * as workflowWorker from "../async/register/workflow-worker.js";
+import { createComposer } from "../create-composer.js";
+import type { Workflow } from "../dag-sync-workflow.js";
 
-vi.mock("../async/execute/temporal-client");
-vi.mock("../async/register/activity-worker");
-vi.mock("../async/schedule/sync-schedules");
-vi.mock("../async/register/workflow-worker");
+vi.mock("../async/execute/temporal-client.js");
+vi.mock("../async/register/activity-worker.js");
+vi.mock("../async/schedule/sync-schedules.js");
+vi.mock("../async/register/workflow-worker.js");
 
 const mockDescribeWorkflow = vi.mocked(temporalClient.describeWorkflow);
 const mockRunActivityWorkers = vi.mocked(activityWorker.runActivityWorkers);

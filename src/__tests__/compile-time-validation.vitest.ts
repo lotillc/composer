@@ -10,8 +10,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { createWorkflow, step } from "../internal";
-import { createTestStep, type TestBag, testAsyncComposer, testComposer } from "./test-utils";
+import { createWorkflow, step } from "../internal/index.js";
+import { createTestStep, type TestBag, testAsyncComposer, testComposer } from "./test-utils.js";
 
 // Self-contained test steps for compile-time validation testing
 const testStepA = createTestStep("testStepA", [], ["input"], () => ({ input: "test input" }));

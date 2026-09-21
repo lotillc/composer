@@ -1,11 +1,11 @@
-import type { AssertSerializable, Step, StrictStepReturn } from "./dag-sync-step";
+import type { AssertSerializable, Step, StrictStepReturn } from "./dag-sync-step.js";
 import type {
   ExtractWorkflowBag,
   ExtractWorkflowRequiredInitial,
   InferWorkflowResult,
   SafeConfiguredKeys,
   Workflow,
-} from "./dag-sync-workflow";
+} from "./dag-sync-workflow.js";
 
 /**
  * Computes the precise result type of a workflow from its type parameter.

@@ -22,9 +22,9 @@
  *
  * @module sync-schedules
  */
-import type { Composer } from "../../context-provider";
-import { errorForLog } from "../../error-for-log";
-import type { ScheduleDefinition } from "../schedule/define-schedule";
+import type { Composer } from "../../context-provider.js";
+import { errorForLog } from "../../error-for-log.js";
+import type { ScheduleDefinition } from "../schedule/define-schedule.js";
 
 /**
  * Options for `runScheduleSync`.

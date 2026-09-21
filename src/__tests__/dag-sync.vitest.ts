@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createWorkflow, fanOut, step, use, type Workflow } from "../internal";
-import { WorkflowBatchError } from "../internal/errors";
-import { createTestStep, testAsyncStepRuntime, type TestBag, testComposer } from "./test-utils";
+import { createWorkflow, fanOut, step, use, type Workflow } from "../internal/index.js";
+import { WorkflowBatchError } from "../internal/errors.js";
+import { createTestStep, testAsyncStepRuntime, type TestBag, testComposer } from "./test-utils.js";
 
 describe("dag-sync", () => {
   describe("step creation", () => {

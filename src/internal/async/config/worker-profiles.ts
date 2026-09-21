@@ -27,8 +27,8 @@ import type {
   ComposerBuildConfig,
   WorkerProfileOverrides,
   WorkerProfileResources,
-} from "../../../build-config/index";
-import { loadBuildConfig } from "../../../build-config/loader";
+} from "../../../build-config/index.js";
+import { loadBuildConfig } from "../../../build-config/loader.js";
 
 /**
  * Worker profile type.

@@ -31,23 +31,23 @@ import { Context as ActivityContext, ApplicationFailure } from "@temporalio/acti
 import type { DataConverter } from "@temporalio/common";
 import { VersioningBehavior } from "@temporalio/common";
 import { NativeConnection, Worker } from "@temporalio/worker";
-import type { ComposerWorkerInterceptors, StepContextProvider } from "../../context-provider";
-import type { FanOutMetadata } from "../../dag-sync-fanout";
-import type { AsyncStepRuntime, Step } from "../../dag-sync-step";
-import type { Workflow } from "../../dag-sync-workflow";
-import { defaultLogger } from "../../defaults";
-import { errorForLog } from "../../error-for-log";
-import { STEP_NOT_READY_CODE } from "../../poll-codes";
-import type { ComposerLogger } from "../../types";
-import { denamespaceSyntheticSteps } from "../build-scripts/utils/common";
-import { isFanOut } from "../build-scripts/utils/type-guards";
-import { startTaskQueueMetrics, type TaskQueueMetricsHandle } from "../metrics/task-queue-metrics";
+import type { ComposerWorkerInterceptors, StepContextProvider } from "../../context-provider.js";
+import type { FanOutMetadata } from "../../dag-sync-fanout.js";
+import type { AsyncStepRuntime, Step } from "../../dag-sync-step.js";
+import type { Workflow } from "../../dag-sync-workflow.js";
+import { defaultLogger } from "../../defaults.js";
+import { errorForLog } from "../../error-for-log.js";
+import { STEP_NOT_READY_CODE } from "../../poll-codes.js";
+import type { ComposerLogger } from "../../types.js";
+import { denamespaceSyntheticSteps } from "../build-scripts/utils/common.js";
+import { isFanOut } from "../build-scripts/utils/type-guards.js";
+import { startTaskQueueMetrics, type TaskQueueMetricsHandle } from "../metrics/task-queue-metrics.js";
 import {
   isComposerError,
   parentCodesOf,
   type ComposerErrorInstance,
-} from "../utils/is-composer-error";
-import { collectAllWorkflows } from "./generate-workflow-source";
+} from "../utils/is-composer-error.js";
+import { collectAllWorkflows } from "./generate-workflow-source.js";
 
 const v8StackGetter = Object.getOwnPropertyDescriptor(new Error(), "stack")?.get;
 

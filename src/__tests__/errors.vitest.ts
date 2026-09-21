@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { createWorkflow, step } from "../internal";
+import { createWorkflow, step } from "../internal/index.js";
 import {
   matchesError,
   WorkflowBatchError,
   WorkflowErrorHandlerFailure,
   WorkflowStepError,
-} from "../internal/errors";
+} from "../internal/errors.js";
 
 function makeErrorClass(code: string) {
   return class extends Error {

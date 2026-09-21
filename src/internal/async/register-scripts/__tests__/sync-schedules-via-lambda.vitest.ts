@@ -4,8 +4,8 @@
 
 import { ScheduleOverlapPolicy } from "@temporalio/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Composer } from "../../../context-provider";
-import type { ScheduleDefinition } from "../../schedule/define-schedule";
+import type { Composer } from "../../../context-provider.js";
+import type { ScheduleDefinition } from "../../schedule/define-schedule.js";
 
 const mocks = vi.hoisted(() => ({
   lambdaSend: vi.fn(),
@@ -21,7 +21,7 @@ vi.mock("@aws-sdk/client-lambda", async (importOriginal) => {
   };
 });
 
-const { syncSchedulesViaLambda } = await import("../sync-schedules-via-lambda");
+const { syncSchedulesViaLambda } = await import("../sync-schedules-via-lambda.js");
 
 function makeDefinition(overrides?: Partial<ScheduleDefinition>): ScheduleDefinition {
   return {

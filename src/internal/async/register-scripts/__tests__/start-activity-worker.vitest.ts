@@ -3,17 +3,17 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Composer } from "../../../context-provider";
-import type { Workflow } from "../../../dag-sync-workflow";
-import { startActivityWorker } from "../start-activity-worker";
+import type { Composer } from "../../../context-provider.js";
+import type { Workflow } from "../../../dag-sync-workflow.js";
+import { startActivityWorker } from "../start-activity-worker.js";
 
 // Mock ensureNamespaceExists
-vi.mock("../../utils/ensure-namespace", () => ({
+vi.mock("../../utils/ensure-namespace.js", () => ({
   ensureNamespaceExists: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Import after mock setup
-const { ensureNamespaceExists } = await import("../../utils/ensure-namespace");
+const { ensureNamespaceExists } = await import("../../utils/ensure-namespace.js");
 const mockEnsureNamespaceExists = vi.mocked(ensureNamespaceExists);
 
 function createMockComposer(overrides?: Partial<Composer<unknown>>): Composer<unknown> {

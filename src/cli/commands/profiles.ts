@@ -6,12 +6,12 @@
  */
 
 import type { CommandModule } from "yargs";
-import { loadBuildConfig } from "../../build-config/index";
+import { loadBuildConfig } from "../../build-config/index.js";
 import {
   resolveProfilesForEnvironment,
   WORKER_PROFILES,
   type WorkerProfile,
-} from "../../internal/async/config/worker-profiles";
+} from "../../internal/async/config/worker-profiles.js";
 
 interface ProfilesOptions {
   config?: string;

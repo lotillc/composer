@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { isFanOut, isStep, isWorkflow } from "../type-guards";
+import { isFanOut, isStep, isWorkflow } from "../type-guards.js";
 
 describe("type-guards", () => {
   describe("isStep", () => {

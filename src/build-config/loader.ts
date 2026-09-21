@@ -10,12 +10,13 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti";
 import {
   type ComposerBuildConfig,
   type ComposerBuildConfigInput,
   ComposerBuildConfigSchema,
-} from "./schema";
+} from "./schema.js";
 
 /**
  * Default config file names to search for, in order of preference.
@@ -118,7 +119,7 @@ async function loadBuildConfigFile(configPath: string): Promise<ComposerBuildCon
   if (ext === ".ts" || ext === ".js") {
     // Use jiti to load TypeScript/JavaScript config files
     // jiti provides transparent TypeScript support without pre-compilation
-    const jiti = createJiti(__filename, {
+    const jiti = createJiti(fileURLToPath(import.meta.url), {
       fsCache: false,
       moduleCache: false,
     });

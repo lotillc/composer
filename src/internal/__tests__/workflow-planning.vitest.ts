@@ -7,8 +7,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { Step } from "../dag-sync-step";
-import { planWorkflowBatches, validateWorkflowPlan } from "../workflow-planning";
+import type { Step } from "../dag-sync-step.js";
+import { planWorkflowBatches, validateWorkflowPlan } from "../workflow-planning.js";
 
 // Test bag type for our test cases
 interface TestBag {

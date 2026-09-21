@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { defineBuildConfig } from "../../../../build-config";
+import { defineBuildConfig } from "../../../../build-config/index.js";
 import {
   getEffectiveProfileConfig,
   resolveActivityWorkerRuntimeConfig,
   resolveProfilesForEnvironment,
-} from "../worker-profiles";
+} from "../worker-profiles.js";
 
 const config = defineBuildConfig({
   workerProfiles: {

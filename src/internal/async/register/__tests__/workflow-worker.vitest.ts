@@ -12,7 +12,7 @@ import {
   createWorkflowWorkers,
   runWorkflowWorkers,
   type WorkflowWorkerConfig,
-} from "../workflow-worker";
+} from "../workflow-worker.js";
 
 type AsyncVoidFn = () => Promise<void>;
 type MockConnection = { close: MockedFunction<AsyncVoidFn> };
@@ -45,7 +45,7 @@ vi.mock("@temporalio/common", () => ({
   VersioningBehavior: { PINNED: 2 },
 }));
 
-vi.mock("../generate-workflow-source", () => ({
+vi.mock("../generate-workflow-source.js", () => ({
   writeWorkflowSourceFile: mockWriteWorkflowSourceFile,
 }));
 

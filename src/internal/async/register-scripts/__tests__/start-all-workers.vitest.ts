@@ -13,19 +13,19 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import type { Composer } from "../../../context-provider";
-import type { Workflow } from "../../../dag-sync-workflow";
-import type { StartAllWorkersOptions } from "../start-all-workers";
+import type { Composer } from "../../../context-provider.js";
+import type { Workflow } from "../../../dag-sync-workflow.js";
+import type { StartAllWorkersOptions } from "../start-all-workers.js";
 
-vi.mock("../../utils/ensure-namespace", () => ({
+vi.mock("../../utils/ensure-namespace.js", () => ({
   ensureNamespaceExists: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("../start-workflow-worker", () => ({
+vi.mock("../start-workflow-worker.js", () => ({
   startWorkflowWorker: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("../start-activity-worker", () => ({
+vi.mock("../start-activity-worker.js", () => ({
   startActivityWorker: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -62,21 +62,21 @@ describe("startAllWorkers", () => {
 
   describe("Module Structure", () => {
     it("should export startAllWorkers function", async () => {
-      const module = await import("../start-all-workers");
+      const module = await import("../start-all-workers.js");
       expect(module.startAllWorkers).toBeDefined();
       expect(typeof module.startAllWorkers).toBe("function");
     });
 
     it("should have async function signature", async () => {
-      const { startAllWorkers } = await import("../start-all-workers");
+      const { startAllWorkers } = await import("../start-all-workers.js");
       expect(startAllWorkers.constructor.name).toBe("AsyncFunction");
     });
   });
 
   describe("Namespace Handling", () => {
     it("should ensure namespace once before starting workers", async () => {
-      const { ensureNamespaceExists } = await import("../../utils/ensure-namespace");
-      const { startAllWorkers } = await import("../start-all-workers");
+      const { ensureNamespaceExists } = await import("../../utils/ensure-namespace.js");
+      const { startAllWorkers } = await import("../start-all-workers.js");
 
       await startAllWorkers(mockComposer, defaultOptions);
 
@@ -85,8 +85,8 @@ describe("startAllWorkers", () => {
     });
 
     it("should skip namespace check when ensureNamespace is false", async () => {
-      const { ensureNamespaceExists } = await import("../../utils/ensure-namespace");
-      const { startAllWorkers } = await import("../start-all-workers");
+      const { ensureNamespaceExists } = await import("../../utils/ensure-namespace.js");
+      const { startAllWorkers } = await import("../start-all-workers.js");
       vi.mocked(ensureNamespaceExists).mockClear();
 
       await startAllWorkers(mockComposer, {
@@ -100,9 +100,9 @@ describe("startAllWorkers", () => {
 
   describe("Worker Delegation", () => {
     it("should call both startWorkflowWorker and startActivityWorker", async () => {
-      const { startWorkflowWorker } = await import("../start-workflow-worker");
-      const { startActivityWorker } = await import("../start-activity-worker");
-      const { startAllWorkers } = await import("../start-all-workers");
+      const { startWorkflowWorker } = await import("../start-workflow-worker.js");
+      const { startActivityWorker } = await import("../start-activity-worker.js");
+      const { startAllWorkers } = await import("../start-all-workers.js");
 
       await startAllWorkers(mockComposer, defaultOptions);
 
@@ -111,9 +111,9 @@ describe("startAllWorkers", () => {
     });
 
     it("should pass ensureNamespace: false to sub-functions", async () => {
-      const { startWorkflowWorker } = await import("../start-workflow-worker");
-      const { startActivityWorker } = await import("../start-activity-worker");
-      const { startAllWorkers } = await import("../start-all-workers");
+      const { startWorkflowWorker } = await import("../start-workflow-worker.js");
+      const { startActivityWorker } = await import("../start-activity-worker.js");
+      const { startAllWorkers } = await import("../start-all-workers.js");
 
       await startAllWorkers(mockComposer, defaultOptions);
 
@@ -134,7 +134,7 @@ describe("startAllWorkers", () => {
 
   describe("Logging", () => {
     it("should log combined worker configuration at startup", async () => {
-      const { startAllWorkers } = await import("../start-all-workers");
+      const { startAllWorkers } = await import("../start-all-workers.js");
 
       await startAllWorkers(mockComposer, defaultOptions);
 

@@ -20,16 +20,16 @@ import {
   DEFAULT_CHECKPOINT_TIMEOUT_MS,
   type Workflow,
   type WorkflowResult,
-} from "../../dag-sync-workflow";
-import type { UUIDV7 } from "../../types";
-import type { TemporalWorkflowResult } from "../build/workflow-factory";
-import { awaitCheckpointUpdate } from "../build/workflow-factory";
+} from "../../dag-sync-workflow.js";
+import type { UUIDV7 } from "../../types.js";
+import type { TemporalWorkflowResult } from "../build/workflow-factory.js";
+import { awaitCheckpointUpdate } from "../build/workflow-factory.js";
 import {
   createTemporalClient,
   executeWorkflow,
   executeWorkflowAndWait,
   type TemporalClientConfig,
-} from "./temporal-client";
+} from "./temporal-client.js";
 
 /**
  * Options for Temporal workflow execution.

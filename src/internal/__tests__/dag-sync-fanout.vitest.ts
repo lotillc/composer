@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { fanOut, isFanOutStep } from "../dag-sync-fanout";
-import { step } from "../dag-sync-step";
-import { createWorkflow } from "../dag-sync-workflow";
+import { fanOut, isFanOutStep } from "../dag-sync-fanout.js";
+import { step } from "../dag-sync-step.js";
+import { createWorkflow } from "../dag-sync-workflow.js";
 
 const testAsyncStepRuntime = {
   heartbeat: () => {},

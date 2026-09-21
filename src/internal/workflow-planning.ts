@@ -48,7 +48,7 @@
  * ```
  */
 
-import type { Step } from "./dag-sync-step";
+import type { Step } from "./dag-sync-step.js";
 
 /**
  * Result of workflow planning - steps organized into parallel execution batches.

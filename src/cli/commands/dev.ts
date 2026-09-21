@@ -12,10 +12,11 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import type { CommandModule } from "yargs";
-import { loadBuildConfig } from "../../build-config/index";
-import type { ComposerBuildConfig } from "../../build-config/schema";
+import { loadBuildConfig } from "../../build-config/index.js";
+import type { ComposerBuildConfig } from "../../build-config/schema.js";
 
 interface DevOptions {
   config?: string;
@@ -126,7 +127,7 @@ async function spawnWithExitCode(
  * compiles the current package and all its transitive dependencies.
  */
 async function compile(): Promise<boolean> {
-  const tscPath = require.resolve("typescript/bin/tsc");
+  const tscPath = createRequire(import.meta.url).resolve("typescript/bin/tsc");
   console.log("Compiling TypeScript (tsc --build)...");
   const exitCode = await spawnWithExitCode(process.execPath, [tscPath, "--build"], "Compilation");
   return exitCode === 0;

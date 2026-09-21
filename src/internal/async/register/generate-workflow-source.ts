@@ -11,27 +11,28 @@
  * @module generate-workflow-source
  */
 
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   DurationString,
   Step,
   StepPollPolicy,
   StepRetryPolicy,
-} from "../../dag-sync-step";
-import { DEFAULT_CHECKPOINT_TIMEOUT_MS, type Workflow } from "../../dag-sync-workflow";
-import { planWorkflowBatches } from "../../workflow-planning";
-import type { StepActivityConfig, WorkflowPlan } from "../build/workflow-factory";
-import { denamespaceSyntheticSteps } from "../build-scripts/utils/common";
-import { isFanOut } from "../build-scripts/utils/type-guards";
+} from "../../dag-sync-step.js";
+import { DEFAULT_CHECKPOINT_TIMEOUT_MS, type Workflow } from "../../dag-sync-workflow.js";
+import { planWorkflowBatches } from "../../workflow-planning.js";
+import type { StepActivityConfig, WorkflowPlan } from "../build/workflow-factory.js";
+import { denamespaceSyntheticSteps } from "../build-scripts/utils/common.js";
+import { isFanOut } from "../build-scripts/utils/type-guards.js";
 import {
   DEFAULT_WORKER_PROFILE,
   getTaskQueueForProfile,
   isValidWorkerProfile,
   type WorkerProfile,
-} from "../config/worker-profiles";
+} from "../config/worker-profiles.js";
 
 function buildActivityConfig(step: Step<any, any, any>): StepActivityConfig | undefined {
   const typed = step as Step<any, any, any> & {
@@ -176,15 +177,18 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
  * checkout tests and compiled package runtime both work.
  */
 function resolveWorkflowFactoryPath(): string {
-  try {
-    return require.resolve("../build/workflow-factory");
-  } catch (error) {
-    try {
-      return require.resolve("../build/workflow-factory.ts");
-    } catch {
-      throw error;
+  // realpathSync matters here: the result is interpolated into the generated
+  // require() below, and Temporal's bundler compares it against paths webpack
+  // has already symlink-resolved. Under pnpm the package directory is itself a
+  // symlink, so an unresolved path produces the mismatch documented in
+  // writeWorkflowSourceFile.
+  for (const ext of [".js", ".ts"]) {
+    const candidate = fileURLToPath(new URL(`../build/workflow-factory${ext}`, import.meta.url));
+    if (existsSync(candidate)) {
+      return realpathSync(candidate);
     }
   }
+  throw new Error(`Cannot resolve workflow-factory relative to ${import.meta.url}`);
 }
 
 /**

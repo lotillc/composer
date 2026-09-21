@@ -12,12 +12,12 @@
  * Keep this module narrowly focused on server-side reconciliation.
  */
 
-export type { ScheduleDefinition } from "./internal/async/schedule/define-schedule";
+export type { ScheduleDefinition } from "./internal/async/schedule/define-schedule.js";
 export {
   scheduleDefinitionSchema,
   scheduleOverlapPolicySchema,
-} from "./internal/async/schedule/schedule-definition-schema";
+} from "./internal/async/schedule/schedule-definition-schema.js";
 export {
   type SyncSchedulesResult,
   syncSchedules,
-} from "./internal/async/schedule/sync-schedules";
+} from "./internal/async/schedule/sync-schedules.js";

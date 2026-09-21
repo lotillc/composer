@@ -3,8 +3,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { Step } from "../../../../dag-sync-step";
-import { denamespaceSyntheticSteps } from "../common";
+import type { Step } from "../../../../dag-sync-step.js";
+import { denamespaceSyntheticSteps } from "../common.js";
 
 type TestStep = Step<Record<string, unknown>, string[], string[]>;
 type TestStepInput = {

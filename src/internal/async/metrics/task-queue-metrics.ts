@@ -48,8 +48,8 @@ import {
   StandardUnit,
 } from "@aws-sdk/client-cloudwatch";
 import type { NativeConnection } from "@temporalio/worker";
-import { errorForLog } from "../../error-for-log";
-import type { ComposerLogger } from "../../types";
+import { errorForLog } from "../../error-for-log.js";
+import type { ComposerLogger } from "../../types.js";
 
 const DEFAULT_CLOUDWATCH_NAMESPACE = "Composer";
 const DEFAULT_POLL_INTERVAL_MS = 60_000;

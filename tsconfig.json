@@ -3,7 +3,7 @@
     "incremental": true,
 
     "target": "ES2024",
-    "module": "commonjs",
+    "module": "nodenext",
     "lib": [
       "es2024",
       "ESNext.Array",
@@ -18,7 +18,7 @@
     "declarationMap": true,
     "sourceMap": true,
 
-    "moduleResolution": "node",
+    "moduleResolution": "nodenext",
     "moduleDetection": "force",
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,

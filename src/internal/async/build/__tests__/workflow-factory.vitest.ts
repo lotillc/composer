@@ -16,8 +16,8 @@ import type {
   TemporalWorkflowResult,
   WorkflowInput,
   WorkflowPlan,
-} from "../workflow-factory";
-import { createWorkflowFunction } from "../workflow-factory";
+} from "../workflow-factory.js";
+import { createWorkflowFunction } from "../workflow-factory.js";
 
 /**
  * Runs a workflow function and catches ApplicationFailure, extracting the bag

@@ -4,10 +4,10 @@ export {
   type ScheduleDefinitionOptions,
   ScheduleOverlapPolicy,
   type ScheduleSpec,
-} from "./define-schedule";
+} from "./define-schedule.js";
 export {
   type SyncSchedulesConfig,
   type SyncSchedulesResult,
   syncSchedules,
   type TemporalScheduleConfig,
-} from "./sync-schedules";
+} from "./sync-schedules.js";

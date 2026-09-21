@@ -34,10 +34,10 @@
  * @module sync-schedules-via-lambda
  */
 import { InvokeCommand, type InvokeCommandOutput, LambdaClient } from "@aws-sdk/client-lambda";
-import type { Composer } from "../../context-provider";
-import { errorForLog } from "../../error-for-log";
-import type { ScheduleDefinition } from "../schedule/define-schedule";
-import type { SyncSchedulesResult } from "../schedule/sync-schedules";
+import type { Composer } from "../../context-provider.js";
+import { errorForLog } from "../../error-for-log.js";
+import type { ScheduleDefinition } from "../schedule/define-schedule.js";
+import type { SyncSchedulesResult } from "../schedule/sync-schedules.js";
 
 const DEFAULT_REGION = "us-east-1";
 

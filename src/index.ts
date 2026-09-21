@@ -8,12 +8,12 @@ export {
   type LoadBuildConfigOptions,
   type LoadedBuildConfig,
   loadBuildConfig,
-} from "./build-config/index";
+} from "./build-config/index.js";
 export type {
   ComposerBuildConfig,
   ComposerBuildConfigInput,
   EnvExclusiveOptIn,
-} from "./build-config/schema";
+} from "./build-config/schema.js";
 export {
   type AsyncStepRuntime,
   type AsyncWorkflowOptions,
@@ -48,11 +48,11 @@ export {
   type Workflow,
   type WorkflowBuilder,
   type WorkflowResult,
-} from "./internal";
+} from "./internal/index.js";
 export {
   isScheduleDefinition,
   isWorkflow,
-} from "./internal/async/build-scripts/utils/type-guards";
+} from "./internal/async/build-scripts/utils/type-guards.js";
 export {
   type ActivityWorkerRuntimeConfig,
   type CombinedWorkerConfig,
@@ -73,32 +73,32 @@ export {
   WORKER_PROFILES,
   type WorkerProfile,
   type WorkerProfileConfig,
-} from "./internal/async/config/worker-profiles";
+} from "./internal/async/config/worker-profiles.js";
 export {
   type StartActivityWorkerOptions,
   startActivityWorker,
-} from "./internal/async/register-scripts/start-activity-worker";
+} from "./internal/async/register-scripts/start-activity-worker.js";
 export {
   type StartAllWorkersOptions,
   startAllWorkers,
-} from "./internal/async/register-scripts/start-all-workers";
+} from "./internal/async/register-scripts/start-all-workers.js";
 export {
   type StartWorkflowWorkerOptions,
   startWorkflowWorker,
-} from "./internal/async/register-scripts/start-workflow-worker";
+} from "./internal/async/register-scripts/start-workflow-worker.js";
 export {
   runScheduleSync,
   type SyncScheduleScriptOptions,
-} from "./internal/async/register-scripts/sync-schedules";
+} from "./internal/async/register-scripts/sync-schedules.js";
 export {
   type RunSyncSchedulesCliOptions,
   runSyncSchedulesCli,
-} from "./internal/async/register-scripts/sync-schedules-cli";
+} from "./internal/async/register-scripts/sync-schedules-cli.js";
 export {
   type SyncSchedulesViaLambdaOptions,
   syncSchedulesViaLambda,
-} from "./internal/async/register-scripts/sync-schedules-via-lambda";
-export { findPackageRoot } from "./internal/async/utils/find-package-root";
+} from "./internal/async/register-scripts/sync-schedules-via-lambda.js";
+export { findPackageRoot } from "./internal/async/utils/find-package-root.js";
 export {
   type ErrorMatchTarget,
   matchesError,
@@ -107,9 +107,9 @@ export {
   WorkflowBatchError,
   WorkflowErrorHandlerFailure,
   WorkflowStepError,
-} from "./internal/errors";
-export { STEP_NOT_READY_CODE, STEP_POLL_TIMEOUT_CODE } from "./internal/poll-codes";
-export type { ComposerLogger, TraceErrorMessage } from "./internal/types";
+} from "./internal/errors.js";
+export { STEP_NOT_READY_CODE, STEP_POLL_TIMEOUT_CODE } from "./internal/poll-codes.js";
+export type { ComposerLogger, TraceErrorMessage } from "./internal/types.js";
 export type { WorkflowExecutionStatusName } from "@temporalio/client";
 // Re-exported so a consumer can type a converter or an interceptor without taking a direct
 // dependency on the Temporal packages, which pnpm would not otherwise resolve for them.

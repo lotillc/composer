@@ -3,6 +3,7 @@
   "version": "0.7.0",
   "description": "A framework for building type-safe, DAG-based workflows with optional Temporal integration.",
   "license": "MIT",
+  "type": "module",
   "keywords": [
     "temporal",
     "workflow",
@@ -19,7 +20,6 @@
     "type": "git",
     "url": "https://github.com/lotillc/composer.git"
   },
-  "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "typesVersions": {
     "*": {
@@ -104,7 +104,7 @@
   "devDependencies": {
     "@changesets/changelog-github": "^0.7.0",
     "@changesets/cli": "^2.31.1",
-    "@types/node": "^22.19.18",
+    "@types/node": "^24.13.5",
     "@types/yargs": "^17.0.24",
     "@vitest/coverage-v8": "^4.1.4",
     "semver": "^7.8.5",
@@ -124,7 +124,10 @@
     }
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=24.14.1"
+  },
+  "volta": {
+    "node": "24.14.1"
   },
   "packageManager": "pnpm@10.28.2"
 }

@@ -1,4 +1,4 @@
-import type { WorkerProfile } from "./async/config/worker-profiles";
+import type { WorkerProfile } from "./async/config/worker-profiles.js";
 
 // ============================================================================
 // DURATION AND ACTIVITY CONFIGURATION TYPES

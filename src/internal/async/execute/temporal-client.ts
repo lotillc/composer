@@ -31,8 +31,8 @@
 import type { WorkflowExecutionStatusName, WorkflowHandle } from "@temporalio/client";
 import { Client, Connection, WorkflowNotFoundError } from "@temporalio/client";
 import type { DataConverter, PayloadCodec, VersioningOverride } from "@temporalio/common";
-import type { UUIDV7 } from "../../types";
-import type { WorkflowInput } from "../build/workflow-factory";
+import type { UUIDV7 } from "../../types.js";
+import type { WorkflowInput } from "../build/workflow-factory.js";
 
 /**
  * Configuration for connecting to Temporal Server.

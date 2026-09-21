@@ -4,12 +4,12 @@
 
 import { ApplicationFailure, WorkflowFailedError } from "@temporalio/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { UUIDV7 } from "../../../types";
-import type { Workflow } from "../../../dag-sync-workflow";
-import * as temporalClient from "../temporal-client";
-import { executeWorkflowTemporal, startWorkflowTemporal } from "../workflow-execution";
+import type { UUIDV7 } from "../../../types.js";
+import type { Workflow } from "../../../dag-sync-workflow.js";
+import * as temporalClient from "../temporal-client.js";
+import { executeWorkflowTemporal, startWorkflowTemporal } from "../workflow-execution.js";
 
-vi.mock("../temporal-client");
+vi.mock("../temporal-client.js");
 
 const mockExecuteWorkflowAndWait = vi.mocked(temporalClient.executeWorkflowAndWait);
 const mockExecuteWorkflow = vi.mocked(temporalClient.executeWorkflow);
@@ -681,7 +681,7 @@ describe("executeWorkflowTemporal", () => {
       expect(result.error?.message).toMatch("timed out after 10ms");
 
       // Verify the default timeout constant exists and has expected value
-      const { DEFAULT_CHECKPOINT_TIMEOUT_MS } = await import("../../../dag-sync-workflow");
+      const { DEFAULT_CHECKPOINT_TIMEOUT_MS } = await import("../../../dag-sync-workflow.js");
       expect(DEFAULT_CHECKPOINT_TIMEOUT_MS).toBe(30_000);
     });
 

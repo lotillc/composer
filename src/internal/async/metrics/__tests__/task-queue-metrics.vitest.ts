@@ -2,7 +2,7 @@ import type { CloudWatchClient } from "@aws-sdk/client-cloudwatch";
 import type { NativeConnection } from "@temporalio/worker";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { startTaskQueueMetrics } from "../task-queue-metrics";
+import { startTaskQueueMetrics } from "../task-queue-metrics.js";
 
 type PutMetricDataCommandLike = {
   input?: {
