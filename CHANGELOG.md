@@ -1,5 +1,64 @@
 # @lotiai/composer
 
+## 0.8.0
+
+### Minor Changes
+
+- [#30](https://github.com/lotillc/composer/pull/30) [`cd0a832`](https://github.com/lotillc/composer/commit/cd0a832b7180d7671adea622cdc5a73650add5ad) Thanks [@john-goloti](https://github.com/john-goloti)! - **Breaking:** the package is now ESM-only and requires Node >= 24.14.1.
+
+  Staying on CommonJS pinned this package to the last CJS-compatible release of a
+  growing number of dependencies, which meant security advisories that could only
+  be dismissed rather than remediated. Publishing as ESM removes that constraint.
+
+  **For ESM consumers:** no change.
+
+  **For CommonJS consumers:** `require("@lotiai/composer")` continues to work.
+  Node supports `require()` of an ES module well below this package's minimum
+  version, and none of the entrypoints use top-level `await`.
+
+  **For TypeScript consumers compiling to CommonJS:** set `module` and
+  `moduleResolution` to `node16` or `nodenext` in `tsconfig.json`. Note that
+  switching a call site to `await import(...)` is _not_ a workaround — under
+  `"module": "commonjs"` TypeScript downlevels it back into a `require()` call.
+
+  **Minimum Node version** rises from 22 to 24.14.1.
+
+  Also in this release:
+
+  - `./package.json` is now resolvable from the `exports` map.
+  - `./temporal-naming` and `./schedule-sync` are documented in the README; they
+    were already exported.
+  - Removed the unused internal `importModuleFromFile` helper.
+
+### Patch Changes
+
+- [#33](https://github.com/lotillc/composer/pull/33) [`eed7e0a`](https://github.com/lotillc/composer/commit/eed7e0a6dda4a8b48b13053f93f0d2b2502e222f) Thanks [@john-goloti](https://github.com/john-goloti)! - Remediate three open Dependabot advisories in transitive dependencies.
+
+  **`fflate` (runtime).** Raises the `@aws-sdk/client-cloudwatch` and
+  `@aws-sdk/client-lambda` floors to `^3.1136.0`, which requires
+  `@smithy/middleware-compression@^4.6.2` and so brings `fflate@0.8.3`. The fix is
+  carried by the published dependency graph, so package consumers get it too —
+  verified by installing the packed tarball with npm, which resolves
+  `fflate@0.8.3`.
+
+  **`js-yaml` (development).** Advances the existing overrides to 3.15.2 / 4.3.2.
+  These are reached only through `@changesets/*`, a development dependency that
+  package consumers never install, so this affects this repository's own tooling
+  and nothing downstream.
+
+  Also aligns `@vitest/coverage-v8` with `vitest` 5, which had been leaving an
+  unmet peer dependency.
+
+- [#31](https://github.com/lotillc/composer/pull/31) [`8d3cb7b`](https://github.com/lotillc/composer/commit/8d3cb7bec687da18e472e7dbd7274dcc785e60ac) Thanks [@john-goloti](https://github.com/john-goloti)! - Upgrade `uuid` to v14 and drop three unused dependencies.
+
+  `uuid` was pinned at v11 because v12 became ESM-only, which this package could
+  not consume. That constraint is gone, so the pin is lifted. Only the `v7` API is
+  used and its behaviour is unchanged.
+
+  `glob`, `es-toolkit`, and `@lifeomic/attempt` were declared as runtime
+  dependencies but imported nowhere in the package. Removing them shrinks the
+  install footprint and retires two more CommonJS-only packages from the tree.
+
 ## 0.7.0
 
 ### Minor Changes
