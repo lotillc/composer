@@ -12,7 +12,7 @@
  *
  * ```typescript
  * import { startActivityWorker } from "@lotiai/composer";
- * import { composer } from "./my-app-composer";
+ * import { composer } from "./my-app-composer.js";
  *
  * await startActivityWorker(composer, {
  *   taskQueues: ["standard-tasks"],

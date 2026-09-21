@@ -7,8 +7,8 @@
  *
  * ```typescript
  * import { isScheduleDefinition, runSyncSchedulesCli } from "@lotiai/composer";
- * import { getComposer } from "../app-composer";
- * import * as scheduleExports from "../schedules";
+ * import { getComposer } from "../app-composer.js";
+ * import * as scheduleExports from "../schedules.js";
  *
  * void runSyncSchedulesCli(getComposer(), {
  *   schedules: Object.values(scheduleExports).filter(isScheduleDefinition),

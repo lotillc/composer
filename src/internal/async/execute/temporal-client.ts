@@ -2,14 +2,14 @@
  * Temporal Client for Workflow Execution
  *
  * This module provides the client-side API for starting and managing
- * Temporal workflows. Use this from your application code (API handlers,
- * cron jobs, etc.) to initiate workflow executions.
+ * Temporal workflows. It is internal: `executeWorkflow` is not re-exported
+ * from the package entrypoint and this path is not in the `exports` map, so
+ * it cannot be imported directly by consumers. Application code reaches this
+ * behaviour through the composer returned by `createComposer`.
  *
- * ## Usage:
+ * ## Usage (internal callers):
  *
  * ```typescript
- * import { executeWorkflow } from "@lotiai/composer/internal/async/execute/temporal-client";
- *
  * // Start a workflow
  * const handle = await executeWorkflow({
  *   workflowName: "api-prompt-025b323f",  // Versioned name from workflow-bundle

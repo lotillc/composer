@@ -22,8 +22,8 @@
  *
  * ```typescript
  * import { isScheduleDefinition, syncSchedulesViaLambda } from "@lotiai/composer";
- * import { composer } from "./my-app-composer";
- * import * as schedules from "./schedules";
+ * import { composer } from "./my-app-composer.js";
+ * import * as schedules from "./schedules.js";
  *
  * await syncSchedulesViaLambda(composer, {
  *   schedules: Object.values(schedules).filter(isScheduleDefinition),

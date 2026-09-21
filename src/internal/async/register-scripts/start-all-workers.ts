@@ -10,8 +10,8 @@
  *
  * ```typescript
  * import { startAllWorkers } from "@lotiai/composer";
- * import { composer } from "./my-app-composer";
- * import { myWorkflow } from "./workflows/my-workflow";
+ * import { composer } from "./my-app-composer.js";
+ * import { myWorkflow } from "./workflows/my-workflow.js";
  *
  * await startAllWorkers(composer, {
  *   workflows: [myWorkflow],

@@ -42,8 +42,8 @@ import { writeWorkflowSourceFile } from "./generate-workflow-source.js";
  * into a deterministic sandbox. Webpack needs to resolve `@temporalio/workflow`
  * at bundle time, but pnpm's strict node_modules structure may not hoist it
  * to the consumer's top-level node_modules. Since @lotiai/composer lists
- * @temporalio/workflow as a direct dependency, require.resolve finds it from
- * here. We pass this directory to webpack via bundlerOptions so it can resolve
+ * @temporalio/workflow as a direct dependency, resolution from this module
+ * finds it. We pass this directory to webpack via bundlerOptions so it can resolve
  * the package regardless of the consumer's package manager layout.
  */
 function getTemporalWorkflowNodeModulesDir(): string {

@@ -12,7 +12,7 @@
  *
  * ```typescript
  * import { startWorkflowWorker } from "@lotiai/composer";
- * import { composer } from "./my-app-composer";
+ * import { composer } from "./my-app-composer.js";
  *
  * await startWorkflowWorker(composer, {
  *   taskQueues: ["workflow-tasks"],
