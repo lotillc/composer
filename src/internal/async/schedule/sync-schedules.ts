@@ -20,11 +20,11 @@ import type {
 } from "@temporalio/client";
 import { Client, Connection, ScheduleAlreadyRunning } from "@temporalio/client";
 import type { DataConverter } from "@temporalio/common";
-import { defaultLogger } from "../../defaults";
-import { errorForLog } from "../../error-for-log";
-import type { ComposerLogger } from "../../types";
-import { MANAGED_BY_MEMO_KEY, MANAGED_BY_MEMO_VALUE } from "./constants";
-import type { ScheduleDefinition } from "./define-schedule";
+import { defaultLogger } from "../../defaults.js";
+import { errorForLog } from "../../error-for-log.js";
+import type { ComposerLogger } from "../../types.js";
+import { MANAGED_BY_MEMO_KEY, MANAGED_BY_MEMO_VALUE } from "./constants.js";
+import type { ScheduleDefinition } from "./define-schedule.js";
 
 /**
  * Configuration for connecting to Temporal for schedule sync.

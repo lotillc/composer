@@ -1,5 +1,5 @@
-import { createComposer, type AsyncStepRuntime, type StepContextProvider, step } from "../internal";
-import type { AssertSerializable, StrictStepReturn } from "../internal/dag-sync-step";
+import { createComposer, type AsyncStepRuntime, type StepContextProvider, step } from "../internal/index.js";
+import type { AssertSerializable, StrictStepReturn } from "../internal/dag-sync-step.js";
 
 /**
  * No-op context provider for tests that don't need database access.

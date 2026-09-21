@@ -9,13 +9,13 @@
  */
 
 import { v7 as uuidv7 } from "uuid";
-import { getWorkerDeploymentName } from "../temporal-naming";
-import { describeWorkflow as describeWorkflowTemporal } from "./async/execute/temporal-client";
-import { executeWorkflowTemporal, startWorkflowTemporal } from "./async/execute/workflow-execution";
-import { runActivityWorkers as runActivityWorkersInternal } from "./async/register/activity-worker";
-import { runWorkflowWorkers as runWorkflowWorkersInternal } from "./async/register/workflow-worker";
-import type { ScheduleDefinition } from "./async/schedule/define-schedule";
-import { syncSchedules as syncSchedulesInternal } from "./async/schedule/sync-schedules";
+import { getWorkerDeploymentName } from "../temporal-naming.js";
+import { describeWorkflow as describeWorkflowTemporal } from "./async/execute/temporal-client.js";
+import { executeWorkflowTemporal, startWorkflowTemporal } from "./async/execute/workflow-execution.js";
+import { runActivityWorkers as runActivityWorkersInternal } from "./async/register/activity-worker.js";
+import { runWorkflowWorkers as runWorkflowWorkersInternal } from "./async/register/workflow-worker.js";
+import type { ScheduleDefinition } from "./async/schedule/define-schedule.js";
+import { syncSchedules as syncSchedulesInternal } from "./async/schedule/sync-schedules.js";
 import type {
   AsyncWorkflowOptions,
   Composer,
@@ -23,11 +23,11 @@ import type {
   StepContextProvider,
   SyncComposer,
   TemporalConfig,
-} from "./context-provider";
-import type { Step } from "./dag-sync-step";
-import { runSyncWorkflow, type Workflow, type WorkflowResult } from "./dag-sync-workflow";
-import { defaultLogger } from "./defaults";
-import type { UUIDV7 } from "./types";
+} from "./context-provider.js";
+import type { Step } from "./dag-sync-step.js";
+import { runSyncWorkflow, type Workflow, type WorkflowResult } from "./dag-sync-workflow.js";
+import { defaultLogger } from "./defaults.js";
+import type { UUIDV7 } from "./types.js";
 
 /**
  * Creates a Composer instance with the given configuration.

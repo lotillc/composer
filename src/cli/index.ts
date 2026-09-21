@@ -20,9 +20,9 @@
 
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
-import { devCommand } from "./commands/dev";
-import { devDownCommand, devUpCommand } from "./commands/dev-temporal";
-import { profilesCommand } from "./commands/profiles";
+import { devCommand } from "./commands/dev.js";
+import { devDownCommand, devUpCommand } from "./commands/dev-temporal.js";
+import { profilesCommand } from "./commands/profiles.js";
 
 void yargs(hideBin(process.argv))
   .scriptName("composer")

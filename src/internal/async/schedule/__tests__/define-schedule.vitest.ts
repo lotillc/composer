@@ -1,7 +1,7 @@
 import { ScheduleOverlapPolicy } from "@temporalio/client";
 import { describe, expect, it } from "vitest";
-import type { Workflow } from "../../../dag-sync-workflow";
-import { defineSchedule, type ScheduleDefinition } from "../define-schedule";
+import type { Workflow } from "../../../dag-sync-workflow.js";
+import { defineSchedule, type ScheduleDefinition } from "../define-schedule.js";
 
 function makeWorkflow(name: string): Workflow<Record<string, unknown>, never, object, readonly []> {
   return {

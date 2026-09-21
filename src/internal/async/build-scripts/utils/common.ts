@@ -4,7 +4,7 @@
  * Shared utility functions used across the async build system.
  */
 
-import type { Step } from "../../../dag-sync-step";
+import type { Step } from "../../../dag-sync-step.js";
 
 /**
  * Restores real step names from synthetic namespaced names.

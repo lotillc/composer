@@ -9,11 +9,11 @@ import {
   SpanStatusCode,
   trace,
 } from "@opentelemetry/api";
-import type { Step } from "./dag-sync-step";
-import type { Workflow } from "./dag-sync-workflow";
-import { createDefaultMetrics } from "./defaults";
-import { safeErrorCode, safeErrorName } from "./error-for-log";
-import { enableDebugLogging } from "./errors";
+import type { Step } from "./dag-sync-step.js";
+import type { Workflow } from "./dag-sync-workflow.js";
+import { createDefaultMetrics } from "./defaults.js";
+import { safeErrorCode, safeErrorName } from "./error-for-log.js";
+import { enableDebugLogging } from "./errors.js";
 import type {
   ComposerLogger,
   Counter,
@@ -21,7 +21,7 @@ import type {
   MetricsCollector,
   TraceErrorMessage,
   UUIDV7,
-} from "./types";
+} from "./types.js";
 
 // Module-level observability singletons for sync workflow execution.
 // Tracing and metrics use @opentelemetry/api directly -- if the user has an OTel SDK

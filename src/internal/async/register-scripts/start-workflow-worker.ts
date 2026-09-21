@@ -12,7 +12,7 @@
  *
  * ```typescript
  * import { startWorkflowWorker } from "@lotiai/composer";
- * import { composer } from "./my-app-composer";
+ * import { composer } from "./my-app-composer.js";
  *
  * await startWorkflowWorker(composer, {
  *   taskQueues: ["workflow-tasks"],
@@ -23,10 +23,10 @@
  * @module start-workflow-worker
  */
 
-import type { Composer } from "../../context-provider";
-import type { Workflow } from "../../dag-sync-workflow";
-import { errorForLog } from "../../error-for-log";
-import { ensureNamespaceExists } from "../utils/ensure-namespace";
+import type { Composer } from "../../context-provider.js";
+import type { Workflow } from "../../dag-sync-workflow.js";
+import { errorForLog } from "../../error-for-log.js";
+import { ensureNamespaceExists } from "../utils/ensure-namespace.js";
 
 /**
  * Options for starting a workflow worker.

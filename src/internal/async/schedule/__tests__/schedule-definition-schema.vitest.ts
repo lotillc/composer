@@ -9,8 +9,8 @@
 
 import { ScheduleOverlapPolicy } from "@temporalio/client";
 import { describe, expect, it } from "vitest";
-import type { ScheduleDefinition } from "../define-schedule";
-import { scheduleDefinitionSchema } from "../schedule-definition-schema";
+import type { ScheduleDefinition } from "../define-schedule.js";
+import { scheduleDefinitionSchema } from "../schedule-definition-schema.js";
 
 function makeDefinition(overrides?: Partial<ScheduleDefinition>): ScheduleDefinition {
   return {

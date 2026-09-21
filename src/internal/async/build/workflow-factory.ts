@@ -18,9 +18,9 @@
  */
 
 import * as wf from "@temporalio/workflow";
-import type { DurationString } from "../../dag-sync-step";
-import { safeErrorName } from "../../error-for-log";
-import { STEP_NOT_READY_CODE, STEP_POLL_TIMEOUT_CODE } from "../../poll-codes";
+import type { DurationString } from "../../dag-sync-step.js";
+import { safeErrorName } from "../../error-for-log.js";
+import { STEP_NOT_READY_CODE, STEP_POLL_TIMEOUT_CODE } from "../../poll-codes.js";
 
 /**
  * Input structure for our generated Temporal workflows.

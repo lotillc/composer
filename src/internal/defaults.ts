@@ -15,7 +15,7 @@ import {
   type Counter as OTelCounter,
   type Histogram as OTelHistogram,
 } from "@opentelemetry/api";
-import type { ComposerLogger, Counter, Histogram, MetricsCollector } from "./types";
+import type { ComposerLogger, Counter, Histogram, MetricsCollector } from "./types.js";
 
 // ============================================================================
 // Default Logger

@@ -17,6 +17,20 @@ pnpm add @lotiai/composer
 npm install @lotiai/composer
 ```
 
+### Requirements
+
+- **Node.js >= 24.14.1**
+- **This package is ESM-only.** It ships a single ES module build and has no
+  CommonJS entrypoint.
+
+CommonJS consumers are still supported: Node can `require()` an ES module, so
+`require("@lotiai/composer")` works on any Node version this package supports.
+
+TypeScript consumers compiling to CommonJS need `module` and `moduleResolution`
+set to `node16` or `nodenext` in `tsconfig.json`. Note that `await import(...)`
+is *not* a workaround under `"module": "commonjs"` — TypeScript downlevels it
+back into a `require()` call.
+
 ## Core Concepts
 
 ### Bag
@@ -617,7 +631,7 @@ For production or local development with Temporal, start workers using the helpe
 
 ```typescript
 import { startAllWorkers } from "@lotiai/composer";
-import { composer } from "./my-app-composer";
+import { composer } from "./my-app-composer.js";
 
 // Start both workflow and activity workers in one process (local dev)
 await startAllWorkers(composer, {
@@ -699,6 +713,15 @@ Defaults can be overridden per-deployment via `workerProfiles` in `composer.buil
 ### Build config entry point (`@lotiai/composer/build-config`)
 
 Build configuration schema, loader, and `defineBuildConfig` helper for `composer.build-config.ts` files.
+
+### Temporal naming entry point (`@lotiai/composer/temporal-naming`)
+
+Helpers for deriving Temporal deployment series and versioned workflow names.
+
+### Schedule sync entry point (`@lotiai/composer/schedule-sync`)
+
+Schedule synchronisation entry point, kept separate so a consumer's bundler
+does not trace worker imports when it only needs schedule syncing.
 
 ## Deep Freeze (Immutability Protection)
 

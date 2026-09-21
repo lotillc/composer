@@ -8,7 +8,7 @@ import {
   defineBuildConfig,
   hasBuildConfigFile,
   loadBuildConfig,
-} from "../index";
+} from "../index.js";
 
 describe("ComposerBuildConfigSchema", () => {
   it("validates a minimal config (all fields optional with defaults)", () => {

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { createWorkflow, fanOut, step } from "../../../../index";
-import { generateWorkflowPlan, writeWorkflowSourceFile } from "../generate-workflow-source";
+import { createWorkflow, fanOut, step } from "../../../../index.js";
+import { generateWorkflowPlan, writeWorkflowSourceFile } from "../generate-workflow-source.js";
 
 interface ChildBag {
   input: string;

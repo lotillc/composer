@@ -11,9 +11,6 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [22, 24]
     steps:
       - uses: actions/checkout@v6
 
@@ -22,9 +19,11 @@ jobs:
           version: 10.28.2
           run_install: false
 
+      # Reads volta.node from package.json, so the supported Node version is
+      # declared in exactly one place.
       - uses: actions/setup-node@v6
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version-file: package.json
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -32,6 +31,77 @@ jobs:
       - run: pnpm compile
 
       - run: pnpm test
+
+      # The type system cannot catch these: @types/node declares __dirname,
+      # __filename and require as unconditional globals, and vitest injects
+      # them into every module it evaluates. A leftover CommonJS construct
+      # therefore compiles green and tests green, then fails only in the
+      # published package.
+      - name: Check for leftover CommonJS constructs
+        run: |
+          # Matches usage, not mentions: `module.exports` needs an assignment,
+          # and comment lines are filtered out afterwards. __tests__ is excluded
+          # because those fixtures deliberately write CommonJS config files to
+          # disk to prove the loader still accepts them.
+          matches=$(rg -n --glob '!src/**/__tests__/**' \
+              --glob '!src/internal/async/register/generate-workflow-source.ts' \
+              -e 'require\.resolve\(' \
+              -e 'require\.cache' \
+              -e 'module\.exports\s*=' \
+              -e '(^|[^.\w])__dirname\b' \
+              -e '(^|[^.\w])__filename\b' \
+              src/ | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(\*|//)' || true)
+          if [ -n "$matches" ]; then
+            echo "$matches"
+            echo "::error::CommonJS construct found in src/ - see matches above"
+            exit 1
+          fi
+
+      # Nothing else in CI executes built output. --help alone is not enough:
+      # it never enters a command handler, so it would not reach the rewritten
+      # import.meta.url and createRequire call sites.
+      - name: Smoke-test the CLI
+        run: |
+          node bin/composer.js --help
+          # dev:down fails on the missing docker daemon, but only after
+          # getComposeFilePath() has resolved the shipped compose file.
+          node bin/composer.js dev:down 2>&1 | tee /tmp/cli.log || true
+          if grep -qiE 'ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|is not defined' /tmp/cli.log; then
+            echo "::error::CLI failed with a module-resolution error"
+            exit 1
+          fi
+
+      # The only gate that exercises real Node ESM resolution against the real
+      # exports map. Note prepack rebuilds dist/ during pack, so this also
+      # covers the artifact that actually ships.
+      - name: Smoke-test the packaged tarball
+        run: |
+          pnpm pack --pack-destination /tmp
+          TARBALL=$(ls /tmp/lotiai-composer-*.tgz)
+          mkdir -p /tmp/esm-check && cd /tmp/esm-check
+          npm init -y >/dev/null && npm pkg set type=module
+          npm install --no-audit --no-fund "$TARBALL"
+          for sub in "" "/build-config" "/temporal-naming" "/schedule-sync"; do
+            node -e "import('@lotiai/composer$sub').then(m => {
+              const keys = Object.keys(m);
+              if (!keys.length) { throw new Error('no exports from @lotiai/composer$sub'); }
+              console.log('@lotiai/composer$sub ->', keys.length, 'exports');
+            })"
+          done
+          # The package is ESM-only, but Node's require(esm) must keep working
+          # for CommonJS consumers -- this is what the "default" condition in
+          # the exports map buys us.
+          node --input-type=commonjs -e "
+            const m = require('@lotiai/composer');
+            if (!Object.keys(m).length) { throw new Error('require() returned no exports'); }
+            console.log('require() interop ->', Object.keys(m).length, 'exports');
+          "
+          npx --no-install composer --help
+          # Temporal workflow bundling: the one failure mode tsc and vitest are
+          # both blind to. Needs no Temporal server.
+          npm install --no-audit --no-fund @temporalio/worker
+          cd "$GITHUB_WORKSPACE"
+          node scripts/verify-workflow-bundle.mjs /tmp/esm-check
 
   # Maintains the Version Packages PR only — no npm access, so it stays
   # ungated. Publishing itself lives in release.yml (see there for why it's a
@@ -126,7 +196,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PKG_VERSION=$(node -p "require('./package.json').version")
+          PKG_VERSION=$(node --input-type=commonjs -p "require('./package.json').version")
           TAG="v$PKG_VERSION"
 
           # Ground truth is the npm registry, not git tag existence: if a

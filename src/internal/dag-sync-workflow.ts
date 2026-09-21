@@ -93,13 +93,13 @@
 
 import { context as otelContext } from "@opentelemetry/api";
 import { v7 as uuidv7 } from "uuid";
-import type { StepContextProvider } from "./context-provider";
-import type { FanOutMetadata } from "./dag-sync-fanout";
-import { isFanOutStep } from "./dag-sync-fanout";
-import type { AsyncStepRuntime, Step } from "./dag-sync-step";
-import { defaultLogger } from "./defaults";
-import { errorForLog } from "./error-for-log";
-import { WorkflowBatchError, WorkflowErrorHandlerFailure, WorkflowStepError } from "./errors";
+import type { StepContextProvider } from "./context-provider.js";
+import type { FanOutMetadata } from "./dag-sync-fanout.js";
+import { isFanOutStep } from "./dag-sync-fanout.js";
+import type { AsyncStepRuntime, Step } from "./dag-sync-step.js";
+import { defaultLogger } from "./defaults.js";
+import { errorForLog } from "./error-for-log.js";
+import { WorkflowBatchError, WorkflowErrorHandlerFailure, WorkflowStepError } from "./errors.js";
 import {
   type ExecutionContext,
   endBatchObservability,
@@ -108,9 +108,9 @@ import {
   startBatchObservability,
   startStepObservability,
   startWorkflowObservability,
-} from "./observability";
-import type { ComposerLogger, TraceErrorMessage, UUIDV7 } from "./types";
-import { planWorkflowBatches } from "./workflow-planning";
+} from "./observability.js";
+import type { ComposerLogger, TraceErrorMessage, UUIDV7 } from "./types.js";
+import { planWorkflowBatches } from "./workflow-planning.js";
 
 // ============================================================================
 // Checkpoint Types

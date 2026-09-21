@@ -7,17 +7,19 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { CommandModule } from "yargs";
 
 /**
  * Resolves the path to the docker-compose.temporal.yml file shipped with
- * the @lotiai/composer package. Uses __dirname so the path is correct whether
- * the CLI is run from node_modules or from the source repo.
+ * the @lotiai/composer package. Resolves relative to this module so the path
+ * is correct whether the CLI is run from node_modules or from the source repo.
  */
 function getComposeFilePath(): string {
-  // __dirname at runtime is dist/cli/commands/; the compose file is at the package root
-  return resolve(__dirname, "..", "..", "..", "docker-compose.temporal.yml");
+  // At runtime this module lives in dist/cli/commands/; the compose file is at the package root
+  const here = dirname(fileURLToPath(import.meta.url));
+  return resolve(here, "..", "..", "..", "docker-compose.temporal.yml");
 }
 
 /**

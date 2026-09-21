@@ -10,8 +10,8 @@
  *
  * ```typescript
  * import { startAllWorkers } from "@lotiai/composer";
- * import { composer } from "./my-app-composer";
- * import { myWorkflow } from "./workflows/my-workflow";
+ * import { composer } from "./my-app-composer.js";
+ * import { myWorkflow } from "./workflows/my-workflow.js";
  *
  * await startAllWorkers(composer, {
  *   workflows: [myWorkflow],
@@ -35,11 +35,11 @@
  * @module start-all-workers
  */
 
-import type { Composer } from "../../context-provider";
-import type { Workflow } from "../../dag-sync-workflow";
-import { ensureNamespaceExists } from "../utils/ensure-namespace";
-import { type StartActivityWorkerOptions, startActivityWorker } from "./start-activity-worker";
-import { type StartWorkflowWorkerOptions, startWorkflowWorker } from "./start-workflow-worker";
+import type { Composer } from "../../context-provider.js";
+import type { Workflow } from "../../dag-sync-workflow.js";
+import { ensureNamespaceExists } from "../utils/ensure-namespace.js";
+import { type StartActivityWorkerOptions, startActivityWorker } from "./start-activity-worker.js";
+import { type StartWorkflowWorkerOptions, startWorkflowWorker } from "./start-workflow-worker.js";
 
 /**
  * Options for starting all workers (workflow + activity) in a single process.

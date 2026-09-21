@@ -10,11 +10,11 @@ pnpm compile
 pnpm test
 ```
 
-The package targets Node 22+ and uses pnpm (see `packageManager` in `package.json`).
+The package is ESM-only, targets Node 24.14.1+, and uses pnpm (see `packageManager` and `volta` in `package.json`).
 
 ## Pull requests
 
-- Open against `main`. CI runs `pnpm compile` and `pnpm test` on Node 22 and 24.
+- Open against `main`. CI runs `pnpm compile`, `pnpm test`, a check for leftover CommonJS constructs, and a packaged-tarball smoke test on Node 24.
 - One logical change per PR. Keep diffs reviewable.
 - Add or update tests for any behavioral change.
 - Avoid introducing new dependencies unless necessary; prefer the standard library or existing deps.

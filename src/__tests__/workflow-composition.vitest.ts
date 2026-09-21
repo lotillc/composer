@@ -1,26 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createWorkflow, use } from "../internal";
-import { step } from "../internal/dag-sync-step";
-import { WorkflowBatchError } from "../internal/errors";
-import { mockTracer } from "./observability-mocks";
-import { type TestBag as BaseTestBag, testComposer } from "./test-utils";
+import { createWorkflow, use } from "../internal/index.js";
+import { step } from "../internal/dag-sync-step.js";
+import { WorkflowBatchError } from "../internal/errors.js";
+import { mockTracer } from "./observability-mocks.js";
+import { type TestBag as BaseTestBag, testComposer } from "./test-utils.js";
 
 // Mock @opentelemetry/api so trace.getTracer() returns our mockTracer
 vi.mock("@opentelemetry/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@opentelemetry/api")>();
   const mocks =
-    await vi.importActual<typeof import("./observability-mocks")>("./observability-mocks");
+    await vi.importActual<typeof import("./observability-mocks.js")>("./observability-mocks.js");
   const mockTrace = Object.create(actual.trace);
   mockTrace.getTracer = () => mocks.mockTracer;
   return { ...actual, trace: mockTrace };
 });
 
 // Mock defaults so createDefaultMetrics() returns our mockMetrics
-vi.mock("../internal/defaults", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../internal/defaults")>();
+vi.mock("../internal/defaults.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../internal/defaults.js")>();
   const mocks =
-    await vi.importActual<typeof import("./observability-mocks")>("./observability-mocks");
+    await vi.importActual<typeof import("./observability-mocks.js")>("./observability-mocks.js");
   return { ...actual, createDefaultMetrics: () => mocks.mockMetrics };
 });
 

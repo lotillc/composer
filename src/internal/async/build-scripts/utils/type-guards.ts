@@ -50,10 +50,10 @@
  * objects match the expected Step/Workflow interface shape.
  */
 
-import type { FanOutMetadata } from "../../../dag-sync-fanout";
-import type { Step } from "../../../dag-sync-step";
-import type { Workflow } from "../../../dag-sync-workflow";
-import type { ScheduleDefinition } from "../../schedule/define-schedule";
+import type { FanOutMetadata } from "../../../dag-sync-fanout.js";
+import type { Step } from "../../../dag-sync-step.js";
+import type { Workflow } from "../../../dag-sync-workflow.js";
+import type { ScheduleDefinition } from "../../schedule/define-schedule.js";
 
 /**
  * Type guard to check if a value is a step definition.

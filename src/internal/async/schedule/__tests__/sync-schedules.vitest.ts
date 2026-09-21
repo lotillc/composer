@@ -1,7 +1,7 @@
 import { ScheduleOverlapPolicy } from "@temporalio/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MANAGED_BY_MEMO_KEY, MANAGED_BY_MEMO_VALUE } from "../constants";
-import type { ScheduleDefinition } from "../define-schedule";
+import { MANAGED_BY_MEMO_KEY, MANAGED_BY_MEMO_VALUE } from "../constants.js";
+import type { ScheduleDefinition } from "../define-schedule.js";
 
 const { mockCreate, mockGetHandle, mockScheduleList, mockConnectionClose, clientOptions } =
   vi.hoisted(() => ({
@@ -78,7 +78,7 @@ describe("syncSchedules", () => {
     mockScheduleList.mockReturnValue(createMockListIterator([]));
     mockCreate.mockResolvedValue(undefined);
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
 
     const result = await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
@@ -113,7 +113,7 @@ describe("syncSchedules", () => {
     );
     mockGetHandle.mockReturnValue({ update: mockUpdate, delete: vi.fn() });
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
 
     const result = await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
@@ -136,7 +136,7 @@ describe("syncSchedules", () => {
     );
     mockGetHandle.mockReturnValue({ delete: mockDelete });
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
 
     const result = await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
@@ -153,7 +153,7 @@ describe("syncSchedules", () => {
       createMockListIterator([{ scheduleId: "external-schedule", memo: { someOther: "value" } }]),
     );
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
 
     const result = await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
@@ -168,7 +168,7 @@ describe("syncSchedules", () => {
   it("ignores schedules with no memo when deleting", async () => {
     mockScheduleList.mockReturnValue(createMockListIterator([{ scheduleId: "no-memo-schedule" }]));
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
 
     const result = await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
@@ -183,7 +183,7 @@ describe("syncSchedules", () => {
     mockScheduleList.mockReturnValue(createMockListIterator([]));
     mockCreate.mockResolvedValue(undefined);
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
 
     await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
@@ -208,7 +208,7 @@ describe("syncSchedules", () => {
       ]),
     );
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
 
     const result = await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
@@ -230,7 +230,7 @@ describe("syncSchedules", () => {
   it("throws on duplicate scheduleIds in definitions", async () => {
     mockScheduleList.mockReturnValue(createMockListIterator([]));
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
 
     await expect(
       syncSchedules({
@@ -247,7 +247,7 @@ describe("syncSchedules", () => {
       .mockRejectedValueOnce(new Error("connection refused"))
       .mockResolvedValueOnce(undefined);
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
 
     const result = await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
@@ -266,7 +266,7 @@ describe("syncSchedules", () => {
     mockScheduleList.mockReturnValue(createMockListIterator([]));
     mockCreate.mockResolvedValue(undefined);
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
 
     await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
@@ -286,7 +286,7 @@ describe("syncSchedules", () => {
   it("closes the Temporal connection after sync completes", async () => {
     mockScheduleList.mockReturnValue(createMockListIterator([]));
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
 
     await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
@@ -300,7 +300,7 @@ describe("syncSchedules", () => {
   it("closes the Temporal connection even when sync throws", async () => {
     mockScheduleList.mockReturnValue(createMockListIterator([]));
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
 
     await expect(
       syncSchedules({
@@ -323,7 +323,7 @@ describe("syncSchedules", () => {
       delete: vi.fn(),
     });
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
 
     const result = await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
@@ -348,7 +348,7 @@ describe("syncSchedules", () => {
       delete: vi.fn(),
     });
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
 
     const result = await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
@@ -365,7 +365,7 @@ describe("syncSchedules", () => {
     mockScheduleList.mockReturnValue(createMockListIterator([]));
     mockCreate.mockResolvedValue(undefined);
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
 
     await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
@@ -413,7 +413,7 @@ describe("syncSchedules failure logging", () => {
     mockScheduleList.mockReturnValue(createMockListIterator([]));
     mockCreate.mockRejectedValue(createFailure);
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
     const result = await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
       schedules: [makeDefinition({ scheduleId: "doomed-schedule" })],
@@ -441,7 +441,7 @@ describe("syncSchedules failure logging", () => {
     );
     mockGetHandle.mockReturnValue({ delete: vi.fn().mockRejectedValue(deleteFailure) });
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
     const result = await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
       schedules: [],
@@ -462,7 +462,7 @@ describe("syncSchedules failure logging", () => {
     mockScheduleList.mockReturnValue(createMockListIterator([]));
     mockCreate.mockRejectedValue(rejection);
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
     await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
       schedules: [makeDefinition({ scheduleId: "non-error-rejection" })],
@@ -492,7 +492,7 @@ describe("syncSchedules dataConverter", () => {
     mockScheduleList.mockReturnValue(createMockListIterator([]));
     mockCreate.mockResolvedValue(undefined);
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
     await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default", dataConverter },
       schedules: [makeDefinition()],
@@ -506,7 +506,7 @@ describe("syncSchedules dataConverter", () => {
     mockScheduleList.mockReturnValue(createMockListIterator([]));
     mockCreate.mockResolvedValue(undefined);
 
-    const { syncSchedules } = await import("../sync-schedules");
+    const { syncSchedules } = await import("../sync-schedules.js");
     await syncSchedules({
       temporalConfig: { address: "localhost:7233", namespace: "default" },
       schedules: [makeDefinition()],

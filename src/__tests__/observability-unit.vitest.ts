@@ -1,7 +1,7 @@
 import { SpanStatusCode } from "@opentelemetry/api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createWorkflow, type Step, type Workflow } from "../internal";
+import { createWorkflow, type Step, type Workflow } from "../internal/index.js";
 import {
   type BatchObservabilityHandle,
   type ExecutionContext,
@@ -13,10 +13,10 @@ import {
   startStepObservability,
   startWorkflowObservability,
   type WorkflowObservabilityHandle,
-} from "../internal/observability";
-import type { UUIDV7 } from "../internal/types";
-import { createMockSpan, mockLogger, mockMetrics, mockTracer } from "./observability-mocks";
-import { createTestStep, type TestBag } from "./test-utils";
+} from "../internal/observability.js";
+import type { UUIDV7 } from "../internal/types.js";
+import { createMockSpan, mockLogger, mockMetrics, mockTracer } from "./observability-mocks.js";
+import { createTestStep, type TestBag } from "./test-utils.js";
 
 type WorkflowFailureLog = {
   failureContext: {
@@ -37,17 +37,17 @@ function firstWorkflowFailureLog(): WorkflowFailureLog {
 vi.mock("@opentelemetry/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@opentelemetry/api")>();
   const mocks =
-    await vi.importActual<typeof import("./observability-mocks")>("./observability-mocks");
+    await vi.importActual<typeof import("./observability-mocks.js")>("./observability-mocks.js");
   const mockTrace = Object.create(actual.trace);
   mockTrace.getTracer = () => mocks.mockTracer;
   return { ...actual, trace: mockTrace };
 });
 
 // Mock defaults so createDefaultMetrics() returns our mockMetrics
-vi.mock("../internal/defaults", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../internal/defaults")>();
+vi.mock("../internal/defaults.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../internal/defaults.js")>();
   const mocks =
-    await vi.importActual<typeof import("./observability-mocks")>("./observability-mocks");
+    await vi.importActual<typeof import("./observability-mocks.js")>("./observability-mocks.js");
   return { ...actual, createDefaultMetrics: () => mocks.mockMetrics };
 });
 

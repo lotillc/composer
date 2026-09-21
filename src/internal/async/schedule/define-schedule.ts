@@ -21,7 +21,7 @@ import type {
   ExtractWorkflowConfig,
   ExtractWorkflowRequiredInitial,
   Workflow,
-} from "../../dag-sync-workflow";
+} from "../../dag-sync-workflow.js";
 
 export type { ScheduleSpec } from "@temporalio/client";
 export { ScheduleOverlapPolicy } from "@temporalio/client";
@@ -210,7 +210,7 @@ export interface ScheduleDefinition {
  * @example
  * ```typescript
  * import { defineSchedule, ScheduleOverlapPolicy } from "@lotiai/composer";
- * import { dailyReportWorkflow } from "../workflows/daily-report-workflow";
+ * import { dailyReportWorkflow } from "../workflows/daily-report-workflow.js";
  *
  * export const dailyReport = defineSchedule({
  *   scheduleId: "daily-report",

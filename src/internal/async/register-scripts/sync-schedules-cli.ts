@@ -7,8 +7,8 @@
  *
  * ```typescript
  * import { isScheduleDefinition, runSyncSchedulesCli } from "@lotiai/composer";
- * import { getComposer } from "../app-composer";
- * import * as scheduleExports from "../schedules";
+ * import { getComposer } from "../app-composer.js";
+ * import * as scheduleExports from "../schedules.js";
  *
  * void runSyncSchedulesCli(getComposer(), {
  *   schedules: Object.values(scheduleExports).filter(isScheduleDefinition),
@@ -41,10 +41,10 @@
  */
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
-import type { Composer } from "../../context-provider";
-import type { ScheduleDefinition } from "../schedule/define-schedule";
-import { runScheduleSync } from "./sync-schedules";
-import { syncSchedulesViaLambda } from "./sync-schedules-via-lambda";
+import type { Composer } from "../../context-provider.js";
+import type { ScheduleDefinition } from "../schedule/define-schedule.js";
+import { runScheduleSync } from "./sync-schedules.js";
+import { syncSchedulesViaLambda } from "./sync-schedules-via-lambda.js";
 
 /**
  * Builds the default schedule-sync Lambda function name for the current

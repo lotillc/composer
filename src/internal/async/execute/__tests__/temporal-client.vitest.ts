@@ -1,6 +1,6 @@
 import { WorkflowNotFoundError } from "@temporalio/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { UUIDV7 } from "../../../types";
+import type { UUIDV7 } from "../../../types.js";
 
 const { mockConnect, mockGetHandle, clientOptions } = vi.hoisted(() => ({
   mockConnect: vi.fn(),
@@ -37,7 +37,7 @@ describe("describeWorkflow", () => {
   it("returns the workflow status when the workflow exists", async () => {
     mockGetHandle.mockReturnValue(handleReturning({ status: { name: "RUNNING" } }));
 
-    const { describeWorkflow } = await import("../temporal-client");
+    const { describeWorkflow } = await import("../temporal-client.js");
     const result = await describeWorkflow("wf-running" as UUIDV7, {
       address: "status-test:7233",
       namespace: "default",
@@ -52,7 +52,7 @@ describe("describeWorkflow", () => {
       describe: vi.fn().mockRejectedValue(new WorkflowNotFoundError("not found", "wf-missing", undefined)),
     });
 
-    const { describeWorkflow } = await import("../temporal-client");
+    const { describeWorkflow } = await import("../temporal-client.js");
     const result = await describeWorkflow("wf-missing" as UUIDV7, {
       address: "missing-test:7233",
       namespace: "default",
@@ -66,7 +66,7 @@ describe("describeWorkflow", () => {
       describe: vi.fn().mockRejectedValue(new Error("connection refused")),
     });
 
-    const { describeWorkflow } = await import("../temporal-client");
+    const { describeWorkflow } = await import("../temporal-client.js");
     await expect(
       describeWorkflow("wf-error" as UUIDV7, {
         address: "error-test:7233",
@@ -78,7 +78,7 @@ describe("describeWorkflow", () => {
   it("reuses the cached client across calls with the same config", async () => {
     mockGetHandle.mockReturnValue(handleReturning({ status: { name: "COMPLETED" } }));
 
-    const { describeWorkflow } = await import("../temporal-client");
+    const { describeWorkflow } = await import("../temporal-client.js");
     const config = { address: "cache-test:7233", namespace: "default" };
     await describeWorkflow("wf-a" as UUIDV7, config);
     await describeWorkflow("wf-b" as UUIDV7, config);
@@ -99,7 +99,7 @@ describe("createTemporalClient dataConverter", () => {
   it("passes the dataConverter to the Client", async () => {
     const dataConverter = { failureConverterPath: "/srv/scrubbing-failure-converter.js" };
 
-    const { createTemporalClient } = await import("../temporal-client");
+    const { createTemporalClient } = await import("../temporal-client.js");
     await createTemporalClient({
       address: "converter-test:7233",
       namespace: "default",
@@ -110,14 +110,14 @@ describe("createTemporalClient dataConverter", () => {
   });
 
   it("omits the key entirely when no converter is configured", async () => {
-    const { createTemporalClient } = await import("../temporal-client");
+    const { createTemporalClient } = await import("../temporal-client.js");
     await createTemporalClient({ address: "no-converter:7233", namespace: "default" });
 
     expect(clientOptions.at(-1)).not.toHaveProperty("dataConverter");
   });
 
   it("reuses one connection for an equivalent converter rebuilt per call", async () => {
-    const { createTemporalClient } = await import("../temporal-client");
+    const { createTemporalClient } = await import("../temporal-client.js");
     const config = () => ({
       address: "reuse-test:7233",
       namespace: "default",
@@ -132,7 +132,7 @@ describe("createTemporalClient dataConverter", () => {
   });
 
   it("does not hand one converter's client to a caller asking for another", async () => {
-    const { createTemporalClient } = await import("../temporal-client");
+    const { createTemporalClient } = await import("../temporal-client.js");
     const base = { address: "distinct-test:7233", namespace: "default" };
 
     const scrubbing = await createTemporalClient({
@@ -146,7 +146,7 @@ describe("createTemporalClient dataConverter", () => {
   });
 
   it("tells two codec sets apart even though codecs are not serializable", async () => {
-    const { createTemporalClient } = await import("../temporal-client");
+    const { createTemporalClient } = await import("../temporal-client.js");
     const base = { address: "codec-test:7233", namespace: "default" };
     const codecA = { encode: async (p: never[]) => p, decode: async (p: never[]) => p };
     const codecB = { encode: async (p: never[]) => p, decode: async (p: never[]) => p };

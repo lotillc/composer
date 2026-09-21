@@ -13,9 +13,9 @@ import {
   createActivityWorkers,
   runActivityWorkers,
   type ActivityWorkerConfig,
-} from "../activity-worker";
-import type { StepContextProvider } from "../../../context-provider";
-import type { ComposerLogger } from "../../../types";
+} from "../activity-worker.js";
+import type { StepContextProvider } from "../../../context-provider.js";
+import type { ComposerLogger } from "../../../types.js";
 
 type AsyncVoidFn = () => Promise<void>;
 type MockConnection = { close: MockedFunction<AsyncVoidFn> };
@@ -89,7 +89,7 @@ vi.mock("@temporalio/activity", async (importOriginal) => ({
 vi.mock("@temporalio/common", () => ({
   VersioningBehavior: { PINNED: 2 },
 }));
-vi.mock("../../metrics/task-queue-metrics", () => ({
+vi.mock("../../metrics/task-queue-metrics.js", () => ({
   startTaskQueueMetrics: mockStartTaskQueueMetrics,
 }));
 

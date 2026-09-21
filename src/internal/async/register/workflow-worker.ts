@@ -23,16 +23,17 @@
  * @module workflow-worker
  */
 
+import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import type { DataConverter } from "@temporalio/common";
 import { VersioningBehavior } from "@temporalio/common";
 import { NativeConnection, Worker } from "@temporalio/worker";
-import type { ComposerWorkerInterceptors } from "../../context-provider";
-import type { Workflow } from "../../dag-sync-workflow";
-import { defaultLogger } from "../../defaults";
-import { errorForLog } from "../../error-for-log";
-import type { ComposerLogger } from "../../types";
-import { writeWorkflowSourceFile } from "./generate-workflow-source";
+import type { ComposerWorkerInterceptors } from "../../context-provider.js";
+import type { Workflow } from "../../dag-sync-workflow.js";
+import { defaultLogger } from "../../defaults.js";
+import { errorForLog } from "../../error-for-log.js";
+import type { ComposerLogger } from "../../types.js";
+import { writeWorkflowSourceFile } from "./generate-workflow-source.js";
 
 /**
  * Resolve the node_modules directory containing @temporalio/workflow.
@@ -41,12 +42,14 @@ import { writeWorkflowSourceFile } from "./generate-workflow-source";
  * into a deterministic sandbox. Webpack needs to resolve `@temporalio/workflow`
  * at bundle time, but pnpm's strict node_modules structure may not hoist it
  * to the consumer's top-level node_modules. Since @lotiai/composer lists
- * @temporalio/workflow as a direct dependency, require.resolve finds it from
- * here. We pass this directory to webpack via bundlerOptions so it can resolve
+ * @temporalio/workflow as a direct dependency, resolution from this module
+ * finds it. We pass this directory to webpack via bundlerOptions so it can resolve
  * the package regardless of the consumer's package manager layout.
  */
 function getTemporalWorkflowNodeModulesDir(): string {
-  const temporalWorkflowPkg = require.resolve("@temporalio/workflow/package.json");
+  const temporalWorkflowPkg = createRequire(import.meta.url).resolve(
+    "@temporalio/workflow/package.json",
+  );
   // Go up from .../node_modules/@temporalio/workflow/package.json
   // to .../node_modules (scoped package = 2 levels above the package dir)
   return resolve(dirname(temporalWorkflowPkg), "..", "..");

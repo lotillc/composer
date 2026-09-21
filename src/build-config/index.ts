@@ -18,8 +18,8 @@
  * ```
  */
 
-import type { ComposerBuildConfig, ComposerBuildConfigInput } from "./schema";
-import { ComposerBuildConfigSchema } from "./schema";
+import type { ComposerBuildConfig, ComposerBuildConfigInput } from "./schema.js";
+import { ComposerBuildConfigSchema } from "./schema.js";
 
 // Loader exports
 export {
@@ -29,7 +29,7 @@ export {
   type LoadBuildConfigOptions,
   type LoadedBuildConfig,
   loadBuildConfig,
-} from "./loader";
+} from "./loader.js";
 // Schema exports
 export {
   type ComposerBuildConfig,
@@ -39,7 +39,7 @@ export {
   type WorkerProfileOverrides,
   type WorkerProfileResources,
   WorkerProfileResourcesSchema,
-} from "./schema";
+} from "./schema.js";
 
 /**
  * Helper function for creating a type-safe composer build configuration.

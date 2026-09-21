@@ -61,7 +61,7 @@ jobs:
               ;;
           esac
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PKG_VERSION=$(node -p "require('./package.json').version")
+          PKG_VERSION=$(node --input-type=commonjs -p "require('./package.json').version")
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
             echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION" >&2
             exit 1
@@ -87,7 +87,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version-file: package.json
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
@@ -97,6 +97,36 @@ jobs:
 
       - run: pnpm test
 
+      # `prepack` runs `pnpm clean && pnpm compile` inside `pnpm publish`, so
+      # the dist/ built above is discarded and rebuilt at publish time. This
+      # step packs the tarball the same way and exercises the result, so the
+      # artifact that actually ships is the one that got tested.
+      - name: Smoke-test the packaged tarball
+        run: |
+          pnpm pack --pack-destination /tmp
+          TARBALL=$(ls /tmp/lotiai-composer-*.tgz)
+          mkdir -p /tmp/esm-check && cd /tmp/esm-check
+          npm init -y >/dev/null && npm pkg set type=module
+          npm install --no-audit --no-fund "$TARBALL"
+          for sub in "" "/build-config" "/temporal-naming" "/schedule-sync"; do
+            node -e "import('@lotiai/composer$sub').then(m => {
+              const keys = Object.keys(m);
+              if (!keys.length) { throw new Error('no exports from @lotiai/composer$sub'); }
+              console.log('@lotiai/composer$sub ->', keys.length, 'exports');
+            })"
+          done
+          node --input-type=commonjs -e "
+            const m = require('@lotiai/composer');
+            if (!Object.keys(m).length) { throw new Error('require() returned no exports'); }
+            console.log('require() interop ->', Object.keys(m).length, 'exports');
+          "
+          npx --no-install composer --help
+          # Temporal workflow bundling: the one failure mode tsc and vitest are
+          # both blind to. Needs no Temporal server.
+          npm install --no-audit --no-fund @temporalio/worker
+          cd "$GITHUB_WORKSPACE"
+          node scripts/verify-workflow-bundle.mjs /tmp/esm-check
+
       - name: Skip if this version is already published
         # A duplicate dispatch for the same tag (e.g. ci.yml's retry-safe
         # handoff racing an earlier one) queues behind the per-ref
@@ -104,7 +134,7 @@ jobs:
         # otherwise fail here trying to republish an immutable version.
         id: already-published
         run: |
-          PKG_VERSION=$(node -p "require('./package.json').version")
+          PKG_VERSION=$(node --input-type=commonjs -p "require('./package.json').version")
           if npm view "@lotiai/composer@$PKG_VERSION" version >/dev/null 2>&1; then
             echo "$PKG_VERSION is already published on npm. Nothing to do."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -138,14 +168,14 @@ jobs:
         # doesn't cover dist-tag operations, only publish).
         if: steps.already-published.outputs.skip != 'true'
         run: |
-          PKG_VERSION=$(node -p "require('./package.json').version")
+          PKG_VERSION=$(node --input-type=commonjs -p "require('./package.json').version")
 
           # A prerelease must never become `latest`, full stop -- not just
           # when it's older than the current latest. semver.gt() alone
           # would let a *next*-version prerelease (e.g. 0.3.0-beta.1 when
           # latest is 0.2.5) through, since it genuinely outranks 0.2.5;
           # 'latest' should never point at unstable code regardless.
-          PRERELEASE_ID=$(node -e "
+          PRERELEASE_ID=$(node --input-type=commonjs -e "
             const pre = require('semver').prerelease(process.argv[1]);
             process.stdout.write(pre ? String(pre[0]) : '');
           " "$PKG_VERSION")
@@ -176,11 +206,11 @@ jobs:
             cat "$RUNNER_TEMP/npm-view-err.log" >&2
             exit 1
           fi
-          if ! node -e "process.exit(require('semver').valid(process.argv[1]) ? 0 : 1)" "$CURRENT_LATEST"; then
+          if ! node --input-type=commonjs -e "process.exit(require('semver').valid(process.argv[1]) ? 0 : 1)" "$CURRENT_LATEST"; then
             echo "::error::Looked-up 'latest' version ($CURRENT_LATEST) is not valid SemVer -- refusing to compare." >&2
             exit 1
           fi
-          if node -e "process.exit(require('semver').gt(process.argv[1], process.argv[2]) ? 0 : 1)" "$PKG_VERSION" "$CURRENT_LATEST"; then
+          if node --input-type=commonjs -e "process.exit(require('semver').gt(process.argv[1], process.argv[2]) ? 0 : 1)" "$PKG_VERSION" "$CURRENT_LATEST"; then
             pnpm publish --no-git-checks --access public --provenance
           else
             echo "::warning::$PKG_VERSION is not newer than the published latest ($CURRENT_LATEST) -- publishing without moving the 'latest' dist-tag."

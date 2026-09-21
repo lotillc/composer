@@ -4,7 +4,8 @@ import { join, resolve } from "node:path";
 /**
  * Find the package root by searching upward for package.json.
  *
- * @param startDir - Directory to start searching from (typically __dirname)
+ * @param startDir - Directory to start searching from (typically the
+ *   directory of `import.meta.url`)
  * @returns Absolute path to the package root directory
  * @throws Error if package.json cannot be found
  */

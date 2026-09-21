@@ -11,8 +11,8 @@
 import type { WorkflowExecutionStatusName } from "@temporalio/client";
 import type { DataConverter } from "@temporalio/common";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
-import type { ScheduleDefinition } from "./async/schedule/define-schedule";
-import type { SyncSchedulesResult } from "./async/schedule/sync-schedules";
+import type { ScheduleDefinition } from "./async/schedule/define-schedule.js";
+import type { SyncSchedulesResult } from "./async/schedule/sync-schedules.js";
 import type {
   ExtractWorkflowBag,
   ExtractWorkflowCheckpointNames,
@@ -23,8 +23,8 @@ import type {
   SafeConfiguredKeys,
   Workflow,
   WorkflowResult,
-} from "./dag-sync-workflow";
-import type { ComposerLogger, TraceErrorMessage } from "./types";
+} from "./dag-sync-workflow.js";
+import type { ComposerLogger, TraceErrorMessage } from "./types.js";
 
 /**
  * Step Context Provider - manages context lifecycle for steps.
