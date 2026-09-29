@@ -545,6 +545,93 @@ describe("Activity Worker", () => {
     // A stack opens with `name: message`, so copying `error.stack` whole put a second copy
     // of the message in details -- where a converter scrubbing `message` and `stackTrace`
     // would not think to look.
+    describe("Error handler activity", () => {
+      const batchErrorInfo = {
+        batchNumber: 1,
+        workflowId: "test-workflow-id",
+        errors: [{ stepName: "testStep", type: "Error" }],
+      };
+
+      async function getErrorHandlerActivity(
+        overrides: Partial<ActivityWorkerConfig<MockStepContext>> = {},
+      ) {
+        await createActivityWorkers(createTestConfig(overrides));
+        const activities = mockWorkerCreate.mock.calls[0]?.[0].activities as Record<
+          string,
+          (...args: unknown[]) => Promise<unknown>
+        >;
+        return activities["test-workflow__errorHandler"]!;
+      }
+
+      it("hands the handler a context from beforeStep and releases it after", async () => {
+        const contextProvider = createMockContextProvider();
+        const context = { em: { forked: true } };
+        contextProvider.beforeStep.mockResolvedValue(context);
+        mockErrorHandler.mockResolvedValueOnce(undefined);
+        const activity = await getErrorHandlerActivity({ contextProvider });
+
+        const result = await activity({}, { input: "x" }, batchErrorInfo);
+
+        expect(contextProvider.beforeStep).toHaveBeenCalledWith("__errorHandler__");
+        expect(mockErrorHandler).toHaveBeenCalledWith(
+          context,
+          { input: "x" },
+          expect.objectContaining({ code: "WORKFLOW_BATCH_ERROR", errors: batchErrorInfo.errors }),
+        );
+        expect(contextProvider.afterStep).toHaveBeenCalledWith(context, undefined);
+        expect(result).toEqual({ handled: true, bag: { input: "x" } });
+      });
+
+      it("releases the context with the handler's error and rethrows it", async () => {
+        const contextProvider = createMockContextProvider();
+        const handlerError = new Error("handler failed");
+        mockErrorHandler.mockRejectedValueOnce(handlerError);
+        const activity = await getErrorHandlerActivity({ contextProvider });
+
+        await expect(activity({}, {}, batchErrorInfo)).rejects.toBe(handlerError);
+        expect(contextProvider.afterStep).toHaveBeenCalledWith({ em: {} }, handlerError);
+      });
+
+      it("runs the handler without a context when beforeStep fails", async () => {
+        const contextProvider = createMockContextProvider();
+        contextProvider.beforeStep.mockRejectedValue(new Error("no connection"));
+        mockErrorHandler.mockResolvedValueOnce(undefined);
+        const logger = makeLogger();
+        const activity = await getErrorHandlerActivity({ contextProvider, logger });
+
+        await activity({}, {}, batchErrorInfo);
+
+        expect(mockErrorHandler).toHaveBeenCalledWith(undefined, {}, expect.anything());
+        expect(contextProvider.afterStep).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith(
+          "Failed to create context for error handler",
+          expect.objectContaining({ activityName: "test-workflow__errorHandler" }),
+        );
+      });
+
+      it("keeps the handler's result when afterStep cleanup fails", async () => {
+        const contextProvider = createMockContextProvider();
+        contextProvider.afterStep.mockRejectedValue(new Error("flush failed"));
+        mockErrorHandler.mockResolvedValueOnce(
+          Object.assign(new Error("transformed"), { code: "TRANSFORMED" }),
+        );
+        const logger = makeLogger();
+        const activity = await getErrorHandlerActivity({ contextProvider, logger });
+
+        const result = await activity({}, {}, batchErrorInfo);
+
+        expect(result).toEqual({
+          handled: false,
+          error: { message: "transformed", code: "TRANSFORMED" },
+          bag: {},
+        });
+        expect(logger.error).toHaveBeenCalledWith(
+          "afterStep cleanup failed for error handler",
+          expect.objectContaining({ error: expect.any(Error) }),
+        );
+      });
+    });
+
     describe("Stack in failure details", () => {
       const inlinedSql =
         "insert into \"user\" (\"email\") values ('jane@example.com') - duplicate key";
