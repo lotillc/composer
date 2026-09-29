@@ -337,7 +337,7 @@ export interface ActivityWorkerConfig<TContext = unknown> {
  * 5. Returns the provided fields
  *
  * For workflows with error handlers, creates wrapper activities that delegate
- * to the workflow's errorHandler function.
+ * to the workflow's errorHandler function, with context from the same hooks.
  *
  * For FanOut steps, creates mapInput and aggregateResults wrapper activities.
  */
@@ -496,11 +496,45 @@ function createActivitiesFromWorkflows<TContext>(
           message: `Workflow batch ${typedErrorInfo.batchNumber} failed: ${typedErrorInfo.errors.length} step(s) failed`,
         };
 
-        const result = await (handler as (...args: unknown[]) => Promise<unknown>)(
-          undefined,
-          typedBag,
-          error,
-        );
+        // Same hook contract as the sync path: a context that cannot be built is logged and
+        // the handler runs without one, since this activity is never retried.
+        let ctx: TContext | undefined;
+        if (contextProvider) {
+          try {
+            ctx = await contextProvider.beforeStep("__errorHandler__");
+          } catch (contextError) {
+            logger.warn("Failed to create context for error handler", {
+              activityName: errorHandlerName,
+              workflowId: typedErrorInfo.workflowId,
+              error: errorForLog(contextError),
+            });
+          }
+        }
+
+        let handlerError: Error | undefined;
+        let result: unknown;
+        try {
+          result = await (handler as (...args: unknown[]) => Promise<unknown>)(
+            ctx,
+            typedBag,
+            error,
+          );
+        } catch (thrown) {
+          handlerError = thrown instanceof Error ? thrown : undefined;
+          throw thrown;
+        } finally {
+          if (contextProvider && ctx !== undefined) {
+            try {
+              await contextProvider.afterStep(ctx, handlerError);
+            } catch (cleanupError) {
+              logger.error("afterStep cleanup failed for error handler", {
+                activityName: errorHandlerName,
+                workflowId: typedErrorInfo.workflowId,
+                error: errorForLog(cleanupError),
+              });
+            }
+          }
+        }
 
         if (result === undefined) {
           return { handled: true, bag: typedBag };
