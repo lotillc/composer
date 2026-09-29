@@ -1,5 +1,11 @@
 # @lotiai/composer
 
+## 0.8.1
+
+### Patch Changes
+
+- [#34](https://github.com/lotillc/composer/pull/34) [`f3b6ae8`](https://github.com/lotillc/composer/commit/f3b6ae8f64050b0391726891b9993bfa5bb011ef) Thanks [@john-goloti](https://github.com/john-goloti)! - Asynchronous error handlers now receive a context. The `<workflow>__errorHandler` activity runs the context provider's `beforeStep("__errorHandler__")` and `afterStep` hooks around `onError`, as the synchronous path already did, instead of passing `ctx` as `undefined`.
+
 ## 0.8.0
 
 ### Minor Changes
