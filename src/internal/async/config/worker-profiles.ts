@@ -24,6 +24,8 @@
  *     "request-signing": true;
  *   }
  * }
+ * // Keeps the file a module: a .d.ts without one would shadow the package.
+ * export {};
  *
  * // composer.build-config.ts
  * workerProfiles: {

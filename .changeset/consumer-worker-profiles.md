@@ -7,11 +7,13 @@ Consumers can declare their own worker profiles alongside `standard` and `heavy`
 Register the name by augmenting `WorkerProfileRegistry`, then declare it in `composer.build-config.ts`:
 
 ```typescript
+// worker-profiles.ts
 declare module "@lotiai/composer" {
   interface WorkerProfileRegistry {
     "request-signing": true;
   }
 }
+export {}; // keeps the file a module; a .d.ts without one would shadow the package
 
 // composer.build-config.ts
 export default defineBuildConfig({

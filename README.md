@@ -689,14 +689,19 @@ Defaults can be overridden per-deployment via `workerProfiles` in `composer.buil
 
 A step that needs its own worker, for instance so that only that worker's role holds a sensitive permission, can run on a profile you declare. It takes two declarations.
 
-1. Register the name with the type system, in any `.ts` file your compilation includes:
+1. Register the name with the type system, in a `.ts` or `.d.ts` file your compilation includes:
 
    ```typescript
+   // worker-profiles.ts
    declare module "@lotiai/composer" {
      interface WorkerProfileRegistry {
        "request-signing": true;
      }
    }
+
+   // Keeps the file a module. In a .d.ts with no import or export, the block
+   // above declares a new "@lotiai/composer" instead of augmenting it.
+   export {};
    ```
 
    `WorkerProfile` now includes `"request-signing"`. A step, a `workerProfiles` key or a `fallbackProfile` naming an unregistered profile fails typecheck.

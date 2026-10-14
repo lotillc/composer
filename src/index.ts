@@ -150,6 +150,8 @@ export { Runtime, type RuntimeOptions } from "@temporalio/worker";
  *     "request-signing": true;
  *   }
  * }
+ * // Keeps the file a module: a .d.ts without one would shadow the package.
+ * export {};
  * ```
  */
 export interface WorkerProfileRegistry {
