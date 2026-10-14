@@ -694,19 +694,19 @@ A step that needs its own worker, for instance so that only that worker's role h
    ```typescript
    declare module "@lotiai/composer" {
      interface WorkerProfileRegistry {
-       "liveness-erase": true;
+       "request-signing": true;
      }
    }
    ```
 
-   `WorkerProfile` now includes `"liveness-erase"`. A step, a `workerProfiles` key or a `fallbackProfile` naming an unregistered profile fails typecheck.
+   `WorkerProfile` now includes `"request-signing"`. A step, a `workerProfiles` key or a `fallbackProfile` naming an unregistered profile fails typecheck.
 
 2. Declare it in `composer.build-config.ts`, which is what deploys a worker for it:
 
    ```typescript
    export default defineBuildConfig({
      workerProfiles: {
-       "liveness-erase": { minCount: 1, initialCount: 1, maxCount: 1 },
+       "request-signing": { minCount: 1, initialCount: 1, maxCount: 1 },
      },
    });
    ```
@@ -716,21 +716,21 @@ A step that needs its own worker, for instance so that only that worker's role h
 Then pin the step:
 
 ```typescript
-export const eraseLiveness = step<MyBag, MyContext>()({
-  name: "eraseLiveness",
+export const signRequest = step<MyBag, MyContext>()({
+  name: "signRequest",
   needs: ["userId"],
-  provides: ["erased"],
-  workerProfile: "liveness-erase",
+  provides: ["signed"],
+  workerProfile: "request-signing",
   run: async (ctx, bag) => { /* ... */ },
 });
 ```
 
-The step routes to the task queue `liveness-erase-tasks`. The queue is derived from the profile name alone, so workflow workers need no build config. Everything that reads the build config picks the profile up:
+The step routes to the task queue `request-signing-tasks`. The queue is derived from the profile name alone, so workflow workers need no build config. Everything that reads the build config picks the profile up:
 
 - `resolveProfilesForEnvironment` lists it in `dedicatedProfiles`, and `composer profiles --env <env>` prints it, so infrastructure that creates one worker service per dedicated profile creates one for it.
-- `resolveActivityWorkerRuntimeConfig` / `loadAndResolveActivityWorkerRuntimeConfig` accept it as `workerProfile`, so an activity worker started with `TEMPORAL_ACTIVITY_WORKER_PROFILE=liveness-erase` polls only `liveness-erase-tasks`.
+- `resolveActivityWorkerRuntimeConfig` / `loadAndResolveActivityWorkerRuntimeConfig` accept it as `workerProfile`, so an activity worker started with `TEMPORAL_ACTIVITY_WORKER_PROFILE=request-signing` polls only `request-signing-tasks`.
 - `getAllTaskQueues(config)` includes its queue. Called without a config it returns the built-in queues only, as before.
-- Task-queue metrics are dimensioned by `TaskQueue`, so the profile's worker reports `liveness-erase-tasks` without further setup.
+- Task-queue metrics are dimensioned by `TaskQueue`, so the profile's worker reports `request-signing-tasks` without further setup.
 
 Profile names are lowercase letters, digits and inner hyphens, at most 32 characters. `workflow` is reserved.
 

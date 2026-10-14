@@ -21,13 +21,13 @@
  * ```typescript
  * declare module "@lotiai/composer" {
  *   interface WorkerProfileRegistry {
- *     "liveness-erase": true;
+ *     "request-signing": true;
  *   }
  * }
  *
  * // composer.build-config.ts
  * workerProfiles: {
- *   "liveness-erase": { minCount: 1, initialCount: 1, maxCount: 1 }
+ *   "request-signing": { minCount: 1, initialCount: 1, maxCount: 1 }
  * }
  * ```
  * A declared profile routes to the task queue `<name>-tasks` and starts from

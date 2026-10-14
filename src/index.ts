@@ -147,7 +147,7 @@ export { Runtime, type RuntimeOptions } from "@temporalio/worker";
  * ```typescript
  * declare module "@lotiai/composer" {
  *   interface WorkerProfileRegistry {
- *     "liveness-erase": true;
+ *     "request-signing": true;
  *   }
  * }
  * ```

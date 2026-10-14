@@ -97,7 +97,7 @@ export const ComposerBuildConfigSchema = z.strictObject({
    * profile (register its name in `WorkerProfileRegistry` too). It routes to
    * `<name>-tasks` and starts from the `standard` resources.
    * @example { standard: { cpu: 1024, memory: 4096 } }
-   * @example { "liveness-erase": { minCount: 1, initialCount: 1, maxCount: 1 } }
+   * @example { "request-signing": { minCount: 1, initialCount: 1, maxCount: 1 } }
    */
   workerProfiles: z
     .record(

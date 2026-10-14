@@ -21,50 +21,50 @@ import {
 // which resolves to dist/.
 declare module "../../../../index.js" {
   interface WorkerProfileRegistry {
-    "liveness-erase": true;
+    "request-signing": true;
   }
 }
 
 interface Bag {
   userId: string;
-  erased: boolean;
+  signed: boolean;
   items: string[];
   results: boolean[];
 }
 
 const config = defineBuildConfig({
   workerProfiles: {
-    "liveness-erase": { minCount: 1, initialCount: 1, maxCount: 1 },
+    "request-signing": { minCount: 1, initialCount: 1, maxCount: 1 },
   },
 });
 
-const eraseStep = step<Bag>()({
-  name: "eraseLiveness",
+const signStep = step<Bag>()({
+  name: "signRequest",
   needs: ["userId"] as const,
-  provides: ["erased"] as const,
-  workerProfile: "liveness-erase",
-  run: async () => ({ erased: true }),
+  provides: ["signed"] as const,
+  workerProfile: "request-signing",
+  run: async () => ({ signed: true }),
 });
 
 describe("consumer-defined worker profiles: typing", () => {
   it("accepts a registered profile and rejects an unregistered one", () => {
-    expectTypeOf<"liveness-erase">().toExtend<WorkerProfile>();
+    expectTypeOf<"request-signing">().toExtend<WorkerProfile>();
     expectTypeOf<"standard" | "heavy">().toExtend<WorkerProfile>();
-    expectTypeOf<"liveness-erse">().not.toExtend<WorkerProfile>();
+    expectTypeOf<"request-signign">().not.toExtend<WorkerProfile>();
 
     step<Bag>()({
       name: "typo",
       needs: ["userId"] as const,
-      provides: ["erased"] as const,
+      provides: ["signed"] as const,
       // @ts-expect-error -- not registered in WorkerProfileRegistry
-      workerProfile: "liveness-erse",
-      run: async () => ({ erased: true }),
+      workerProfile: "request-signign",
+      run: async () => ({ signed: true }),
     });
   });
 
   it("types build-config profile keys and fallbackProfile against the registry", () => {
     // @ts-expect-error -- not registered in WorkerProfileRegistry
-    expect(() => defineBuildConfig({ workerProfiles: { "liveness-erse": {} } })).not.toThrow();
+    expect(() => defineBuildConfig({ workerProfiles: { "request-signign": {} } })).not.toThrow();
 
     defineBuildConfig({
       workerProfiles: {
@@ -83,12 +83,12 @@ describe("consumer-defined worker profiles: typing", () => {
 describe("consumer-defined worker profiles: declaration", () => {
   it("lists declared profiles after the built-ins", () => {
     expect(getWorkerProfiles()).toEqual(["standard", "heavy"]);
-    expect(getWorkerProfiles(config)).toEqual(["standard", "heavy", "liveness-erase"]);
+    expect(getWorkerProfiles(config)).toEqual(["standard", "heavy", "request-signing"]);
   });
 
   it("validates a declared profile only against a config that declares it", () => {
-    expect(isValidWorkerProfile("liveness-erase")).toBe(false);
-    expect(isValidWorkerProfile("liveness-erase", config)).toBe(true);
+    expect(isValidWorkerProfile("request-signing")).toBe(false);
+    expect(isValidWorkerProfile("request-signing", config)).toBe(true);
     expect(isValidWorkerProfile("standard", config)).toBe(true);
   });
 
@@ -97,19 +97,19 @@ describe("consumer-defined worker profiles: declaration", () => {
   });
 
   it("rejects malformed and reserved profile names in the build config", () => {
-    const names = ["Liveness", "liveness_erase", "-erase", "erase-", "a".repeat(33), "workflow"];
+    const names = ["Signing", "request_signing", "-signing", "signing-", "a".repeat(33), "workflow"];
     for (const name of names) {
       expect(isWorkerProfileName(name)).toBe(false);
       const result = ComposerBuildConfigSchema.safeParse({ workerProfiles: { [name]: {} } });
       expect(result.success, name).toBe(false);
     }
-    expect(isWorkerProfileName("liveness-erase")).toBe(true);
+    expect(isWorkerProfileName("request-signing")).toBe(true);
   });
 });
 
 describe("consumer-defined worker profiles: routing", () => {
   it("derives the task queue from the profile name", () => {
-    expect(getTaskQueueForProfile("liveness-erase")).toBe("liveness-erase-tasks");
+    expect(getTaskQueueForProfile("request-signing")).toBe("request-signing-tasks");
     expect(getTaskQueueForProfile("standard")).toBe("standard-tasks");
     expect(getTaskQueueForProfile("heavy")).toBe("heavy-tasks");
   });
@@ -119,19 +119,19 @@ describe("consumer-defined worker profiles: routing", () => {
     expect(getAllTaskQueues(config)).toEqual([
       "standard-tasks",
       "heavy-tasks",
-      "liveness-erase-tasks",
+      "request-signing-tasks",
     ]);
   });
 
   it("routes a pinned step to the profile's queue", () => {
-    const workflow = createWorkflow<Bag>("erase").requires("userId").build([eraseStep]);
+    const workflow = createWorkflow<Bag>("sign").requires("userId").build([signStep]);
     expect(generateWorkflowPlan(workflow).batches[0]?.steps[0]?.taskQueue).toBe(
-      "liveness-erase-tasks",
+      "request-signing-tasks",
     );
   });
 
   it("rejects a malformed profile name at plan generation", () => {
-    const bad = { ...eraseStep, workerProfile: "Bad_Name" } as unknown as typeof eraseStep;
+    const bad = { ...signStep, workerProfile: "Bad_Name" } as unknown as typeof signStep;
     const workflow = createWorkflow<Bag>("bad-profile").requires("userId").build([bad]);
     expect(() => generateWorkflowPlan(workflow)).toThrow(/invalid workerProfile "Bad_Name"/);
   });
@@ -139,10 +139,10 @@ describe("consumer-defined worker profiles: routing", () => {
 
 describe("consumer-defined worker profiles: topology and workers", () => {
   it("deploys a declared profile as dedicated, starting from standard resources", () => {
-    const profile = getEffectiveProfileConfig("liveness-erase", config);
+    const profile = getEffectiveProfileConfig("request-signing", config);
     expect(profile).toEqual({
-      name: "liveness-erase",
-      taskQueue: "liveness-erase-tasks",
+      name: "request-signing",
+      taskQueue: "request-signing-tasks",
       description: "Consumer-defined worker profile",
       resources: {
         ...WORKER_PROFILES.standard.resources,
@@ -156,32 +156,32 @@ describe("consumer-defined worker profiles: topology and workers", () => {
     expect(Object.keys(topology.dedicatedProfiles)).toEqual([
       "standard",
       "heavy",
-      "liveness-erase",
+      "request-signing",
     ]);
-    expect(topology.dedicatedProfiles["liveness-erase"]).toEqual(profile);
+    expect(topology.dedicatedProfiles["request-signing"]).toEqual(profile);
   });
 
   it("throws for an undeclared profile", () => {
-    expect(() => getEffectiveProfileConfig("liveness-erase")).toThrow(/not declared/);
+    expect(() => getEffectiveProfileConfig("request-signing")).toThrow(/not declared/);
     expect(() =>
       resolveActivityWorkerRuntimeConfig({
         environment: "prod",
-        workerProfile: "liveness-erase",
+        workerProfile: "request-signing",
         config: defineBuildConfig({}),
       }),
-    ).toThrow(/Invalid worker profile: "liveness-erase"/);
+    ).toThrow(/Invalid worker profile: "request-signing"/);
   });
 
   it("starts a worker that polls only the declared profile's queue", () => {
     expect(
       resolveActivityWorkerRuntimeConfig({
         environment: "prod",
-        workerProfile: "liveness-erase",
+        workerProfile: "request-signing",
         config,
       }),
     ).toEqual({
-      workerProfile: "liveness-erase",
-      taskQueues: ["liveness-erase-tasks"],
+      workerProfile: "request-signing",
+      taskQueues: ["request-signing-tasks"],
       maxConcurrentActivityTaskExecutions:
         WORKER_PROFILES.standard.resources.maxConcurrentActivities,
     });
@@ -196,47 +196,47 @@ describe("consumer-defined worker profiles: topology and workers", () => {
   it("supports envExclusiveOptIn on a declared profile, in both directions", () => {
     const optInConfig = defineBuildConfig({
       workerProfiles: {
-        "liveness-erase": {
+        "request-signing": {
           envExclusiveOptIn: { environments: ["prod"], fallbackProfile: "standard" },
         },
       },
     });
 
     const preview = resolveProfilesForEnvironment("preview", optInConfig);
-    expect(preview.dedicatedProfiles["liveness-erase"]).toBeUndefined();
-    expect(preview.fallbackQueues.standard).toEqual(["liveness-erase-tasks"]);
+    expect(preview.dedicatedProfiles["request-signing"]).toBeUndefined();
+    expect(preview.fallbackQueues.standard).toEqual(["request-signing-tasks"]);
 
     const absorbing = defineBuildConfig({
       workerProfiles: {
-        "liveness-erase": {},
-        heavy: { envExclusiveOptIn: { environments: ["prod"], fallbackProfile: "liveness-erase" } },
+        "request-signing": {},
+        heavy: { envExclusiveOptIn: { environments: ["prod"], fallbackProfile: "request-signing" } },
       },
     });
     expect(resolveProfilesForEnvironment("preview", absorbing).fallbackQueues).toEqual({
-      "liveness-erase": ["heavy-tasks"],
+      "request-signing": ["heavy-tasks"],
     });
   });
 });
 
 describe("findUndeclaredWorkerProfiles", () => {
   it("reports steps, including fan-out children, pinned to a profile the config omits", () => {
-    const child = createWorkflow<Bag>("child").requires("userId").build([eraseStep]);
+    const child = createWorkflow<Bag>("child").requires("userId").build([signStep]);
     const parent = createWorkflow<Bag>("parent")
       .requires("items")
       .build([
         fanOut<Bag>()({
-          name: "eraseAll",
+          name: "signAll",
           needs: ["items"] as const,
           childWorkflow: child,
           mapInput: (bag) => bag.items.map((userId) => ({ userId })),
           provides: ["results"] as const,
-          aggregateResults: (results) => ({ results: results.map((r) => r.erased) }),
+          aggregateResults: (results) => ({ results: results.map((r) => r.signed) }),
         }),
       ]);
 
     expect(findUndeclaredWorkerProfiles([parent], config)).toEqual([]);
     expect(findUndeclaredWorkerProfiles([parent], defineBuildConfig({}))).toEqual([
-      { workflow: "child", step: "eraseLiveness", workerProfile: "liveness-erase" },
+      { workflow: "child", step: "signRequest", workerProfile: "request-signing" },
     ]);
   });
 });
