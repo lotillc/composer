@@ -666,23 +666,86 @@ await startActivityWorker(composer, {
 
 ## Worker Profiles
 
-Steps can declare a `workerProfile` to control which Temporal worker pool they run on. Currently, there is a single `"standard"` profile:
+Steps can declare a `workerProfile` to control which Temporal worker pool they run on. Each profile has its own task queue, and in a deployment usually its own worker service and task role. Two profiles are built in:
 
-| Profile    | Task Queue       | CPU     | Memory | Concurrent Activities |
-|------------|------------------|---------|--------|-----------------------|
-| `standard` | standard-tasks   | 0.5 vCPU| 2 GB   | 15                    |
+| Profile    | Task Queue       | CPU      | Memory | Concurrent Activities |
+|------------|------------------|----------|--------|-----------------------|
+| `standard` | standard-tasks   | 0.5 vCPU | 2 GB   | 15                    |
+| `heavy`    | heavy-tasks      | 2 vCPU   | 4 GB   | 5                     |
 
 ```typescript
 export const heavyStep = step<MyBag, MyContext>()({
   name: "heavyComputation",
   needs: ["input"],
   provides: ["output"],
-  workerProfile: "standard", // default if omitted
+  workerProfile: "heavy", // "standard" if omitted
   run: async (ctx, bag) => { /* ... */ },
 });
 ```
 
 Defaults can be overridden per-deployment via `workerProfiles` in `composer.build-config.ts`.
+
+### Declaring your own profile
+
+A step that needs its own worker, for instance so that only that worker's role holds a sensitive permission, can run on a profile you declare. It takes two declarations.
+
+1. Register the name with the type system, in a `.ts` or `.d.ts` file your compilation includes:
+
+   ```typescript
+   // worker-profiles.ts
+   declare module "@lotiai/composer" {
+     interface WorkerProfileRegistry {
+       "request-signing": true;
+     }
+   }
+
+   // Keeps the file a module. In a .d.ts with no import or export, the block
+   // above declares a new "@lotiai/composer" instead of augmenting it.
+   export {};
+   ```
+
+   `WorkerProfile` now includes `"request-signing"`. A step, a `workerProfiles` key or a `fallbackProfile` naming an unregistered profile fails typecheck.
+
+2. Declare it in `composer.build-config.ts`, which is what deploys a worker for it:
+
+   ```typescript
+   export default defineBuildConfig({
+     workerProfiles: {
+       "request-signing": { minCount: 1, initialCount: 1, maxCount: 1 },
+     },
+   });
+   ```
+
+   A declared profile starts from the `standard` resources and overrides only what its entry sets; `{}` takes them unchanged. `envExclusiveOptIn` works as for the built-ins.
+
+Then pin the step:
+
+```typescript
+export const signRequest = step<MyBag, MyContext>()({
+  name: "signRequest",
+  needs: ["userId"],
+  provides: ["signed"],
+  workerProfile: "request-signing",
+  run: async (ctx, bag) => { /* ... */ },
+});
+```
+
+The step routes to the task queue `request-signing-tasks`. The queue is derived from the profile name alone, so workflow workers need no build config. Everything that reads the build config picks the profile up:
+
+- `resolveProfilesForEnvironment` lists it in `dedicatedProfiles`, and `composer profiles --env <env>` prints it, so infrastructure that creates one worker service per dedicated profile creates one for it.
+- `resolveActivityWorkerRuntimeConfig` / `loadAndResolveActivityWorkerRuntimeConfig` accept it as `workerProfile`, so an activity worker started with `TEMPORAL_ACTIVITY_WORKER_PROFILE=request-signing` polls only `request-signing-tasks`.
+- `getAllTaskQueues(config)` includes its queue. Called without a config it returns the built-in queues only, as before.
+- Task-queue metrics are dimensioned by `TaskQueue`, so the profile's worker reports `request-signing-tasks` without further setup.
+
+Profile names are lowercase letters, digits and inner hyphens, at most 32 characters. `workflow` and `Object.prototype` property names such as `constructor` are reserved.
+
+Registering a name without declaring it in the build config leaves its steps waiting on a queue no worker polls. Typecheck cannot see the build config, so check it in a test:
+
+```typescript
+import { findUndeclaredWorkerProfiles } from "@lotiai/composer";
+
+expect(findUndeclaredWorkerProfiles(allWorkflows, buildConfig)).toEqual([]);
+```
 
 ## Exports
 
@@ -703,8 +766,11 @@ Defaults can be overridden per-deployment via `workerProfiles` in `composer.buil
 | `startAllWorkers` | Start both Temporal workers in one process |
 | `startWorkflowWorker` | Start a Temporal workflow worker |
 | `startActivityWorker` | Start a Temporal activity worker |
-| `getAllTaskQueues` | Get all configured task queue names |
+| `getAllTaskQueues` | Get all task queue names; pass the build config to include declared profiles |
 | `getTaskQueueForProfile` | Get the task queue for a worker profile |
+| `WorkerProfile`, `WorkerProfileRegistry` | Type: worker profile names; augment the registry to declare a profile |
+| `getWorkerProfiles` | List the built-in profiles plus those a build config declares |
+| `findUndeclaredWorkerProfiles` | Find steps pinned to a profile the build config does not declare |
 | `Runtime` | Temporal's `Runtime`, re-exported so a consumer can install their own workflow logger |
 | `WorkflowStepError` | Error class for step failures |
 | `WorkflowBatchError` | Error class for batch failures |

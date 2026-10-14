@@ -13,6 +13,28 @@
  *
  * Each profile maps to a dedicated Temporal task queue and ECS service.
  *
+ * ## Consumer-defined profiles
+ *
+ * A consumer can declare further profiles, e.g. to run one step on a worker
+ * with its own IAM role. Register the name with the type system, then declare
+ * it in `composer.build-config.ts`:
+ * ```typescript
+ * declare module "@lotiai/composer" {
+ *   interface WorkerProfileRegistry {
+ *     "request-signing": true;
+ *   }
+ * }
+ * // Keeps the file a module: a .d.ts without one would shadow the package.
+ * export {};
+ *
+ * // composer.build-config.ts
+ * workerProfiles: {
+ *   "request-signing": { minCount: 1, initialCount: 1, maxCount: 1 }
+ * }
+ * ```
+ * A declared profile routes to the task queue `<name>-tasks` and starts from
+ * the `standard` resources; its entry overrides only what it sets.
+ *
  * ## Configuration
  *
  * Defaults are defined here. Users can override via `composer.build-config.ts`:
@@ -29,14 +51,30 @@ import type {
   WorkerProfileResources,
 } from "../../../build-config/index.js";
 import { loadBuildConfig } from "../../../build-config/loader.js";
+// Declared in the package entry point: module augmentation only merges into
+// the module that declares an interface, not one that re-exports it.
+import type { WorkerProfileRegistry } from "../../../index.js";
+import { isWorkerProfileName } from "./worker-profile-name.js";
+
+export {
+  isWorkerProfileName,
+  MAX_WORKER_PROFILE_NAME_LENGTH,
+  WORKER_PROFILE_NAME_PATTERN,
+} from "./worker-profile-name.js";
 
 /**
- * Worker profile type.
+ * The profiles Composer ships with.
+ */
+export type BuiltInWorkerProfile = "standard" | "heavy";
+
+/**
+ * Worker profile type: the built-in profiles plus any registered through
+ * `WorkerProfileRegistry`.
  *
  * Steps declare their profile via the `workerProfile` field. Steps without an
  * explicit profile default to "standard".
  */
-export type WorkerProfile = "standard" | "heavy";
+export type WorkerProfile = Extract<keyof WorkerProfileRegistry, string>;
 
 /**
  * Configuration for a worker profile, defining its resource characteristics
@@ -66,7 +104,7 @@ export interface WorkerProfileConfig {
  *
  * Users can override these defaults via `composer.build-config.ts`.
  */
-export const WORKER_PROFILES: Record<WorkerProfile, WorkerProfileConfig> = {
+export const WORKER_PROFILES: Record<BuiltInWorkerProfile, WorkerProfileConfig> = {
   standard: {
     name: "Standard",
     taskQueue: "standard-tasks",
@@ -107,33 +145,125 @@ export const WORKER_PROFILES: Record<WorkerProfile, WorkerProfileConfig> = {
  */
 export const DEFAULT_WORKER_PROFILE: WorkerProfile = "standard";
 
+function isBuiltInWorkerProfile(profile: string): profile is BuiltInWorkerProfile {
+  return Object.hasOwn(WORKER_PROFILES, profile);
+}
+
 /**
- * Gets the task queue name for a given worker profile.
+ * Gets the task queue name for a given worker profile: the built-in profile's
+ * queue, or `<name>-tasks` for a consumer-defined one.
+ *
+ * The queue is derived from the name alone, so a workflow worker can route a
+ * step without loading the build config.
  *
  * @param profile - The worker profile
  * @returns Temporal task queue name
  */
 export function getTaskQueueForProfile(profile: WorkerProfile): string {
-  return WORKER_PROFILES[profile].taskQueue;
+  if (isBuiltInWorkerProfile(profile)) {
+    return WORKER_PROFILES[profile].taskQueue;
+  }
+  if (!isWorkerProfileName(profile)) {
+    throw new Error(`Invalid worker profile name: "${profile}".`);
+  }
+  return `${profile}-tasks`;
+}
+
+/**
+ * Lists every profile available under a build config: the built-ins, then
+ * each consumer-defined profile declared in `workerProfiles`, in declaration
+ * order.
+ */
+export function getWorkerProfiles(config?: ComposerBuildConfig): WorkerProfile[] {
+  const profiles: string[] = Object.keys(WORKER_PROFILES);
+  for (const name of Object.keys(config?.workerProfiles ?? {})) {
+    if (!profiles.includes(name)) {
+      profiles.push(name);
+    }
+  }
+  return profiles as WorkerProfile[];
 }
 
 /**
  * Validates that a profile string is a valid WorkerProfile.
  *
+ * Without a config only the built-in profiles are valid. With one, profiles
+ * declared in its `workerProfiles` are valid too.
+ *
  * @param profile - The profile string to validate
+ * @param config - Optional build config declaring consumer-defined profiles
  * @returns true if valid, false otherwise
  */
-export function isValidWorkerProfile(profile: string): profile is WorkerProfile {
-  return profile in WORKER_PROFILES;
+export function isValidWorkerProfile(
+  profile: string,
+  config?: ComposerBuildConfig,
+): profile is WorkerProfile {
+  return (getWorkerProfiles(config) as string[]).includes(profile);
 }
 
 /**
  * Gets all task queue names (useful for workers that listen to multiple queues).
  *
+ * @param config - Optional build config; its consumer-defined profiles' queues
+ *   are included
  * @returns Array of all task queue names
  */
-export function getAllTaskQueues(): string[] {
-  return Object.values(WORKER_PROFILES).map((config) => config.taskQueue);
+export function getAllTaskQueues(config?: ComposerBuildConfig): string[] {
+  return getWorkerProfiles(config).map(getTaskQueueForProfile);
+}
+
+/**
+ * A step pinned to a worker profile its build config does not declare.
+ */
+export interface UndeclaredWorkerProfileStep {
+  workflow: string;
+  step: string;
+  workerProfile: string;
+}
+
+/**
+ * Finds steps pinned to a profile the build config does not declare.
+ *
+ * Routing derives a step's task queue from its profile name, so such a step
+ * would wait on a queue no worker polls. Typecheck catches names missing from
+ * `WorkerProfileRegistry`; call this (e.g. in a test) to catch a registered
+ * name missing from `composer.build-config.ts`.
+ *
+ * Fan-out child workflows are checked too.
+ *
+ * @returns The offending steps; empty when every profile is declared
+ */
+export function findUndeclaredWorkerProfiles(
+  workflows: ReadonlyArray<{ name: string; steps: ReadonlyArray<unknown> }>,
+  config?: ComposerBuildConfig,
+): UndeclaredWorkerProfileStep[] {
+  const undeclared: UndeclaredWorkerProfileStep[] = [];
+  const seen = new Set<unknown>();
+  const visit = (workflow: { name: string; steps: ReadonlyArray<unknown> }) => {
+    if (seen.has(workflow)) {
+      return;
+    }
+    seen.add(workflow);
+    for (const rawStep of workflow.steps) {
+      const step = rawStep as {
+        name?: string;
+        workerProfile?: string;
+        __fanOut?: { childWorkflow?: { name: string; steps: ReadonlyArray<unknown> } };
+      };
+      if (step.workerProfile !== undefined && !isValidWorkerProfile(step.workerProfile, config)) {
+        undeclared.push({
+          workflow: workflow.name,
+          step: String(step.name),
+          workerProfile: step.workerProfile,
+        });
+      }
+      if (step.__fanOut?.childWorkflow) {
+        visit(step.__fanOut.childWorkflow);
+      }
+    }
+  };
+  workflows.forEach(visit);
+  return undeclared;
 }
 
 /**
@@ -158,7 +288,9 @@ export function getEffectiveResources(
   profile: WorkerProfile,
   configOverrides?: WorkerProfileOverrides,
 ): WorkerProfileResources {
-  const defaults = WORKER_PROFILES[profile].resources;
+  // A consumer-defined profile starts from the standard resources.
+  const baseProfile = isBuiltInWorkerProfile(profile) ? profile : "standard";
+  const defaults = WORKER_PROFILES[baseProfile].resources;
   if (!configOverrides) {
     return defaults;
   }
@@ -182,14 +314,26 @@ export function getEffectiveResources(
  * Gets the effective worker profile config, merging config overrides with defaults.
  *
  * @param profile - The worker profile name
- * @param config - Optional composer config containing workerProfiles overrides
+ * @param config - Optional composer config containing workerProfiles overrides;
+ *   required for a consumer-defined profile, which must be declared in it
  * @returns The full profile config with merged resources
  */
 export function getEffectiveProfileConfig(
   profile: WorkerProfile,
   config?: ComposerBuildConfig,
 ): WorkerProfileConfig {
-  const baseConfig = WORKER_PROFILES[profile];
+  if (!isValidWorkerProfile(profile, config)) {
+    throw new Error(
+      `Worker profile "${profile}" is not declared in the build config's workerProfiles.`,
+    );
+  }
+  const baseConfig: Omit<WorkerProfileConfig, "resources"> = isBuiltInWorkerProfile(profile)
+    ? WORKER_PROFILES[profile]
+    : {
+        name: profile,
+        taskQueue: getTaskQueueForProfile(profile),
+        description: "Consumer-defined worker profile",
+      };
   const overrides = config?.workerProfiles?.[profile];
   return {
     ...baseConfig,
@@ -217,7 +361,7 @@ export function resolveProfilesForEnvironment(
   const fallbackQueues: Partial<Record<WorkerProfile, string[]>> = {};
   const fallbackSources: Partial<Record<WorkerProfile, WorkerProfile[]>> = {};
 
-  for (const profile of Object.keys(WORKER_PROFILES) as WorkerProfile[]) {
+  for (const profile of getWorkerProfiles(config)) {
     const overrides = config?.workerProfiles?.[profile];
     const envExclusiveOptIn = overrides?.envExclusiveOptIn;
     const isDedicated = !envExclusiveOptIn || envExclusiveOptIn.environments.includes(environment);
@@ -228,7 +372,7 @@ export function resolveProfilesForEnvironment(
     }
 
     const fallbackProfile = envExclusiveOptIn.fallbackProfile;
-    if (!isValidWorkerProfile(fallbackProfile)) {
+    if (!isValidWorkerProfile(fallbackProfile, config)) {
       throw new Error(
         `Invalid envExclusiveOptIn.fallbackProfile "${fallbackProfile}" for profile "${profile}".`,
       );
@@ -285,7 +429,7 @@ export function resolveActivityWorkerRuntimeConfig(
 ): ActivityWorkerRuntimeConfig {
   const { environment, workerProfile: rawProfile, config } = options;
 
-  if (!isValidWorkerProfile(rawProfile)) {
+  if (!isValidWorkerProfile(rawProfile, config)) {
     throw new Error(`Invalid worker profile: "${rawProfile}".`);
   }
   const workerProfile: WorkerProfile = rawProfile;
