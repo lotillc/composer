@@ -7,6 +7,11 @@
  */
 
 import { z } from "zod";
+import {
+  isWorkerProfileName,
+  MAX_WORKER_PROFILE_NAME_LENGTH,
+} from "../internal/async/config/worker-profile-name.js";
+import type { WorkerProfile } from "../internal/async/config/worker-profiles.js";
 
 /**
  * Worker profile resource configuration (required version for defaults).
@@ -87,9 +92,22 @@ export const ComposerBuildConfigSchema = z.strictObject({
    * Optional worker profile overrides.
    * Values are merged with defaults from worker-profiles.ts.
    * Only specify fields you want to override.
+   *
+   * A key other than `standard` or `heavy` declares a consumer-defined
+   * profile (register its name in `WorkerProfileRegistry` too). It routes to
+   * `<name>-tasks` and starts from the `standard` resources.
    * @example { standard: { cpu: 1024, memory: 4096 } }
+   * @example { "liveness-erase": { minCount: 1, initialCount: 1, maxCount: 1 } }
    */
-  workerProfiles: z.record(z.string(), WorkerProfileOverridesSchema).optional().default({}),
+  workerProfiles: z
+    .record(
+      z.string().refine(isWorkerProfileName, {
+        message: `Worker profile names must be lowercase letters, digits and inner hyphens, at most ${MAX_WORKER_PROFILE_NAME_LENGTH} characters, and not "workflow".`,
+      }),
+      WorkerProfileOverridesSchema,
+    )
+    .optional()
+    .default({}),
 
   /**
    * Development configuration for the `composer dev` CLI command.
@@ -102,10 +120,27 @@ export const ComposerBuildConfigSchema = z.strictObject({
  */
 export type ComposerBuildConfig = z.infer<typeof ComposerBuildConfigSchema>;
 
+type WorkerProfileOverridesInput = Omit<
+  z.input<typeof WorkerProfileOverridesSchema>,
+  "envExclusiveOptIn"
+> & {
+  envExclusiveOptIn?: Omit<z.input<typeof EnvExclusiveOptInSchema>, "fallbackProfile"> & {
+    fallbackProfile: WorkerProfile;
+  };
+};
+
 /**
  * Input type for defineBuildConfig (allows partial output config).
+ *
+ * `workerProfiles` keys and `fallbackProfile` are typed against
+ * `WorkerProfileRegistry`, so a misspelt profile name fails typecheck.
  */
-export type ComposerBuildConfigInput = z.input<typeof ComposerBuildConfigSchema>;
+export type ComposerBuildConfigInput = Omit<
+  z.input<typeof ComposerBuildConfigSchema>,
+  "workerProfiles"
+> & {
+  workerProfiles?: { [P in WorkerProfile]?: WorkerProfileOverridesInput };
+};
 
 /**
  * Development configuration type.

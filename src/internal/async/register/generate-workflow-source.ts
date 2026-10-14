@@ -30,7 +30,7 @@ import { isFanOut } from "../build-scripts/utils/type-guards.js";
 import {
   DEFAULT_WORKER_PROFILE,
   getTaskQueueForProfile,
-  isValidWorkerProfile,
+  isWorkerProfileName,
   type WorkerProfile,
 } from "../config/worker-profiles.js";
 
@@ -95,12 +95,14 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
         const rawProfile =
           (step as Step<any, any, any> & { workerProfile?: string }).workerProfile ??
           DEFAULT_WORKER_PROFILE;
-        if (!isValidWorkerProfile(rawProfile)) {
+        // Any well-formed name routes: the queue derives from the name, and the
+        // workflow worker has no build config to check declarations against.
+        if (!isWorkerProfileName(rawProfile)) {
           throw new Error(
             `Step "${step.name}" in workflow "${workflow.name}": invalid workerProfile "${rawProfile}"`,
           );
         }
-        const workerProfile: WorkerProfile = rawProfile;
+        const workerProfile = rawProfile as WorkerProfile;
 
         const activityConfig = buildActivityConfig(step);
 

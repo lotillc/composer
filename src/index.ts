@@ -55,6 +55,7 @@ export {
 } from "./internal/async/build-scripts/utils/type-guards.js";
 export {
   type ActivityWorkerRuntimeConfig,
+  type BuiltInWorkerProfile,
   type CombinedWorkerConfig,
   type CombinedWorkerConfigOptions,
   DEFAULT_WORKER_PROFILE,
@@ -62,16 +63,22 @@ export {
   getEffectiveProfileConfig,
   getEffectiveResources,
   getTaskQueueForProfile,
+  findUndeclaredWorkerProfiles,
+  getWorkerProfiles,
   isValidWorkerProfile,
+  isWorkerProfileName,
   type LoadAndResolveActivityWorkerRuntimeConfigOptions,
   loadAndResolveActivityWorkerRuntimeConfig,
   loadAndResolveCombinedWorkerConfigForLocalDev,
   type ResolveActivityWorkerRuntimeConfigOptions,
+  MAX_WORKER_PROFILE_NAME_LENGTH,
   type ResolvedProfilesForEnvironment,
   resolveActivityWorkerRuntimeConfig,
   resolveProfilesForEnvironment,
   WORKER_PROFILES,
   type WorkerProfile,
+  type UndeclaredWorkerProfileStep,
+  WORKER_PROFILE_NAME_PATTERN,
   type WorkerProfileConfig,
 } from "./internal/async/config/worker-profiles.js";
 export {
@@ -124,3 +131,28 @@ export type {
 // Re-exported so a consumer can install their own logger on the Runtime without a direct
 // dependency on @temporalio/worker; Composer never installs one itself. See the README.
 export { Runtime, type RuntimeOptions } from "@temporalio/worker";
+
+/**
+ * Registry of worker profile names.
+ *
+ * Augment it to add a consumer-defined profile; each key becomes a valid
+ * `WorkerProfile`, so a step pinned to an unregistered name fails typecheck.
+ * Declare the profile in `composer.build-config.ts`'s `workerProfiles` as
+ * well, so a worker is deployed for it. The value type is unused.
+ *
+ * Declared here rather than beside `WorkerProfile` because module
+ * augmentation merges only into the module that declares an interface.
+ *
+ * @example
+ * ```typescript
+ * declare module "@lotiai/composer" {
+ *   interface WorkerProfileRegistry {
+ *     "liveness-erase": true;
+ *   }
+ * }
+ * ```
+ */
+export interface WorkerProfileRegistry {
+  standard: true;
+  heavy: true;
+}

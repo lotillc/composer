@@ -8,9 +8,8 @@
 import type { CommandModule } from "yargs";
 import { loadBuildConfig } from "../../build-config/index.js";
 import {
+  getWorkerProfiles,
   resolveProfilesForEnvironment,
-  WORKER_PROFILES,
-  type WorkerProfile,
 } from "../../internal/async/config/worker-profiles.js";
 
 interface ProfilesOptions {
@@ -54,7 +53,7 @@ export const profilesCommand: CommandModule<object, ProfilesOptions> = {
       console.log(`Environment: ${env}`);
       console.log("\nDedicated profiles:");
 
-      for (const profile of Object.keys(WORKER_PROFILES) as WorkerProfile[]) {
+      for (const profile of getWorkerProfiles(config)) {
         const dedicated = resolved.dedicatedProfiles[profile];
         if (!dedicated) {
           continue;
@@ -67,7 +66,7 @@ export const profilesCommand: CommandModule<object, ProfilesOptions> = {
 
       console.log("\nFallback queues:");
       let hasFallbacks = false;
-      for (const profile of Object.keys(WORKER_PROFILES) as WorkerProfile[]) {
+      for (const profile of getWorkerProfiles(config)) {
         const queues = resolved.fallbackQueues[profile];
         if (!queues || queues.length === 0) {
           continue;
