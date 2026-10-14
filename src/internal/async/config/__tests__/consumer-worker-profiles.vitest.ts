@@ -193,6 +193,13 @@ describe("consumer-defined worker profiles: topology and workers", () => {
     ).toEqual(["standard-tasks"]);
   });
 
+  it("never resolves an inherited Object.prototype key as a profile", () => {
+    expect(isValidWorkerProfile("constructor", config)).toBe(false);
+    expect(() => getTaskQueueForProfile("constructor" as WorkerProfile)).toThrow(
+      /Invalid worker profile name/,
+    );
+  });
+
   it("supports envExclusiveOptIn on a declared profile, in both directions", () => {
     const optInConfig = defineBuildConfig({
       workerProfiles: {

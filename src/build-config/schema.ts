@@ -102,7 +102,7 @@ export const ComposerBuildConfigSchema = z.strictObject({
   workerProfiles: z
     .record(
       z.string().refine(isWorkerProfileName, {
-        message: `Worker profile names must be lowercase letters, digits and inner hyphens, at most ${MAX_WORKER_PROFILE_NAME_LENGTH} characters, and not "workflow".`,
+        message: `Worker profile names must be lowercase letters, digits and inner hyphens, at most ${MAX_WORKER_PROFILE_NAME_LENGTH} characters, and not "workflow" or an Object.prototype property such as "constructor".`,
       }),
       WorkerProfileOverridesSchema,
     )

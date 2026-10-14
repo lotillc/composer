@@ -737,7 +737,7 @@ The step routes to the task queue `request-signing-tasks`. The queue is derived 
 - `getAllTaskQueues(config)` includes its queue. Called without a config it returns the built-in queues only, as before.
 - Task-queue metrics are dimensioned by `TaskQueue`, so the profile's worker reports `request-signing-tasks` without further setup.
 
-Profile names are lowercase letters, digits and inner hyphens, at most 32 characters. `workflow` is reserved.
+Profile names are lowercase letters, digits and inner hyphens, at most 32 characters. `workflow` and `Object.prototype` property names such as `constructor` are reserved.
 
 Registering a name without declaring it in the build config leaves its steps waiting on a queue no worker polls. Typecheck cannot see the build config, so check it in a test:
 
