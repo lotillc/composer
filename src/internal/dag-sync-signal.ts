@@ -1,4 +1,5 @@
 import type { DurationString, Step } from "./dag-sync-step.js";
+import { durationToMs } from "./duration.js";
 
 /**
  * A named signal a workflow can wait on, typed by its payload.
@@ -151,6 +152,21 @@ export function waitForSignal<Bag extends Record<string, any>>() {
       throw new Error(
         `waitForSignal "${definition.name}": provides must list exactly one field`,
       );
+    }
+    if (definition.timeout !== undefined) {
+      let timeoutMs: number;
+      try {
+        timeoutMs = durationToMs(definition.timeout);
+      } catch {
+        timeoutMs = Number.NaN;
+      }
+      // The type admits "0s" and "-1 day"; neither is a wait.
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        throw new Error(
+          `waitForSignal "${definition.name}": timeout must be a positive duration, ` +
+            `got "${definition.timeout}"`,
+        );
+      }
     }
     // `undefined` is allowed: a missing value is what an omitted JSON key reads back as.
     if (definition.timeoutValue !== undefined && !isJsonSafe(definition.timeoutValue)) {

@@ -8,7 +8,7 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import { testComposer } from "../../__tests__/test-utils.js";
 import { generateWorkflowPlan } from "../async/register/generate-workflow-source.js";
 import { defineWorkflowSignal, waitForSignal } from "../dag-sync-signal.js";
-import { step } from "../dag-sync-step.js";
+import { type DurationString, step } from "../dag-sync-step.js";
 import { createWorkflow, use } from "../dag-sync-workflow.js";
 
 interface Bag {
@@ -89,6 +89,15 @@ describe("waitForSignal", () => {
       ).not.toThrow();
     }
   });
+
+  it.each(["0s", "-1 day", "1e999 days"] as DurationString[])(
+    "rejects a timeout of %s where the wait is defined",
+    (timeout) => {
+      expect(() =>
+        waitForSignal<Bag>()({ name: "w", signal: approvalSignal, provides: ["approval"], timeout }),
+      ).toThrow("timeout must be a positive duration");
+    },
+  );
 
   it("rejects a maxPendingSignals that is not a positive integer", () => {
     expect(() =>

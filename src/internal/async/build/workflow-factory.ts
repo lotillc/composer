@@ -24,6 +24,7 @@ import type {
   StageInitialVersioningBehavior,
   WorkflowVersioningBehavior,
 } from "../../dag-sync-workflow.js";
+import { durationToMs } from "../../duration.js";
 import { safeErrorName } from "../../error-for-log.js";
 import {
   SIGNAL_WAIT_TIMEOUT_CODE,
@@ -77,7 +78,10 @@ export interface WorkflowContinuation {
   completedSteps?: string[];
   /** Signals received but not yet consumed by a wait, oldest first, by signal name. */
   signals?: Record<string, unknown[]>;
-  /** Dedupe keys of signals already received, oldest first, as `<signal>:<key>`. */
+  /**
+   * Signals already received with a dedupe key, oldest first. Each entry is the JSON
+   * encoding of `[signalName, dedupeKey]`, so no name or key can collide with another pair.
+   */
   seenSignalKeys?: string[];
 }
 
@@ -169,38 +173,6 @@ const POLL_JITTER = 0.2;
 
 type PollConfig = NonNullable<StepActivityConfig["poll"]>;
 
-const DURATION_UNIT_MS: Record<string, number> = {
-  ms: 1,
-  s: 1000,
-  second: 1000,
-  seconds: 1000,
-  m: 60_000,
-  minute: 60_000,
-  minutes: 60_000,
-  h: 3_600_000,
-  hour: 3_600_000,
-  hours: 3_600_000,
-  d: 86_400_000,
-  day: 86_400_000,
-  days: 86_400_000,
-};
-
-/**
- * Parses a `DurationString` to milliseconds.
- *
- * Hand-rolled rather than imported: this module is bundled into Temporal's deterministic
- * sandbox and takes nothing but `@temporalio/workflow`. The numeric part accepts
- * everything the type's `${number}` admits -- sign, leading dot, exponent -- because the
- * type permits `".5s"` and `"1e3ms"` and a narrower parser would reject valid input.
- */
-function durationToMs(duration: DurationString): number {
-  const match = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*([a-z]+)$/i.exec(duration.trim());
-  const unitMs = match ? DURATION_UNIT_MS[match[2]!.toLowerCase()] : undefined;
-  if (!match || unitMs === undefined) {
-    throw new Error(`Unparseable duration: ${duration}`);
-  }
-  return Number(match[1]) * unitMs;
-}
 
 /**
  * True when a step signalled "not ready" rather than failing.
@@ -372,7 +344,8 @@ function receiveSignal(
     return;
   }
 
-  const dedupeKey = typeof meta?.dedupeKey === "string" ? `${signalName}:${meta.dedupeKey}` : undefined;
+  const dedupeKey =
+    typeof meta?.dedupeKey === "string" ? JSON.stringify([signalName, meta.dedupeKey]) : undefined;
   if (dedupeKey !== undefined) {
     if (inbox.seenKeySet.has(dedupeKey)) {
       wf.log.info("Dropped a duplicate signal", { signalName, dedupeKey: meta!.dedupeKey });
@@ -411,14 +384,25 @@ async function runSignalWait(
   wait: SignalWaitBatchEntry,
   inbox: SignalInbox,
   released: () => boolean,
+  deadlines: Map<string, number>,
 ): Promise<Record<string, unknown>> {
   const hasPending = () => (inbox.queues.get(wait.signalName)?.length ?? 0) > 0;
   const wake = () => hasPending() || released();
   const timeoutMs = wait.timeout === undefined ? undefined : durationToMs(wait.timeout);
   if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
-    throw new Error(`Signal wait "${wait.name}": timeout must be a positive duration`);
+    // `waitForSignal` rejects this where the wait is defined; a hand-built plan can still
+    // carry it. Fail the node, not the workflow task, so it reaches onError rather than
+    // retrying forever.
+    throw wf.ApplicationFailure.create({
+      type: "COMPOSER_INVALID_SIGNAL_WAIT",
+      message: `Signal wait "${wait.name}": timeout must be a positive duration, got ${wait.timeout}`,
+      details: [{ code: "COMPOSER_INVALID_SIGNAL_WAIT", data: { stepName: wait.name } }],
+      nonRetryable: true,
+    });
   }
-  const deadlineMs = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
+  const deadlineMs =
+    timeoutMs === undefined ? undefined : (deadlines.get(wait.name) ?? Date.now() + timeoutMs);
+  if (deadlineMs !== undefined) deadlines.set(wait.name, deadlineMs);
 
   for (;;) {
     if (hasPending()) {
@@ -853,6 +837,8 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
 
     // Track which checkpoints have been reached
     const reachedCheckpoints = new Set<string>();
+    // Checkpoints an earlier run of this workflow reached; their snapshots are gone.
+    const checkpointsPassedEarlier = new Set<string>();
 
     // A resumed run starts after the stage boundary its predecessor ended at. The stage is
     // found by name, which is stable across builds; batch indices are not.
@@ -877,10 +863,12 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
         );
       }
       firstBatchIndex = stage.afterBatch + 1;
-      // Checkpoints all precede the first boundary, so a resumed run has passed them. Marking
-      // them reached answers a late awaitCheckpoint at once instead of blocking forever.
+      // Checkpoints all precede the first boundary, so a resumed run has passed them. Its bag
+      // is the stage's, not the checkpoint's -- it may hold later outputs and lack fields
+      // `carry` dropped -- so a late awaitCheckpoint is refused at once rather than blocking
+      // forever or answering with the wrong snapshot.
       for (const checkpoint of plan.checkpoints ?? []) {
-        if (checkpoint.afterBatch <= stage.afterBatch) reachedCheckpoints.add(checkpoint.name);
+        if (checkpoint.afterBatch <= stage.afterBatch) checkpointsPassedEarlier.add(checkpoint.name);
       }
     }
 
@@ -923,6 +911,16 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
           );
         }
 
+        if (checkpointsPassedEarlier.has(checkpointName)) {
+          throw wf.ApplicationFailure.create({
+            type: "COMPOSER_CHECKPOINT_PASSED",
+            message:
+              `Checkpoint "${checkpointName}" of workflow "${plan.name}" was reached by an ` +
+              `earlier run, which has since continued as new; its snapshot is no longer available`,
+            nonRetryable: true,
+          });
+        }
+
         wf.log.debug("Awaiting checkpoint", {
           workflowId,
           checkpointName,
@@ -942,6 +940,9 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
         return { ...bag };
       });
     }
+
+    // A wait keeps the deadline it started with when a handled failure makes it wait again.
+    const waitDeadlines = new Map<string, number>();
 
     // Execute batches sequentially
     for (let batchIndex = firstBatchIndex; batchIndex < plan.batches.length; batchIndex++) {
@@ -996,281 +997,299 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
         ensureActivityProxy(fanOut.taskQueue, fanOut.activityConfig);
       }
 
-      // Build all promises for this batch (steps + fanOuts execute in parallel)
-      type BatchResult = { stepName: string; output: Record<string, any> };
-      const allPromises: Array<Promise<BatchResult>> = [];
-      const allNames: string[] = [];
+      // A wait released by a handled failure has not run. It is waited on again, against its
+      // original deadline, before the batch is done, so nothing downstream reads its field
+      // unset. Each later round re-runs only those waits.
+      let rerunWaits: Set<string> | undefined;
+      for (;;) {
+        // Build all promises for this batch (steps + fanOuts execute in parallel)
+        type BatchResult = { stepName: string; output: Record<string, any> };
+        const allPromises: Array<Promise<BatchResult>> = [];
+        const allNames: string[] = [];
 
-      // Step promises
-      for (const step of batch.steps) {
-        // An earlier run already ran it; a plan change may have moved it past the boundary.
-        if (completedSteps.has(step.name)) continue;
-        allNames.push(step.name);
-        allPromises.push(
-          (async (): Promise<BatchResult> => {
-            const stepInput: Record<string, any> = {};
-            for (const neededField of step.needs) {
-              stepInput[neededField] = bag[neededField];
-            }
+        // Step promises
+        for (const step of batch.steps) {
+          // An earlier run already ran it; a plan change may have moved it past the boundary.
+          if (rerunWaits || completedSteps.has(step.name)) continue;
+          allNames.push(step.name);
+          allPromises.push(
+            (async (): Promise<BatchResult> => {
+              const stepInput: Record<string, any> = {};
+              for (const neededField of step.needs) {
+                stepInput[neededField] = bag[neededField];
+              }
 
-            wf.log.debug(`Executing step activity`, {
-              stepName: step.name,
-              activityName: step.activityName,
-              taskQueue: step.taskQueue,
-              needs: step.needs,
-              provides: step.provides,
-            });
+              wf.log.debug(`Executing step activity`, {
+                stepName: step.name,
+                activityName: step.activityName,
+                taskQueue: step.taskQueue,
+                needs: step.needs,
+                provides: step.provides,
+              });
 
-            const proxyKey = getProxyKey(step.taskQueue, step.activityConfig);
-            const activities = activityProxiesByKey.get(proxyKey)!;
-            const activityFn = activities[step.activityName];
-            if (!activityFn) {
-              throw new Error(`Activity not found: ${step.activityName}`);
-            }
+              const proxyKey = getProxyKey(step.taskQueue, step.activityConfig);
+              const activities = activityProxiesByKey.get(proxyKey)!;
+              const activityFn = activities[step.activityName];
+              if (!activityFn) {
+                throw new Error(`Activity not found: ${step.activityName}`);
+              }
 
-            const poll = step.activityConfig?.poll;
-            const stepOutput = poll
-              ? await runWithPolling(step.name, poll, () => activityFn(activityInput, stepInput))
-              : await activityFn(activityInput, stepInput);
+              const poll = step.activityConfig?.poll;
+              const stepOutput = poll
+                ? await runWithPolling(step.name, poll, () => activityFn(activityInput, stepInput))
+                : await activityFn(activityInput, stepInput);
 
-            wf.log.debug(`Step completed`, {
-              stepName: step.name,
-              outputKeys: Object.keys(stepOutput),
-            });
+              wf.log.debug(`Step completed`, {
+                stepName: step.name,
+                outputKeys: Object.keys(stepOutput),
+              });
 
-            return { stepName: step.name, output: stepOutput };
-          })(),
-        );
-      }
+              return { stepName: step.name, output: stepOutput };
+            })(),
+          );
+        }
 
-      // FanOut promises
-      for (const fanOut of batch.fanOuts ?? []) {
-        if (completedSteps.has(fanOut.name)) continue;
-        allNames.push(fanOut.name);
-        allPromises.push(
-          (async (): Promise<BatchResult> => {
-            const output = await executeFanOutInWorkflow(
-              fanOut,
-              bag,
-              activityInput,
-              workflowId,
-              activityProxiesByKey,
-              getProxyKey,
-            );
-            return { stepName: fanOut.name, output };
-          })(),
-        );
-      }
+        // FanOut promises
+        for (const fanOut of batch.fanOuts ?? []) {
+          if (rerunWaits || completedSteps.has(fanOut.name)) continue;
+          allNames.push(fanOut.name);
+          allPromises.push(
+            (async (): Promise<BatchResult> => {
+              const output = await executeFanOutInWorkflow(
+                fanOut,
+                bag,
+                activityInput,
+                workflowId,
+                activityProxiesByKey,
+                getProxyKey,
+              );
+              return { stepName: fanOut.name, output };
+            })(),
+          );
+        }
 
-      // Signal wait promises
-      let waitsReleased = false;
-      const isWait = allPromises.map(() => false);
-      for (const wait of batch.signalWaits ?? []) {
-        if (completedSteps.has(wait.name)) continue;
-        allNames.push(wait.name);
-        isWait.push(true);
-        allPromises.push(
-          (async (): Promise<BatchResult> => {
-            waitingOn.add(wait.signalName);
-            showDetails();
-            try {
-              const output = await runSignalWait(wait, inbox, () => waitsReleased);
-              return { stepName: wait.name, output };
-            } finally {
-              waitingOn.delete(wait.signalName);
+        // Signal wait promises
+        let waitsReleased = false;
+        const isWait = allPromises.map(() => false);
+        for (const wait of batch.signalWaits ?? []) {
+          if (completedSteps.has(wait.name) || (rerunWaits && !rerunWaits.has(wait.name))) continue;
+          allNames.push(wait.name);
+          isWait.push(true);
+          allPromises.push(
+            (async (): Promise<BatchResult> => {
+              waitingOn.add(wait.signalName);
               showDetails();
-            }
-          })(),
-        );
-      }
-
-      // Execute all in parallel; a failure releases any waits still blocked
-      const settledResults = await settleBatch(allPromises, isWait, () => {
-        waitsReleased = true;
-      });
-
-      // Separate fulfilled and rejected results; a released wait is neither
-      const fulfilled: Array<BatchResult> = [];
-      const rejected: Array<{ stepName: string; error: unknown }> = [];
-      const released: string[] = [];
-
-      for (let i = 0; i < settledResults.length; i++) {
-        const result = settledResults[i];
-        if (result === undefined) {
-          released.push(allNames[i]!);
-        } else if (result.status === "fulfilled") {
-          fulfilled.push(result.value);
-        } else {
-          rejected.push({ stepName: allNames[i]!, error: result.reason });
-        }
-      }
-
-      // First, merge successful step outputs into the bag
-      // This ensures the bag has all available data even if some steps failed
-      for (const { output } of fulfilled) {
-        Object.assign(bag, output);
-      }
-
-      // Everything that ran, failed or not, is done: a resumed run must not repeat it. A
-      // released wait consumed nothing, so it is not done.
-      for (const name of allNames) {
-        if (!released.includes(name)) completedSteps.add(name);
-      }
-      if (released.length > 0) {
-        wf.log.warn("Released signal waits because their batch failed", {
-          workflowId,
-          batchNumber,
-          releasedWaits: released,
-        });
-      }
-
-      // Mark any checkpoints that trigger after this batch completes
-      // This happens regardless of whether some steps in the batch failed,
-      // allowing clients to receive partial results if they requested a checkpoint
-      for (const checkpoint of plan.checkpoints ?? []) {
-        if (checkpoint.afterBatch === batchIndex) {
-          wf.log.debug("Marking checkpoint as reached", {
-            workflowId,
-            checkpointName: checkpoint.name,
-            batchIndex,
-            batchNumber,
-          });
-          reachedCheckpoints.add(checkpoint.name);
-        }
-      }
-
-      // If any steps failed, handle the batch error
-      if (rejected.length > 0) {
-        const failedStepNames = rejected.map((r) => r.stepName).join(", ");
-
-        wf.log.error("Batch execution failed", {
-          workflowId,
-          batchNumber,
-          failedSteps: failedStepNames,
-          successfulSteps: fulfilled.map((f) => f.stepName),
-          errorCount: rejected.length,
-        });
-
-        // Build error info for the error handler
-        const batchErrorInfo: BatchErrorInfo = {
-          batchNumber,
-          workflowId,
-          errors: rejected.map((r) => buildStepFailureInfo(r.stepName, r.error)),
-        };
-
-        // Log the batch error for observability
-        // Structured logging backends (OTEL, etc.) will serialize this correctly
-        // Terminal may show [Object] for nested objects - that's a display limitation
-        wf.log.warn("Workflow batch failed", {
-          workflowId: wf.workflowInfo().workflowId,
-          batchNumber,
-          failedSteps: failedStepNames,
-          errors: batchErrorInfo.errors,
-        });
-
-        // Call error handler activity if configured
-        // The error handler activity returns Error | undefined:
-        // - undefined = error was handled, no error to propagate
-        // - Error = error to propagate (possibly transformed)
-        let resultError: TemporalWorkflowResult["error"] = {
-          message: `Batch ${batchNumber} failed: ${rejected.length} step(s) failed [${failedStepNames}]`,
-          code: "WORKFLOW_BATCH_ERROR",
-          type: "WorkflowBatchError",
-          batchNumber,
-          errors: batchErrorInfo.errors,
-        };
-
-        if (plan.errorHandlerActivityName) {
-          // Default to standard-tasks (same queue as other activities)
-          const errorHandlerQueue = plan.errorHandlerTaskQueue ?? "standard-tasks";
-          const errorHandlerActivities = wf.proxyActivities<{
-            [key: string]: (
-              workflowInput: WorkflowInput,
-              bag: Record<string, any>,
-              errorInfo: BatchErrorInfo,
-            ) => Promise<{
-              handled: boolean;
-              error?: { message: string; code?: string };
-              bag?: Record<string, any>;
-            }>;
-          }>({
-            taskQueue: errorHandlerQueue,
-            startToCloseTimeout: "1 minute",
-            retry: {
-              maximumAttempts: 1, // Don't retry error handler
-            },
-          });
-
-          const errorHandlerFn = errorHandlerActivities[plan.errorHandlerActivityName];
-          if (errorHandlerFn) {
-            try {
-              wf.log.info("Invoking error handler activity", {
-                workflowId,
-                activityName: plan.errorHandlerActivityName,
-                batchNumber,
-              });
-
-              const handlerResult = await errorHandlerFn(activityInput, bag, batchErrorInfo);
-
-              if (handlerResult.bag) {
-                Object.assign(bag, handlerResult.bag);
+              try {
+                const output = await runSignalWait(
+                  wait,
+                  inbox,
+                  () => waitsReleased,
+                  waitDeadlines,
+                );
+                return { stepName: wait.name, output };
+              } finally {
+                waitingOn.delete(wait.signalName);
+                showDetails();
               }
+            })(),
+          );
+        }
 
-              wf.log.info("Error handler activity completed", {
-                workflowId,
-                activityName: plan.errorHandlerActivityName,
-                handled: handlerResult.handled,
-              });
+        // Execute all in parallel; a failure releases any waits still blocked
+        const settledResults = await settleBatch(allPromises, isWait, () => {
+          waitsReleased = true;
+        });
 
-              if (handlerResult.handled) {
-                // Error was fully handled - no error to propagate
-                resultError = undefined;
-              } else if (handlerResult.error) {
-                // Error was transformed
-                resultError = {
-                  message: handlerResult.error.message,
-                  code: workflowErrorCode(handlerResult.error.code),
-                  type: "TransformedError",
-                  batchNumber,
-                };
-              }
-              // If neither, keep the original batch error
-            } catch (handlerError) {
-              // Name and code only: `wf.log` crosses the sandbox boundary by structured
-              // clone, so an Error cannot reach the logger's serializer from here, and a
-              // flattened message is the raw driver text with nothing left to redact it.
-              wf.log.error("Error handler activity failed", {
-                workflowId,
-                activityName: plan.errorHandlerActivityName,
-                errorName: handlerError instanceof Error ? safeErrorName(handlerError.name) : typeof handlerError,
-                errorCode: codeOf(handlerError),
-              });
-              // Handler crashed - wrap both errors
-              resultError = {
-                message: `Error handler failed while handling batch ${batchNumber} [${failedStepNames}]`,
-                code: "WORKFLOW_ERROR_HANDLER_FAILURE",
-                type: "WorkflowErrorHandlerFailure",
-                batchNumber,
-                errors: batchErrorInfo.errors,
-              };
-            }
+        // Separate fulfilled and rejected results; a released wait is neither
+        const fulfilled: Array<BatchResult> = [];
+        const rejected: Array<{ stepName: string; error: unknown }> = [];
+        const released: string[] = [];
+
+        for (let i = 0; i < settledResults.length; i++) {
+          const result = settledResults[i];
+          if (result === undefined) {
+            released.push(allNames[i]!);
+          } else if (result.status === "fulfilled") {
+            fulfilled.push(result.value);
+          } else {
+            rejected.push({ stepName: allNames[i]!, error: result.reason });
           }
         }
 
-        if (resultError) {
-          // Unhandled error: throw ApplicationFailure to mark workflow as Failed.
-          // The bag is a details entry of its own, not a key on the error entry: it is every
-          // value the workflow touched, it goes to Temporal event history at rest, and a
-          // scrubbing failure converter has to be able to drop it without rebuilding the
-          // error alongside it. Callers extracting partial state read details[1].bag.
-          throw wf.ApplicationFailure.create({
-            message: resultError.message,
-            type: resultError.type ?? "WorkflowError",
-            nonRetryable: true,
-            details: [{ error: resultError }, { bag }],
+        // First, merge successful step outputs into the bag
+        // This ensures the bag has all available data even if some steps failed
+        for (const { output } of fulfilled) {
+          Object.assign(bag, output);
+        }
+
+        // Everything that ran, failed or not, is done: a resumed run must not repeat it. A
+        // released wait consumed nothing, so it is not done.
+        for (const name of allNames) {
+          if (!released.includes(name)) completedSteps.add(name);
+        }
+        if (released.length > 0) {
+          wf.log.warn("Released signal waits because their batch failed", {
+            workflowId,
+            batchNumber,
+            releasedWaits: released,
           });
         }
-        // Error was handled - continue processing remaining batches
+
+        // Mark any checkpoints that trigger after this batch completes
+        // This happens regardless of whether some steps in the batch failed,
+        // allowing clients to receive partial results if they requested a checkpoint
+        for (const checkpoint of rerunWaits ? [] : (plan.checkpoints ?? [])) {
+          if (checkpoint.afterBatch === batchIndex) {
+            wf.log.debug("Marking checkpoint as reached", {
+              workflowId,
+              checkpointName: checkpoint.name,
+              batchIndex,
+              batchNumber,
+            });
+            reachedCheckpoints.add(checkpoint.name);
+          }
+        }
+
+        // If any steps failed, handle the batch error
+        if (rejected.length > 0) {
+          const failedStepNames = rejected.map((r) => r.stepName).join(", ");
+
+          wf.log.error("Batch execution failed", {
+            workflowId,
+            batchNumber,
+            failedSteps: failedStepNames,
+            successfulSteps: fulfilled.map((f) => f.stepName),
+            errorCount: rejected.length,
+          });
+
+          // Build error info for the error handler
+          const batchErrorInfo: BatchErrorInfo = {
+            batchNumber,
+            workflowId,
+            errors: rejected.map((r) => buildStepFailureInfo(r.stepName, r.error)),
+          };
+
+          // Log the batch error for observability
+          // Structured logging backends (OTEL, etc.) will serialize this correctly
+          // Terminal may show [Object] for nested objects - that's a display limitation
+          wf.log.warn("Workflow batch failed", {
+            workflowId: wf.workflowInfo().workflowId,
+            batchNumber,
+            failedSteps: failedStepNames,
+            errors: batchErrorInfo.errors,
+          });
+
+          // Call error handler activity if configured
+          // The error handler activity returns Error | undefined:
+          // - undefined = error was handled, no error to propagate
+          // - Error = error to propagate (possibly transformed)
+          let resultError: TemporalWorkflowResult["error"] = {
+            message: `Batch ${batchNumber} failed: ${rejected.length} step(s) failed [${failedStepNames}]`,
+            code: "WORKFLOW_BATCH_ERROR",
+            type: "WorkflowBatchError",
+            batchNumber,
+            errors: batchErrorInfo.errors,
+          };
+
+          if (plan.errorHandlerActivityName) {
+            // Default to standard-tasks (same queue as other activities)
+            const errorHandlerQueue = plan.errorHandlerTaskQueue ?? "standard-tasks";
+            const errorHandlerActivities = wf.proxyActivities<{
+              [key: string]: (
+                workflowInput: WorkflowInput,
+                bag: Record<string, any>,
+                errorInfo: BatchErrorInfo,
+              ) => Promise<{
+                handled: boolean;
+                error?: { message: string; code?: string };
+                bag?: Record<string, any>;
+              }>;
+            }>({
+              taskQueue: errorHandlerQueue,
+              startToCloseTimeout: "1 minute",
+              retry: {
+                maximumAttempts: 1, // Don't retry error handler
+              },
+            });
+
+            const errorHandlerFn = errorHandlerActivities[plan.errorHandlerActivityName];
+            if (errorHandlerFn) {
+              try {
+                wf.log.info("Invoking error handler activity", {
+                  workflowId,
+                  activityName: plan.errorHandlerActivityName,
+                  batchNumber,
+                });
+
+                const handlerResult = await errorHandlerFn(activityInput, bag, batchErrorInfo);
+
+                if (handlerResult.bag) {
+                  Object.assign(bag, handlerResult.bag);
+                }
+
+                wf.log.info("Error handler activity completed", {
+                  workflowId,
+                  activityName: plan.errorHandlerActivityName,
+                  handled: handlerResult.handled,
+                });
+
+                if (handlerResult.handled) {
+                  // Error was fully handled - no error to propagate
+                  resultError = undefined;
+                } else if (handlerResult.error) {
+                  // Error was transformed
+                  resultError = {
+                    message: handlerResult.error.message,
+                    code: workflowErrorCode(handlerResult.error.code),
+                    type: "TransformedError",
+                    batchNumber,
+                  };
+                }
+                // If neither, keep the original batch error
+              } catch (handlerError) {
+                // Name and code only: `wf.log` crosses the sandbox boundary by structured
+                // clone, so an Error cannot reach the logger's serializer from here, and a
+                // flattened message is the raw driver text with nothing left to redact it.
+                wf.log.error("Error handler activity failed", {
+                  workflowId,
+                  activityName: plan.errorHandlerActivityName,
+                  errorName: handlerError instanceof Error ? safeErrorName(handlerError.name) : typeof handlerError,
+                  errorCode: codeOf(handlerError),
+                });
+                // Handler crashed - wrap both errors
+                resultError = {
+                  message: `Error handler failed while handling batch ${batchNumber} [${failedStepNames}]`,
+                  code: "WORKFLOW_ERROR_HANDLER_FAILURE",
+                  type: "WorkflowErrorHandlerFailure",
+                  batchNumber,
+                  errors: batchErrorInfo.errors,
+                };
+              }
+            }
+          }
+
+          if (resultError) {
+            // Unhandled error: throw ApplicationFailure to mark workflow as Failed.
+            // The bag is a details entry of its own, not a key on the error entry: it is every
+            // value the workflow touched, it goes to Temporal event history at rest, and a
+            // scrubbing failure converter has to be able to drop it without rebuilding the
+            // error alongside it. Callers extracting partial state read details[1].bag.
+            throw wf.ApplicationFailure.create({
+              message: resultError.message,
+              type: resultError.type ?? "WorkflowError",
+              nonRetryable: true,
+              details: [{ error: resultError }, { bag }],
+            });
+          }
+          // Error was handled - continue processing remaining batches
+        }
+        if (released.length === 0) break;
+        rerunWaits = new Set(released);
+        wf.log.info("Waiting again on signal waits released by a handled failure", {
+          workflowId,
+          batchNumber,
+          waits: released,
+        });
       }
 
       const boundary = plan.stageBoundaries?.find((b) => b.afterBatch === batchIndex);

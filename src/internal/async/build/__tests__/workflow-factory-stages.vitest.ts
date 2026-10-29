@@ -315,7 +315,7 @@ describe("resuming a continued run", () => {
     expect((outcome as Error).message).toContain('unknown stage "renamed"');
   });
 
-  it("answers checkpoints a predecessor run already passed", async () => {
+  it("refuses, without blocking, a checkpoint a predecessor run already passed", async () => {
     const plan = stagedPlan({
       checkpoints: [{ name: "started", afterBatch: 0, timeout: 30_000 }],
     });
@@ -328,8 +328,10 @@ describe("resuming a continued run", () => {
       initialData: { id: "1" },
       continuation: continuation({ bag: { x: "X" }, completedSteps: ["a"] }),
     });
-    // Resolves without blocking: the mocked condition would throw if it had to wait.
-    await expect(handler!({ checkpointName: "started" })).resolves.toMatchObject({ x: "X" });
+    // Rejects at once: the mocked condition would throw "block forever" if it had to wait.
+    await expect(handler!({ checkpointName: "started" })).rejects.toMatchObject({
+      type: "COMPOSER_CHECKPOINT_PASSED",
+    });
     await run.catch(() => undefined);
   });
 
@@ -421,6 +423,23 @@ describe("signal waits", () => {
     expect(mocks.activityFunctions.b).not.toHaveBeenCalled();
   });
 
+  it("fails the node, not the task, on a hand-built plan with a non-positive timeout", async () => {
+    const outcome = await createWorkflowFunction(waitPlan({ timeout: "0s" }))({
+      initialData: { id: "1" },
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(outcome).toBeInstanceOf(ApplicationFailure);
+    const detail = (outcome as ApplicationFailure).details?.[0] as {
+      error: TemporalWorkflowResult["error"];
+    };
+    expect(detail.error?.errors?.[0]).toMatchObject({
+      stepName: "awaitApproval",
+      code: "COMPOSER_INVALID_SIGNAL_WAIT",
+    });
+  });
+
   it("routes a wait timeout to the error handler", async () => {
     mocks.activityFunctions["waiting__errorHandler"] = vi.fn(async () => ({
       handled: true,
@@ -478,6 +497,26 @@ describe("signal waits", () => {
     expect(continued.next.continuation?.signals).toEqual({ retired: ["kept"] });
   });
 
+  it("never confuses two different name and key pairs that join to the same text", async () => {
+    const plan = stagedPlanWithWait();
+    plan.batches[2]!.signalWaits!.push({
+      name: "awaitOther",
+      signalName: "approval:b",
+      provides: "other",
+      hasTimeoutValue: false,
+    });
+    mocks.activityFunctions.a = vi.fn(async () => {
+      mocks.defaultSignalHandler!("approval", "first", { dedupeKey: "b:c" });
+      mocks.defaultSignalHandler!("approval:b", "second", { dedupeKey: "c" });
+      return { x: "X" };
+    });
+    const continued = await runUntilContinued(plan, { initialData: { id: "1" } });
+    expect(continued.next.continuation?.signals).toEqual({
+      approval: ["first"],
+      "approval:b": ["second"],
+    });
+  });
+
   it("drops a second signal with the same dedupe key, across stages", async () => {
     mocks.activityFunctions.a = vi.fn(async () => {
       mocks.defaultSignalHandler!("approval", "first", { dedupeKey: "evt-1" });
@@ -487,7 +526,10 @@ describe("signal waits", () => {
     });
     const first = await runUntilContinued(stagedPlanWithWait(), { initialData: { id: "1" } });
     expect(first.next.continuation?.signals).toEqual({ approval: ["first", "other"] });
-    expect(first.next.continuation?.seenSignalKeys).toEqual(["approval:evt-1", "approval:evt-2"]);
+    expect(first.next.continuation?.seenSignalKeys).toEqual([
+      '["approval","evt-1"]',
+      '["approval","evt-2"]',
+    ]);
 
     // The next run still remembers the key.
     mocks.activityFunctions.b = vi.fn(async () => {
@@ -660,17 +702,43 @@ describe("waits beside failures", () => {
     ]);
   });
 
-  it("does not count a released wait as completed when the failure is handled", async () => {
+  it("waits again on a released wait when the failure is handled, before moving on", async () => {
     mocks.activityFunctions["mixed__errorHandler"] = vi.fn(async () => ({ handled: true }));
+    mocks.activityFunctions.after = vi.fn(async (_input, stepInput) => ({ y: stepInput }));
+    let blocks = 0;
+    // First block: the sibling fails and releases the wait. Second: the signal arrives.
+    mocks.onBlock = () => {
+      blocks++;
+      if (blocks === 2) mocks.defaultSignalHandler!("approval", { ok: true });
+    };
+    const plan: WorkflowPlan = { ...batchWithWait(), errorHandlerActivityName: "mixed__errorHandler" };
+
+    const result = (await createWorkflowFunction(plan)({
+      initialData: { id: "1" },
+    })) as TemporalWorkflowResult;
+
+    expect(result.error).toBeUndefined();
+    expect(mocks.activityFunctions.after).toHaveBeenCalledWith(expect.anything(), {
+      approval: { ok: true },
+    });
+  });
+
+  it("keeps a re-run wait's original deadline", async () => {
+    mocks.activityFunctions["mixed__errorHandler"] = vi.fn(async () => ({ handled: true }));
+    mocks.activityFunctions.fails = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0)); // let the wait start first
+      mocks.nowMs += 3 * 3_600_000; // the failing sibling took three hours
+      throw new Error("boom");
+    });
     const plan: WorkflowPlan = {
-      ...batchWithWait(),
-      batches: [batchWithWait().batches[0]!, { steps: [step("after", ["id"], ["y"])] }],
-      stageBoundaries: [{ name: "later", afterBatch: 0 }],
+      ...batchWithWait({ timeout: "1 day", hasTimeoutValue: true, timeoutValue: "none" }),
       errorHandlerActivityName: "mixed__errorHandler",
     };
     mocks.activityFunctions.after = activity({ y: "Y" });
-    const continued = await runUntilContinued(plan, { initialData: { id: "1" } });
-    expect(continued.next.continuation?.completedSteps).toEqual(["fails"]);
+
+    await createWorkflowFunction(plan)({ initialData: { id: "1" } });
+
+    expect(mocks.conditionTimeouts).toEqual([86_400_000, 75_600_000]);
   });
 });
 
