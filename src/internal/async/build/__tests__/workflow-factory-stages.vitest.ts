@@ -7,7 +7,7 @@
 import { ApplicationFailure } from "@temporalio/workflow";
 import { beforeEach, describe, expect, it, type MockedFunction, vi } from "vitest";
 
-import { SIGNAL_WAIT_TIMEOUT_CODE } from "../../../workflow-codes.js";
+import { CONTINUATION_TOO_LARGE_CODE, SIGNAL_WAIT_TIMEOUT_CODE } from "../../../workflow-codes.js";
 import type {
   StepBatch,
   TemporalWorkflowResult,
@@ -797,6 +797,70 @@ describe("waits beside failures", () => {
     await createWorkflowFunction(plan)({ initialData: { id: "1" } });
 
     expect(mocks.conditionTimeouts).toEqual([86_400_000, 75_600_000]);
+  });
+});
+
+describe("carried state limits", () => {
+  it("fails, without continuing as new, when the carried state is over budget", async () => {
+    mocks.activityFunctions.a = activity({ x: "a".repeat(1_600_000) });
+    const outcome = await createWorkflowFunction(stagedPlan())({ initialData: { id: "1" } }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(outcome).toBeInstanceOf(ApplicationFailure);
+    expect((outcome as ApplicationFailure).type).toBe(CONTINUATION_TOO_LARGE_CODE);
+    // The oversized state stays out of the failure, which has the same size cap.
+    expect(JSON.stringify((outcome as ApplicationFailure).details).length).toBeLessThan(1_000);
+    expect(mocks.continueAsNewOptions).toHaveLength(0);
+  });
+
+  it("counts multi-byte characters by their UTF-8 size", async () => {
+    // 400,000 three-byte characters: 1.2 MB as UTF-8, though only 400,000 UTF-16 units.
+    mocks.activityFunctions.a = activity({ x: "€".repeat(400_000) });
+    await runUntilContinued(stagedPlan(), { initialData: { id: "1" } });
+    mocks.activityFunctions.a = activity({ x: "€".repeat(550_000) });
+    const outcome = await createWorkflowFunction(stagedPlan())({ initialData: { id: "1" } }).catch(
+      (err: unknown) => err,
+    );
+    expect((outcome as ApplicationFailure).type).toBe(CONTINUATION_TOO_LARGE_CODE);
+  });
+
+  it("warns when the carried state is large but within budget", async () => {
+    mocks.activityFunctions.a = activity({ x: "a".repeat(600_000) });
+    await runUntilContinued(stagedPlan(), { initialData: { id: "1" } });
+    expect(mocks.log.warn).toHaveBeenCalledWith(
+      "Carried state is large; keep big data out of the bag",
+      expect.objectContaining({ stage: "second" }),
+    );
+  });
+
+  it("carries a field and a signal named __proto__ as data", async () => {
+    const plan = stagedPlanWithWait();
+    plan.batches[2]!.signalWaits!.push({
+      name: "awaitProto",
+      signalName: "__proto__",
+      provides: "other",
+      hasTimeoutValue: false,
+    });
+    mocks.activityFunctions.a = vi.fn(async () => {
+      mocks.defaultSignalHandler!("__proto__", "early");
+      return JSON.parse('{"x": "X", "__proto__": "kept"}') as Record<string, unknown>;
+    });
+    const continued = await runUntilContinued(plan, { initialData: { id: "1" } });
+    const continuationJson = JSON.parse(JSON.stringify(continued.next.continuation));
+    expect(Object.hasOwn(continuationJson.signals, "__proto__")).toBe(true);
+    expect(continuationJson.signals.__proto__).toEqual(["early"]);
+  });
+
+  it("ignores an over-long dedupe key and accepts the signal without it", async () => {
+    mocks.activityFunctions.a = vi.fn(async () => {
+      mocks.defaultSignalHandler!("approval", "first", { dedupeKey: "k".repeat(257) });
+      mocks.defaultSignalHandler!("approval", "second", { dedupeKey: "k".repeat(257) });
+      return { x: "X" };
+    });
+    const continued = await runUntilContinued(stagedPlanWithWait(), { initialData: { id: "1" } });
+    expect(continued.next.continuation?.signals?.approval).toEqual(["first", "second"]);
+    expect(continued.next.continuation).not.toHaveProperty("seenSignalKeys");
   });
 });
 

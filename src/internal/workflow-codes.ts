@@ -1,5 +1,5 @@
 /**
- * Classifier codes for the workflow-side poll loop and signal waits.
+ * Classifier codes for the workflow-side poll loop, signal waits and stage boundaries.
  *
  * Kept in a leaf module with no imports: the workflow factory runs in Temporal's
  * deterministic sandbox and cannot reach the Node-side error classes, while step
@@ -16,3 +16,10 @@ export const STEP_POLL_TIMEOUT_CODE = "COMPOSER_STEP_POLL_TIMEOUT";
 
 /** Thrown by the workflow when a `waitForSignal` timeout elapses with no signal and no fallback. */
 export const SIGNAL_WAIT_TIMEOUT_CODE = "COMPOSER_SIGNAL_WAIT_TIMEOUT";
+
+/**
+ * Thrown by the workflow when the state a staged workflow carries into its next run is too
+ * large to continue as new. Temporal caps one payload at 2 MB by default, and a command over
+ * it fails its workflow task on every retry, so the workflow fails clearly instead.
+ */
+export const CONTINUATION_TOO_LARGE_CODE = "COMPOSER_CONTINUATION_TOO_LARGE";

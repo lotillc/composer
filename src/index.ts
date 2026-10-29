@@ -134,6 +134,7 @@ export {
   WorkflowStepError,
 } from "./internal/errors.js";
 export {
+  CONTINUATION_TOO_LARGE_CODE,
   SIGNAL_WAIT_TIMEOUT_CODE,
   STEP_NOT_READY_CODE,
   STEP_POLL_TIMEOUT_CODE,

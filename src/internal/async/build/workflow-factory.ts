@@ -27,6 +27,7 @@ import type {
 import { durationToMs } from "../../duration.js";
 import { safeErrorName } from "../../error-for-log.js";
 import {
+  CONTINUATION_TOO_LARGE_CODE,
   SIGNAL_WAIT_TIMEOUT_CODE,
   STEP_NOT_READY_CODE,
   STEP_POLL_TIMEOUT_CODE,
@@ -291,6 +292,39 @@ export const DEFAULT_MAX_PENDING_SIGNALS = 100;
  */
 const MAX_SEEN_SIGNAL_KEYS = 1000;
 
+/**
+ * Longest dedupe key the workflow remembers. Keys are carried across every continue-as-new,
+ * so their length times `MAX_SEEN_SIGNAL_KEYS` must stay a small part of the payload budget.
+ * `signalAsyncWorkflow` rejects longer keys; one that reaches the workflow some other way is
+ * ignored, and the signal is accepted without dedupe.
+ */
+export const MAX_DEDUPE_KEY_LENGTH = 256;
+
+/**
+ * Carried state above which a continue-as-new is refused. Temporal's default cap on one
+ * payload is 2 MB (`limit.blobSize.error`); this leaves room for the rest of the input and
+ * for a payload codec that grows what it encodes.
+ */
+export const CONTINUATION_BUDGET_BYTES = 1_500_000;
+
+/** Carried state above which a continue-as-new logs a warning (Temporal warns at 512 KB). */
+const CONTINUATION_WARN_BYTES = 512 * 1024;
+
+/** UTF-8 byte length of a string, without TextEncoder or Buffer. */
+function utf8Length(text: string): number {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit < 0x80) bytes += 1;
+    else if (unit < 0x800) bytes += 2;
+    else if (unit >= 0xd800 && unit < 0xdc00 && i + 1 < text.length) {
+      bytes += 4; // a surrogate pair is one 4-byte code point
+      i++;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
 /** Delivery metadata `signalAsyncWorkflow` sends as the signal's second argument. */
 export interface SignalDeliveryMeta {
   /** Caller-chosen key; a second signal with the same name and key is dropped. */
@@ -349,8 +383,17 @@ function receiveSignal(
     return;
   }
 
-  const dedupeKey =
-    typeof meta?.dedupeKey === "string" ? JSON.stringify([signalName, meta.dedupeKey]) : undefined;
+  let dedupeKey: string | undefined;
+  if (typeof meta?.dedupeKey === "string") {
+    if (meta.dedupeKey.length > MAX_DEDUPE_KEY_LENGTH) {
+      wf.log.warn("Ignored a dedupe key longer than the limit; accepting the signal without it", {
+        signalName,
+        limit: MAX_DEDUPE_KEY_LENGTH,
+      });
+    } else {
+      dedupeKey = JSON.stringify([signalName, meta.dedupeKey]);
+    }
+  }
   if (dedupeKey !== undefined) {
     if (inbox.seenKeySet.has(dedupeKey)) {
       wf.log.info("Dropped a duplicate signal", { signalName, dedupeKey: meta!.dedupeKey });
@@ -1342,16 +1385,15 @@ async function continueAtStage(
 
   // Initial data travels in `initialData`; the continuation holds produced fields, plus any
   // initial field the workflow changed (an error handler can), which would otherwise revert.
-  const carried: Record<string, unknown> = {};
+  // Field and signal names are the author's and the sender's, so these records have no
+  // prototype: a name like `__proto__` must land as data, not hit an inherited setter.
+  const carried: Record<string, unknown> = Object.create(null);
   for (const [field, value] of Object.entries(bag)) {
-    if (field in input.initialData) {
-      if (value !== input.initialData[field]) carried[field] = value;
-      continue;
-    }
+    if (Object.hasOwn(input.initialData, field) && value === input.initialData[field]) continue;
     carried[field] = value;
   }
 
-  const signals: Record<string, unknown[]> = {};
+  const signals: Record<string, unknown[]> = Object.create(null);
   for (const [name, queue] of inbox.queues) {
     if (queue.length > 0) signals[name] = [...queue];
   }
@@ -1375,6 +1417,41 @@ async function continueAtStage(
       ...(inbox.seenKeys.length > 0 && { seenSignalKeys: [...inbox.seenKeys] }),
     },
   };
+  // Every limit on its parts still leaves the whole unbounded, so the whole is measured. The
+  // measure is the JSON the default payload converter writes; a custom converter or codec
+  // changes the real size, which the budget's margin under 2 MB allows for.
+  let bytes: number | undefined;
+  try {
+    bytes = utf8Length(JSON.stringify(next));
+  } catch {
+    // Not JSON-serializable, so a custom converter is in use; leave the size to Temporal.
+  }
+  if (bytes !== undefined && bytes > CONTINUATION_BUDGET_BYTES) {
+    // Fail rather than issue a command Temporal would reject on every retry. The state
+    // itself stays out of the failure, which goes to event history and has the same cap.
+    throw wf.ApplicationFailure.create({
+      type: CONTINUATION_TOO_LARGE_CODE,
+      message:
+        `Stage "${boundary.name}" of workflow "${wf.workflowInfo().workflowType}" would carry ` +
+        `${bytes} bytes into its next run, over the ${CONTINUATION_BUDGET_BYTES}-byte budget. ` +
+        `Keep large data out of the bag and carry a reference to it instead.`,
+      details: [
+        {
+          code: CONTINUATION_TOO_LARGE_CODE,
+          data: { stage: boundary.name, bytes, budget: CONTINUATION_BUDGET_BYTES },
+        },
+      ],
+      nonRetryable: true,
+    });
+  }
+  if (bytes !== undefined && bytes > CONTINUATION_WARN_BYTES) {
+    wf.log.warn("Carried state is large; keep big data out of the bag", {
+      stage: boundary.name,
+      bytes,
+      budget: CONTINUATION_BUDGET_BYTES,
+    });
+  }
+
   return wf.makeContinueAsNewFunc<(input: WorkflowInput) => Promise<TemporalWorkflowResult>>(
     boundary.initialVersioningBehavior
       ? { initialVersioningBehavior: boundary.initialVersioningBehavior }
