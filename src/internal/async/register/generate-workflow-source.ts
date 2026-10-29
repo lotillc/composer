@@ -24,9 +24,19 @@ import type {
 } from "../../dag-sync-step.js";
 import { DEFAULT_CHECKPOINT_TIMEOUT_MS, type Workflow } from "../../dag-sync-workflow.js";
 import { planWorkflowBatches } from "../../workflow-planning.js";
-import type { StepActivityConfig, WorkflowPlan } from "../build/workflow-factory.js";
+import {
+  assertSignalWaitsAgree,
+  assertSignalWaitsAlone,
+  initialFieldsOf,
+  resolveStageBoundaries,
+} from "../../workflow-stages.js";
+import type {
+  SignalWaitBatchEntry,
+  StepActivityConfig,
+  WorkflowPlan,
+} from "../build/workflow-factory.js";
 import { denamespaceSyntheticSteps } from "../build-scripts/utils/common.js";
-import { isFanOut } from "../build-scripts/utils/type-guards.js";
+import { isFanOut, isSignalWait } from "../build-scripts/utils/type-guards.js";
 import {
   DEFAULT_WORKER_PROFILE,
   getTaskQueueForProfile,
@@ -67,19 +77,56 @@ function buildActivityConfig(step: Step<any, any, any>): StepActivityConfig | un
  * and workflow names are always unversioned).
  */
 export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>): WorkflowPlan {
-  const initialFields = new Set<string>(
-    (workflow.requiredInitial ?? [])
-      .concat(Object.keys(workflow.configuredValues || {}))
-      .map(String),
+  const initialFields = initialFieldsOf(workflow);
+  assertSignalWaitsAlone(workflow);
+  assertSignalWaitsAgree(workflow);
+
+  // A node's name in the plan is its identity: what `completedSteps` records and what a
+  // checkpoint or stage boundary refers to. Composition prefixes it so nodes from different
+  // children stay distinct, so steps and waits keep that namespaced name. A step's activity
+  // is registered under its bare name, kept beside it as `activityName`. Fan-outs keep their
+  // bare name: their child workflow IDs and helper activities are built from it, and
+  // in-flight runs depend on those staying the same.
+  const bareSteps = denamespaceSyntheticSteps(workflow.steps);
+  const flattenedSteps = bareSteps.map((bare, index) =>
+    isFanOut(bare)
+      ? bare
+      : { ...bare, name: workflow.steps[index]!.name, activityName: bare.name },
   );
 
-  const flattenedSteps = denamespaceSyntheticSteps(workflow.steps);
+  // Two nodes with one identity would collapse into one in the plan, and the other would
+  // silently never run. Two different steps sharing an activity name would run whichever
+  // registered last. Both are refused here; the same step reused in two children is fine.
+  const seenNames = new Set<string>();
+  const stepByActivityName = new Map<string, { run: unknown; name: string }>();
+  for (const step of flattenedSteps) {
+    if (seenNames.has(step.name)) {
+      throw new Error(
+        `Workflow "${workflow.name}": two nodes are both named "${step.name}". Fan-outs are ` +
+          `identified by their name without composition prefixes, so rename one.`,
+      );
+    }
+    seenNames.add(step.name);
+
+    const activityName = (step as { activityName?: string }).activityName;
+    if (activityName === undefined || isSignalWait(step)) continue;
+    const earlier = stepByActivityName.get(activityName);
+    if (earlier !== undefined && earlier.run !== step.run) {
+      throw new Error(
+        `Workflow "${workflow.name}": two different steps, "${earlier.name}" and ` +
+          `"${step.name}", both register activity "${activityName}". Activities are ` +
+          `registered by a step's name without composition prefixes, so rename one.`,
+      );
+    }
+    stepByActivityName.set(activityName, { run: step.run, name: step.name });
+  }
   const planResult = planWorkflowBatches([...flattenedSteps], initialFields);
 
   const plan: WorkflowPlan = {
     name: workflow.name,
     batches: planResult.batches.map((batch) => {
       const steps: WorkflowPlan["batches"][number]["steps"] = [];
+      const signalWaits: SignalWaitBatchEntry[] = [];
       const fanOuts: Array<{
         name: string;
         childWorkflowName: string;
@@ -92,6 +139,23 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
       }> = [];
 
       for (const step of batch) {
+        // A wait runs no activity, so it has no worker profile to route.
+        if (isSignalWait(step)) {
+          const wait = step.__signalWait;
+          signalWaits.push({
+            name: step.name,
+            signalName: wait.signalName,
+            provides: String(step.provides[0]),
+            ...(wait.timeout !== undefined && { timeout: wait.timeout }),
+            ...(wait.hasTimeoutValue && { timeoutValue: wait.timeoutValue }),
+            hasTimeoutValue: wait.hasTimeoutValue,
+            ...(wait.maxPendingSignals !== undefined && {
+              maxPendingSignals: wait.maxPendingSignals,
+            }),
+          });
+          continue;
+        }
+
         const rawProfile =
           (step as Step<any, any, any> & { workerProfile?: string }).workerProfile ??
           DEFAULT_WORKER_PROFILE;
@@ -123,7 +187,7 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
         } else {
           steps.push({
             name: step.name,
-            activityName: step.name,
+            activityName: (step as { activityName?: string }).activityName ?? step.name,
             needs: [...step.needs].map(String),
             provides: [...step.provides].map(String),
             taskQueue: getTaskQueueForProfile(workerProfile),
@@ -132,7 +196,11 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
         }
       }
 
-      return { steps, ...(fanOuts.length > 0 ? { fanOuts } : {}) };
+      return {
+        steps,
+        ...(fanOuts.length > 0 ? { fanOuts } : {}),
+        ...(signalWaits.length > 0 ? { signalWaits } : {}),
+      };
     }),
   };
 
@@ -149,6 +217,17 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
       }
       for (const fanOut of batch.fanOuts ?? []) {
         stepToBatchIndex.set(fanOut.name, batchIndex);
+      }
+      for (const wait of batch.signalWaits ?? []) {
+        stepToBatchIndex.set(wait.name, batchIndex);
+      }
+    });
+    // A checkpoint names its step as the builder resolved it, which for a composed fan-out
+    // is the namespaced name; the plan keeps fan-outs bare, so index that name too.
+    planResult.batches.forEach((batch, batchIndex) => {
+      for (const node of batch) {
+        const syntheticName = (node as { _syntheticName?: string })._syntheticName;
+        if (syntheticName) stepToBatchIndex.set(syntheticName, batchIndex);
       }
     });
 
@@ -167,6 +246,15 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
         timeout: checkpoint.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT_MS,
       };
     });
+  }
+
+  const stageBoundaries = resolveStageBoundaries(workflow);
+  if (stageBoundaries.length > 0) {
+    plan.stageBoundaries = stageBoundaries;
+  }
+
+  if (workflow.versioningBehavior) {
+    plan.versioningBehavior = workflow.versioningBehavior;
   }
 
   return plan;
@@ -240,12 +328,34 @@ export function collectAllWorkflows(
 
 export async function writeWorkflowSourceFile(
   workflows: Workflow<any, any, any, any, any>[],
+  options: {
+    /**
+     * Whether the worker that bundles this source runs with Worker Versioning. Temporal's
+     * core SDK rejects every task completion that carries a versioning behavior when the
+     * worker is unversioned, so declarations are dropped unless this is set. A stage
+     * boundary's next-run behavior means nothing without versioning, so it goes too.
+     */
+    workerVersioning?: boolean;
+    /**
+     * File name within the temp directory. Defaults to the one the workflow worker uses;
+     * a caller bundling alongside a live worker in the same process passes its own.
+     */
+    fileName?: string;
+    /** Carried-state budget written into staged plans; unset leaves the default. */
+    continuationBudgetBytes?: number;
+  } = {},
 ): Promise<string> {
+  const budget = options.continuationBudgetBytes;
+  if (budget !== undefined && (!Number.isInteger(budget) || budget <= 0)) {
+    throw new Error(
+      `continuationBudgetBytes must be a positive integer, got ${String(budget)}`,
+    );
+  }
   const factoryPath = resolveWorkflowFactoryPath().replaceAll("\\", "/");
   // realpathSync resolves OS-level symlinks (e.g. macOS /tmp -> /private/tmp).
   // Temporal's bundler writes an entrypoint to memfs using this path, but webpack
   // resolves symlinks when reading, causing a mismatch if the path contains symlinks.
-  const outputPath = resolve(realpathSync(tmpdir()), "__workflow-source.js");
+  const outputPath = resolve(realpathSync(tmpdir()), options.fileName ?? "__workflow-source.js");
 
   const allWorkflows = collectAllWorkflows(workflows);
 
@@ -258,6 +368,11 @@ export async function writeWorkflowSourceFile(
   // like "__proto__" cannot reach the prototype setter.
   for (const [index, workflow] of allWorkflows.entries()) {
     const plan = generateWorkflowPlan(workflow);
+    if (!options.workerVersioning) {
+      delete plan.versioningBehavior;
+      for (const boundary of plan.stageBoundaries ?? []) delete boundary.initialVersioningBehavior;
+    }
+    if (budget !== undefined && plan.stageBoundaries) plan.continuationBudgetBytes = budget;
     const planId = `plan${index}`;
 
     code += `const ${planId} = ${JSON.stringify(plan)};\n`;

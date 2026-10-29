@@ -10,9 +10,17 @@
 
 import { v7 as uuidv7 } from "uuid";
 import { getWorkerDeploymentName } from "../temporal-naming.js";
-import { describeWorkflow as describeWorkflowTemporal } from "./async/execute/temporal-client.js";
+import type { VersioningOverride } from "@temporalio/common";
+import {
+  describeWorkflow as describeWorkflowTemporal,
+  signalWorkflow,
+} from "./async/execute/temporal-client.js";
 import { executeWorkflowTemporal, startWorkflowTemporal } from "./async/execute/workflow-execution.js";
 import { runActivityWorkers as runActivityWorkersInternal } from "./async/register/activity-worker.js";
+import { collectAllWorkflows } from "./async/register/generate-workflow-source.js";
+import { replayWorkflowHistories as replayWorkflowHistoriesInternal } from "./async/register/replay-histories.js";
+import { MAX_DEDUPE_KEY_BYTES } from "./async/build/workflow-factory.js";
+import { jsonStringBytes } from "./json-size.js";
 import { runWorkflowWorkers as runWorkflowWorkersInternal } from "./async/register/workflow-worker.js";
 import type { ScheduleDefinition } from "./async/schedule/define-schedule.js";
 import { syncSchedules as syncSchedulesInternal } from "./async/schedule/sync-schedules.js";
@@ -20,10 +28,14 @@ import type {
   AsyncWorkflowOptions,
   Composer,
   ComposerConfig,
+  IfRunning,
+  SignalAsyncWorkflowOptions,
+  StartAsyncWorkflowOptions,
   StepContextProvider,
   SyncComposer,
   TemporalConfig,
 } from "./context-provider.js";
+import type { WorkflowSignal } from "./dag-sync-signal.js";
 import type { Step } from "./dag-sync-step.js";
 import { runSyncWorkflow, type Workflow, type WorkflowResult } from "./dag-sync-workflow.js";
 import { defaultLogger } from "./defaults.js";
@@ -152,11 +164,25 @@ export function createComposer<TContext>(
   // Capture after guard so TypeScript narrows the type for closures
   const temporalConfig = temporal;
 
+  const deploymentName = getWorkerDeploymentName(temporalConfig.serviceName);
+  const clientConfig = {
+    address: temporalConfig.serverAddress,
+    namespace: temporalConfig.namespace,
+    dataConverter: temporalConfig.dataConverter,
+  };
+
   // Construct versioningOverride for workflow starts when buildId is set.
   // This pins new workflows to the same deployment version as the workers,
   // eliminating the TOCTOU gap that would require a separate setCurrentDeployment call.
-  const deploymentName = getWorkerDeploymentName(temporalConfig.serviceName);
-  const workflowVersioningOverride = temporalConfig.buildId
+  //
+  // A workflow that declares AUTO_UPGRADE, or that has stage boundaries, starts unpinned.
+  // A start-time pin outranks the workflow's own declaration and is inherited by every
+  // continue-as-new run on the same task queue, whatever the boundary asks for, so a pinned
+  // start would hold the workflow on this build for its whole life. Unpinned, a staged
+  // PINNED workflow still keeps each run on one build (the worker default) and moves on
+  // at each boundary. The cost: its first task goes to the current version, not
+  // necessarily this build.
+  const pinnedOverride: VersioningOverride | undefined = temporalConfig.buildId
     ? {
         pinnedTo: {
           buildId: temporalConfig.buildId,
@@ -164,6 +190,21 @@ export function createComposer<TContext>(
         },
       }
     : undefined;
+  //
+  // The same goes for a workflow whose fan-out children (at any depth) are staged or
+  // AUTO_UPGRADE: a child inherits its parent's start-time pin, and it would outrank the
+  // child's own boundaries and declaration in the same way.
+  const versioningOverrideFor = (
+    workflow: Workflow<any, any, any, any, any>,
+  ): VersioningOverride | undefined =>
+    collectAllWorkflows([workflow]).some(
+      (wf) => wf.versioningBehavior === "AUTO_UPGRADE" || (wf.stageBoundaries?.length ?? 0) > 0,
+    )
+      ? undefined
+      : pinnedOverride;
+
+  const conflictPolicyFor = (ifRunning: IfRunning | undefined): "USE_EXISTING" | undefined =>
+    ifRunning === "useExisting" ? "USE_EXISTING" : undefined;
 
   // Build async methods when temporal is available
   // Overload for workflows WITHOUT required initial fields
@@ -211,7 +252,8 @@ export function createComposer<TContext>(
           namespace: temporalConfig.namespace,
           dataConverter: temporalConfig.dataConverter,
         },
-        versioningOverride: workflowVersioningOverride,
+        versioningOverride: versioningOverrideFor(workflow),
+        workflowIdConflictPolicy: conflictPolicyFor(options?.ifRunning),
         awaitCheckpoint: options?.awaitCheckpoint,
         startOnly: options?.startOnly,
       },
@@ -227,6 +269,7 @@ export function createComposer<TContext>(
   >(
     workflow: Workflow<Bag, never, Config, Steps>,
     initialData?: Partial<Bag>,
+    options?: StartAsyncWorkflowOptions,
   ): Promise<{ workflowId: string }>;
 
   // Overload for workflows WITH required initial fields
@@ -238,6 +281,7 @@ export function createComposer<TContext>(
   >(
     workflow: Workflow<Bag, RequiredInitial, Config, Steps>,
     initialData: Partial<Bag> & Pick<Bag, RequiredInitial>,
+    options?: StartAsyncWorkflowOptions,
   ): Promise<{ workflowId: string }>;
 
   // Implementation
@@ -249,8 +293,9 @@ export function createComposer<TContext>(
   >(
     workflow: Workflow<Bag, RequiredInitial, Config, Steps>,
     initialData?: Partial<Bag> & Pick<Bag, RequiredInitial>,
+    options?: StartAsyncWorkflowOptions,
   ): Promise<{ workflowId: string }> {
-    const workflowId = uuidv7() as UUIDV7;
+    const workflowId = (options?.workflowId ?? uuidv7()) as UUIDV7;
     return startWorkflowTemporal(
       workflow as Workflow<Bag, RequiredInitial, Config, any>,
       initialData as Partial<Bag>,
@@ -261,7 +306,8 @@ export function createComposer<TContext>(
           namespace: temporalConfig.namespace,
           dataConverter: temporalConfig.dataConverter,
         },
-        versioningOverride: workflowVersioningOverride,
+        versioningOverride: versioningOverrideFor(workflow),
+        workflowIdConflictPolicy: conflictPolicyFor(options?.ifRunning),
       },
     );
   }
@@ -272,7 +318,32 @@ export function createComposer<TContext>(
     runAsyncWorkflow: runAsyncWorkflowImpl,
     startAsyncWorkflow: startAsyncWorkflowImpl,
 
-    async describeWorkflow(workflowId: string) {
+    async signalAsyncWorkflow<Payload>(
+      workflowId: string,
+      signal: WorkflowSignal<Payload>,
+      payload: Payload,
+      options?: SignalAsyncWorkflowOptions,
+    ): Promise<void> {
+      if (
+        options?.dedupeKey !== undefined &&
+        jsonStringBytes(options.dedupeKey) > MAX_DEDUPE_KEY_BYTES
+      ) {
+        throw new Error(
+          `signalAsyncWorkflow: dedupeKey must be at most ${MAX_DEDUPE_KEY_BYTES} bytes as ` +
+            `JSON (UTF-8, escapes included)`,
+        );
+      }
+      const value = signal.parse ? signal.parse(payload) : payload;
+      await signalWorkflow(
+        workflowId as UUIDV7,
+        signal.name,
+        value,
+        clientConfig,
+        options?.dedupeKey !== undefined ? { dedupeKey: options.dedupeKey } : undefined,
+      );
+    },
+
+        async describeWorkflow(workflowId: string) {
       return describeWorkflowTemporal(workflowId as UUIDV7, {
         address: temporalConfig.serverAddress,
         namespace: temporalConfig.namespace,
@@ -319,8 +390,18 @@ export function createComposer<TContext>(
         buildId: temporalConfig.buildId,
         dataConverter: temporalConfig.dataConverter,
         interceptors: temporalConfig.interceptors,
+        continuationBudgetBytes: temporalConfig.continuationBudgetBytes,
         ...config,
         logger: resolvedLogger,
+      });
+    },
+
+    async replayWorkflowHistories(options) {
+      return replayWorkflowHistoriesInternal({
+        ...options,
+        dataConverter: temporalConfig.dataConverter,
+        interceptors: temporalConfig.interceptors,
+        continuationBudgetBytes: temporalConfig.continuationBudgetBytes,
       });
     },
 

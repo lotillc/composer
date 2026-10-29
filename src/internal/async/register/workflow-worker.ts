@@ -27,7 +27,7 @@ import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import type { DataConverter } from "@temporalio/common";
 import { VersioningBehavior } from "@temporalio/common";
-import { NativeConnection, Worker } from "@temporalio/worker";
+import { NativeConnection, Worker, type WorkerOptions } from "@temporalio/worker";
 import type { ComposerWorkerInterceptors } from "../../context-provider.js";
 import type { Workflow } from "../../dag-sync-workflow.js";
 import { defaultLogger } from "../../defaults.js";
@@ -53,6 +53,35 @@ function getTemporalWorkflowNodeModulesDir(): string {
   // Go up from .../node_modules/@temporalio/workflow/package.json
   // to .../node_modules (scoped package = 2 levels above the package dir)
   return resolve(dirname(temporalWorkflowPkg), "..", "..");
+}
+
+/**
+ * Bundler options for a worker that loads Composer's generated workflow source. Shared by
+ * the workflow worker and the replay check, so replay bundles exactly what workers run.
+ */
+export function workflowBundlerOptions(): NonNullable<WorkerOptions["bundlerOptions"]> {
+  // TODO: This webpackConfigHook may no longer be necessary. It was added when
+  // the esbuild bundle lived in the consumer's dist/ and webpack resolved
+  // @temporalio/workflow from there (where it's not a direct dep). Now that
+  // workflow-factory.js is loaded via absolute path from @lotiai/composer (which
+  // has @temporalio/workflow as a direct dep), webpack should resolve it
+  // normally. Try removing the hook + getTemporalWorkflowNodeModulesDir and
+  // verify the workflow worker still starts.
+  const temporalNodeModulesDir = getTemporalWorkflowNodeModulesDir();
+  return {
+    // Tell webpack where to find @temporalio/workflow. Without this, pnpm's
+    // strict node_modules layout prevents webpack from resolving it when the
+    // workflow source file lives in the consumer's dist/ directory.
+    webpackConfigHook: (config) => {
+      config.resolve = config.resolve ?? {};
+      const modules = config.resolve.modules ?? [];
+      if (!modules.includes(temporalNodeModulesDir)) {
+        modules.push(temporalNodeModulesDir);
+      }
+      config.resolve.modules = modules;
+      return config;
+    },
+  };
 }
 
 /**
@@ -103,6 +132,12 @@ export interface WorkflowWorkerConfig {
    * When unset, Worker Versioning is disabled.
    */
   buildId?: string;
+
+  /**
+   * Most bytes a staged workflow may carry into its next run. See
+   * `TemporalConfig.continuationBudgetBytes`.
+   */
+  continuationBudgetBytes?: number;
 
   /**
    * Logger for worker lifecycle messages.
@@ -173,7 +208,11 @@ export async function createWorkflowWorkers(
     workflowCount,
   });
 
-  const workflowsPath = await writeWorkflowSourceFile(config.workflows);
+  // Worker Versioning is on exactly when a buildId is set (see workerDeploymentOptions below).
+  const workflowsPath = await writeWorkflowSourceFile(config.workflows, {
+    workerVersioning: Boolean(config.buildId),
+    continuationBudgetBytes: config.continuationBudgetBytes,
+  });
 
   logger.info("Workflow source file generated", { workflowsPath });
 
@@ -181,14 +220,6 @@ export async function createWorkflowWorkers(
     address: finalConfig.serverAddress,
   });
 
-  // TODO: This webpackConfigHook may no longer be necessary. It was added when
-  // the esbuild bundle lived in the consumer's dist/ and webpack resolved
-  // @temporalio/workflow from there (where it's not a direct dep). Now that
-  // workflow-factory.js is loaded via absolute path from @lotiai/composer (which
-  // has @temporalio/workflow as a direct dep), webpack should resolve it
-  // normally. Try removing the hook + getTemporalWorkflowNodeModulesDir and
-  // verify the workflow worker still starts.
-  const temporalNodeModulesDir = getTemporalWorkflowNodeModulesDir();
   const workflowInterceptorModules = config.interceptors?.workflowModules;
 
   // Create workers for each task queue
@@ -219,20 +250,7 @@ export async function createWorkflowWorkers(
               },
             }
           : {}),
-        bundlerOptions: {
-          // Tell webpack where to find @temporalio/workflow. Without this, pnpm's
-          // strict node_modules layout prevents webpack from resolving it when the
-          // workflow source file lives in the consumer's dist/ directory.
-          webpackConfigHook: (config) => {
-            config.resolve = config.resolve ?? {};
-            const modules = config.resolve.modules ?? [];
-            if (!modules.includes(temporalNodeModulesDir)) {
-              modules.push(temporalNodeModulesDir);
-            }
-            config.resolve.modules = modules;
-            return config;
-          },
-        },
+        bundlerOptions: workflowBundlerOptions(),
       });
 
       logger.info("Worker created for task queue", { taskQueue, namespace: finalConfig.namespace });

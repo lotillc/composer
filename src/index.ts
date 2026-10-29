@@ -24,15 +24,24 @@ export {
   createWorkflow,
   type DurationString,
   defineSchedule,
+  defineWorkflowSignal,
   type ErrorHandler,
   type FanOut,
   fanOut,
   type InferWorkflowResultFromWorkflow,
   isFanOutStep,
+  isSignalWaitStep,
   type ScheduleDefinition,
   type ScheduleDefinitionOptions,
   ScheduleOverlapPolicy,
   type ScheduleSpec,
+  type SignalWait,
+  type StageBoundary,
+  type StageBoundaryOptions,
+  type StageInitialVersioningBehavior,
+  type IfRunning,
+  type SignalAsyncWorkflowOptions,
+  type StartAsyncWorkflowOptions,
   type Step,
   type StepContextProvider,
   type StepPollPolicy,
@@ -45,9 +54,12 @@ export {
   syncSchedules,
   type TemporalConfig,
   use,
+  waitForSignal,
   type Workflow,
   type WorkflowBuilder,
   type WorkflowResult,
+  type WorkflowSignal,
+  type WorkflowVersioningBehavior,
 } from "./internal/index.js";
 export {
   isScheduleDefinition,
@@ -82,6 +94,12 @@ export {
   type WorkerProfileConfig,
 } from "./internal/async/config/worker-profiles.js";
 export {
+  type ReplayFailure,
+  type ReplayWorkflowHistoriesOptions,
+  type ReplayWorkflowHistoriesResult,
+  replayWorkflowHistories,
+} from "./internal/async/register/replay-histories.js";
+export {
   type StartActivityWorkerOptions,
   startActivityWorker,
 } from "./internal/async/register-scripts/start-activity-worker.js";
@@ -115,7 +133,16 @@ export {
   WorkflowErrorHandlerFailure,
   WorkflowStepError,
 } from "./internal/errors.js";
-export { STEP_NOT_READY_CODE, STEP_POLL_TIMEOUT_CODE } from "./internal/poll-codes.js";
+export {
+  CHECKPOINT_PASSED_CODE,
+  CHECKPOINT_TIMEOUT_CODE,
+  CONTINUATION_TOO_LARGE_CODE,
+  INVALID_SIGNAL_WAIT_CODE,
+  SIGNAL_WAIT_TIMEOUT_CODE,
+  STEP_NOT_READY_CODE,
+  STEP_POLL_TIMEOUT_CODE,
+  UNKNOWN_CHECKPOINT_CODE,
+} from "./internal/workflow-codes.js";
 export type { ComposerLogger, TraceErrorMessage } from "./internal/types.js";
 export type { WorkflowExecutionStatusName } from "@temporalio/client";
 // Re-exported so a consumer can type a converter or an interceptor without taking a direct

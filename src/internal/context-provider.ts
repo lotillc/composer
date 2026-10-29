@@ -12,7 +12,12 @@ import type { WorkflowExecutionStatusName } from "@temporalio/client";
 import type { DataConverter } from "@temporalio/common";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
 import type { ScheduleDefinition } from "./async/schedule/define-schedule.js";
+import type {
+  ReplayWorkflowHistoriesOptions,
+  ReplayWorkflowHistoriesResult,
+} from "./async/register/replay-histories.js";
 import type { SyncSchedulesResult } from "./async/schedule/sync-schedules.js";
+import type { WorkflowSignal } from "./dag-sync-signal.js";
 import type {
   ExtractWorkflowBag,
   ExtractWorkflowCheckpointNames,
@@ -189,6 +194,23 @@ export interface TemporalConfig {
    * Interceptors applied to the workers Composer creates.
    */
   interceptors?: ComposerWorkerInterceptors;
+
+  /**
+   * Most bytes a staged workflow may carry into its next run, measured as the UTF-8 JSON
+   * the default payload converter writes. Over it, the workflow fails with
+   * `COMPOSER_CONTINUATION_TOO_LARGE` instead of continuing as new. Defaults to 1,500,000,
+   * which leaves a margin under Temporal's default 2 MB payload cap.
+   *
+   * A payload codec runs outside the workflow, so its effect cannot be measured there. If
+   * `dataConverter` grows payloads (a base64 envelope, encryption), divide the default by
+   * the growth factor: about 1,125,000 for a codec that adds a third, as base64 does.
+   *
+   * Raise it only together with the server's `limit.blobSize.error`: at or above that
+   * limit (2 MiB by default) the guard no longer prevents a continue-as-new Temporal would
+   * reject on every retry. The replay check must use the same value as the workers, which
+   * `composer.replayWorkflowHistories` does.
+   */
+  continuationBudgetBytes?: number;
 }
 
 /**
@@ -237,6 +259,22 @@ export interface AsyncWorkflowOptions<CheckpointNames extends string = never> {
     : NoInfer<CheckpointNames>;
 
   /**
+   * What to do when a workflow with `workflowId` is already running.
+   *
+   * - `"fail"` (default): the workflow is not started. Like every `runAsyncWorkflow`
+   *   failure, this does not throw: the result's `error` is Temporal's
+   *   `WorkflowExecutionAlreadyStartedError`. (`startAsyncWorkflow` rejects with it.)
+   * - `"useExisting"`: the start succeeds against the running workflow instead, so a
+   *   retried start (a timed-out request, a redelivered message) is idempotent. The
+   *   running workflow keeps the data it was started with; this call's data is ignored.
+   *   With `startOnly`, the result's `bag` is therefore empty rather than this call's
+   *   input, which may not be the running workflow's data.
+   *
+   * Only a *running* workflow counts: once one finishes, its ID can start a new one.
+   */
+  ifRunning?: IfRunning;
+
+  /**
    * Start the Temporal workflow and return immediately after Temporal accepts it.
    *
    * This is intended for long-running fire-and-forget workflows where the caller
@@ -244,6 +282,43 @@ export interface AsyncWorkflowOptions<CheckpointNames extends string = never> {
    */
   startOnly?: boolean;
 }
+
+/**
+ * Options for starting an async workflow without waiting for it.
+ */
+export interface StartAsyncWorkflowOptions {
+  /**
+   * Optional caller-supplied workflow ID.
+   *
+   * If omitted, Composer generates a UUIDv7. Supply a stable ID when other code will
+   * later signal the workflow (`signalAsyncWorkflow`) by an ID it already knows.
+   */
+  workflowId?: string;
+
+  /**
+   * What to do when a workflow with `workflowId` is already running: `"fail"` (default)
+   * rejects with `WorkflowExecutionAlreadyStartedError`; `"useExisting"` resolves with the
+   * running workflow's ID, so retrying a start is safe. The running workflow keeps the
+   * data it was started with.
+   */
+  ifRunning?: IfRunning;
+}
+
+/**
+ * Options for delivering a signal.
+ */
+export interface SignalAsyncWorkflowOptions {
+  /**
+   * Idempotency key for this delivery. The workflow remembers keys across stages and
+   * drops a later signal with the same name and key, so retrying a send is safe. Derive
+   * it from the event being delivered (a webhook's event ID, say), not per attempt.
+   * At most 256 bytes as JSON (UTF-8, escapes included); a larger key is rejected.
+   */
+  dedupeKey?: string;
+}
+
+/** What a start does when a workflow with the same ID is already running. */
+export type IfRunning = "fail" | "useExisting";
 
 /**
  * Sync-only Composer instance.
@@ -400,6 +475,7 @@ export interface Composer<TContext> extends SyncComposer<TContext> {
   startAsyncWorkflow<W extends Workflow<any, never, any, any, any>>(
     workflow: W,
     initialData?: Partial<ExtractWorkflowBag<W>>,
+    options?: StartAsyncWorkflowOptions,
   ): Promise<{ workflowId: string }>;
 
   // Overload for workflows WITH required initial fields
@@ -407,7 +483,35 @@ export interface Composer<TContext> extends SyncComposer<TContext> {
     workflow: W,
     initialData: Partial<ExtractWorkflowBag<W>> &
       Pick<ExtractWorkflowBag<W>, ExtractWorkflowRequiredInitial<W>>,
+    options?: StartAsyncWorkflowOptions,
   ): Promise<{ workflowId: string }>;
+
+  /**
+   * Deliver a signal to a running async workflow.
+   *
+   * A `waitForSignal` node waiting on this signal receives the payload; a signal sent
+   * before the wait is reached, even in an earlier stage, is kept until it is. Resolves
+   * once Temporal has accepted the signal, not when the workflow consumes it.
+   *
+   * The signal's `parse`, if it has one, runs first; a payload it rejects is never sent.
+   * Pass `dedupeKey` so a retried delivery is not consumed twice: the workflow drops a
+   * second signal with the same name and key.
+   *
+   * Rejects with Temporal's `WorkflowNotFoundError` when no workflow with this ID is
+   * running -- including one that already finished, for example because its wait timed
+   * out and took its `timeoutValue`.
+   *
+   * @example
+   * ```typescript
+   * await composer.signalAsyncWorkflow(requestId, approvalSignal, { approved: true });
+   * ```
+   */
+  signalAsyncWorkflow<Payload>(
+    workflowId: string,
+    signal: WorkflowSignal<Payload>,
+    payload: NoInfer<Payload>,
+    options?: SignalAsyncWorkflowOptions,
+  ): Promise<void>;
 
   /**
    * The Temporal connection configuration.
@@ -473,6 +577,19 @@ export interface Composer<TContext> extends SyncComposer<TContext> {
     maxConcurrentWorkflowTaskExecutions: number;
     workflows: Workflow<any, any, any>[];
   }) => Promise<void>;
+
+  /**
+   * Replay recorded workflow histories against workflow definitions, offline, with this
+   * Composer's data converter and workflow interceptors.
+   *
+   * Run it in CI before deploying a build that serves AUTO_UPGRADE workflows, against
+   * histories captured from the build in production: a failure means in-flight runs, or a
+   * rollback to that build, would break. See `replayWorkflowHistories`.
+   */
+  replayWorkflowHistories: (options: {
+    workflows: Workflow<any, any, any>[];
+    histories: ReplayWorkflowHistoriesOptions["histories"];
+  }) => Promise<ReplayWorkflowHistoriesResult>;
 
   /**
    * Declaratively sync schedule definitions to the Temporal server.

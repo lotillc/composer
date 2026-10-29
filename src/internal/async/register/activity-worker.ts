@@ -37,10 +37,10 @@ import type { AsyncStepRuntime, Step } from "../../dag-sync-step.js";
 import type { Workflow } from "../../dag-sync-workflow.js";
 import { defaultLogger } from "../../defaults.js";
 import { errorForLog } from "../../error-for-log.js";
-import { STEP_NOT_READY_CODE } from "../../poll-codes.js";
+import { STEP_NOT_READY_CODE } from "../../workflow-codes.js";
 import type { ComposerLogger } from "../../types.js";
 import { denamespaceSyntheticSteps } from "../build-scripts/utils/common.js";
-import { isFanOut } from "../build-scripts/utils/type-guards.js";
+import { isFanOut, isSignalWait } from "../build-scripts/utils/type-guards.js";
 import { startTaskQueueMetrics, type TaskQueueMetricsHandle } from "../metrics/task-queue-metrics.js";
 import {
   isComposerError,
@@ -374,10 +374,29 @@ function createActivitiesFromWorkflows<TContext>(
   for (const workflow of allWorkflows) {
     const flattenedSteps = denamespaceSyntheticSteps(workflow.steps);
     for (const step of flattenedSteps) {
-      if (!isFanOut(step)) {
+      // FanOuts get their own wrapper activities below; signal waits run none.
+      if (!isFanOut(step) && !isSignalWait(step)) {
         allSteps.push(step);
       }
     }
+  }
+
+  // Activities are registered by bare step name across every workflow this worker serves.
+  // Two different steps with one name would leave whichever registered last running for
+  // both, so refuse that before registering anything. One step reused is fine.
+  const stepByActivityName = new Map<string, Step<any, any, any>>();
+  for (const step of allSteps) {
+    const earlier = stepByActivityName.get(step.name);
+    if (earlier && earlier.run !== step.run) {
+      const describe = (s: Step<any, any, any>) =>
+        `"${(s as { _syntheticName?: string })._syntheticName ?? s.name}"`;
+      throw new Error(
+        `Two different steps, ${describe(earlier)} and ${describe(step)}, both register ` +
+          `activity "${step.name}". Activities are registered by a step's name without ` +
+          `composition prefixes, so rename one.`,
+      );
+    }
+    stepByActivityName.set(step.name, step);
   }
 
   for (const step of allSteps) {

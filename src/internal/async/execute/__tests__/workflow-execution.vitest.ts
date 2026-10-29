@@ -13,7 +13,7 @@ vi.mock("../temporal-client.js");
 
 const mockExecuteWorkflowAndWait = vi.mocked(temporalClient.executeWorkflowAndWait);
 const mockExecuteWorkflow = vi.mocked(temporalClient.executeWorkflow);
-const mockCreateTemporalClient = vi.mocked(temporalClient.createTemporalClient);
+const mockStartWorkflowWithUpdate = vi.mocked(temporalClient.startWorkflowWithUpdate);
 
 describe("executeWorkflowTemporal", () => {
   const mockWorkflowId = "01234567-89ab-cdef-0123-456789abcdef" as UUIDV7;
@@ -341,6 +341,103 @@ describe("executeWorkflowTemporal", () => {
       expect(result.bag).toEqual({ inputField: "value" });
     });
 
+    // Every documented failure code reaches result.error.code, whatever shape the failure
+    // arrived in.
+    describe("failure codes", () => {
+      const workflow = { name: "test-workflow", steps: [] } as unknown as Workflow<any, any, any>;
+      const run = () =>
+        executeWorkflowTemporal(workflow, { inputField: "value" }, {
+          workflowId: mockWorkflowId,
+          clientConfig: mockClientConfig,
+        });
+
+      it("reads the code from the structured layout, falling back to the initial data", async () => {
+        const failure = ApplicationFailure.create({
+          message: "too large",
+          type: "COMPOSER_CONTINUATION_TOO_LARGE",
+          nonRetryable: true,
+          details: [{ error: { message: "too large", code: "COMPOSER_CONTINUATION_TOO_LARGE", type: "COMPOSER_CONTINUATION_TOO_LARGE" } }],
+        });
+        mockExecuteWorkflowAndWait.mockRejectedValue(
+          new WorkflowFailedError("failed", failure, "NON_RETRYABLE_FAILURE"),
+        );
+        const result = await run();
+        expect((result.error as unknown as { code?: string }).code).toBe(
+          "COMPOSER_CONTINUATION_TOO_LARGE",
+        );
+        expect(result.bag).toEqual({ inputField: "value" });
+      });
+
+      it("takes the failure's type as the code when details carry no error entry", async () => {
+        const failure = ApplicationFailure.create({
+          message: "coded",
+          type: "SOME_CODE",
+          nonRetryable: true,
+          details: [{ code: "SOME_CODE" }],
+        });
+        mockExecuteWorkflowAndWait.mockRejectedValue(
+          new WorkflowFailedError("failed", failure, "NON_RETRYABLE_FAILURE"),
+        );
+        expect(((await run()).error as unknown as { code?: string }).code).toBe("SOME_CODE");
+      });
+
+      it("finds the code deeper in the cause chain, as with a failed update", async () => {
+        const failure = ApplicationFailure.create({
+          message: "passed",
+          type: "COMPOSER_CHECKPOINT_PASSED",
+          nonRetryable: true,
+        });
+        mockExecuteWorkflowAndWait.mockRejectedValue(
+          Object.assign(new Error("update failed"), { cause: failure }),
+        );
+        expect(((await run()).error as unknown as { code?: string }).code).toBe(
+          "COMPOSER_CHECKPOINT_PASSED",
+        );
+      });
+
+      it("ignores a type that is not a code, such as an error class name", async () => {
+        const failure = ApplicationFailure.create({ message: "x", type: "TypeError" });
+        mockExecuteWorkflowAndWait.mockRejectedValue(
+          new WorkflowFailedError("failed", failure, "NON_RETRYABLE_FAILURE"),
+        );
+        expect(((await run()).error as unknown as { code?: string }).code).toBeUndefined();
+      });
+
+      it("returns a duplicate start in result.error rather than throwing", async () => {
+        const { WorkflowExecutionAlreadyStartedError } = await import("@temporalio/client");
+        mockExecuteWorkflow.mockRejectedValue(
+          new WorkflowExecutionAlreadyStartedError("already started", mockWorkflowId, "test-workflow"),
+        );
+        const result = await executeWorkflowTemporal(workflow, {}, {
+          workflowId: mockWorkflowId,
+          clientConfig: mockClientConfig,
+          startOnly: true,
+        });
+        expect(result.error).toBeInstanceOf(WorkflowExecutionAlreadyStartedError);
+      });
+
+      it("returns an empty bag from startOnly with USE_EXISTING, not this call's input", async () => {
+        mockExecuteWorkflow.mockResolvedValue({} as never);
+        const result = await executeWorkflowTemporal(workflow, { retried: "input" }, {
+          workflowId: mockWorkflowId,
+          clientConfig: mockClientConfig,
+          startOnly: true,
+          workflowIdConflictPolicy: "USE_EXISTING",
+        });
+        expect(result).toEqual({ bag: {}, error: undefined });
+      });
+
+      it("lets startWorkflowTemporal reject on a duplicate start", async () => {
+        const { WorkflowExecutionAlreadyStartedError } = await import("@temporalio/client");
+        mockExecuteWorkflow.mockRejectedValue(
+          new WorkflowExecutionAlreadyStartedError("already started", mockWorkflowId, "test-workflow"),
+        );
+        await expect(
+          startWorkflowTemporal(workflow, {}, { workflowId: mockWorkflowId, clientConfig: mockClientConfig }),
+        ).rejects.toBeInstanceOf(WorkflowExecutionAlreadyStartedError);
+      });
+    });
+
     it("should extract the bag from its own details entry", async () => {
       const workflow = {
         name: "test-workflow",
@@ -549,15 +646,8 @@ describe("executeWorkflowTemporal", () => {
       expect(result.error?.message).toMatch('Unknown checkpoint "myCheckpoint"');
     });
 
-    it("should use executeWorkflow (not executeWorkflowAndWait) when awaitCheckpoint is specified", async () => {
-      const mockExecuteUpdate = vi.fn().mockResolvedValue({ partialData: "value" });
-      const mockGetHandle = vi.fn().mockReturnValue({
-        executeUpdate: mockExecuteUpdate,
-      });
-      mockCreateTemporalClient.mockResolvedValue({
-        workflow: { getHandle: mockGetHandle },
-      } as any);
-      mockExecuteWorkflow.mockResolvedValue({} as any);
+    it("starts with Update-With-Start (not a separate start) when awaitCheckpoint is specified", async () => {
+      mockStartWorkflowWithUpdate.mockResolvedValue({ partialData: "value" });
 
       const workflow = {
         name: "test-workflow",
@@ -575,20 +665,15 @@ describe("executeWorkflowTemporal", () => {
         },
       );
 
-      // Should use executeWorkflow (fire and forget), not executeWorkflowAndWait
-      expect(mockExecuteWorkflow).toHaveBeenCalled();
+      // The start and the checkpoint Update travel together, so the handler is in place
+      // before any batch runs; there is no separate start for the Update to race.
+      expect(mockStartWorkflowWithUpdate).toHaveBeenCalled();
+      expect(mockExecuteWorkflow).not.toHaveBeenCalled();
       expect(mockExecuteWorkflowAndWait).not.toHaveBeenCalled();
     });
 
-    it("should call executeUpdate with checkpoint name", async () => {
-      const mockExecuteUpdate = vi.fn().mockResolvedValue({ data: "partial" });
-      const mockGetHandle = vi.fn().mockReturnValue({
-        executeUpdate: mockExecuteUpdate,
-      });
-      mockCreateTemporalClient.mockResolvedValue({
-        workflow: { getHandle: mockGetHandle },
-      } as any);
-      mockExecuteWorkflow.mockResolvedValue({} as any);
+    it("should send the checkpoint name as the Update's argument", async () => {
+      mockStartWorkflowWithUpdate.mockResolvedValue({ data: "partial" });
 
       const workflow = {
         name: "test-workflow",
@@ -606,24 +691,17 @@ describe("executeWorkflowTemporal", () => {
         },
       );
 
-      expect(mockExecuteUpdate).toHaveBeenCalledWith(
-        expect.anything(), // The update definition
+      expect(mockStartWorkflowWithUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
-          args: [{ checkpointName: "myCheckpoint" }],
+          workflowName: "test-workflow",
+          updateArgs: [{ checkpointName: "myCheckpoint" }],
         }),
       );
     });
 
     it("should return error when checkpoint times out", async () => {
       const neverResolves = new Promise(() => {});
-      const mockExecuteUpdate = vi.fn().mockReturnValue(neverResolves);
-      const mockGetHandle = vi.fn().mockReturnValue({
-        executeUpdate: mockExecuteUpdate,
-      });
-      mockCreateTemporalClient.mockResolvedValue({
-        workflow: { getHandle: mockGetHandle },
-      } as any);
-      mockExecuteWorkflow.mockResolvedValue({} as any);
+      mockStartWorkflowWithUpdate.mockReturnValue(neverResolves as never);
 
       // Use a tiny timeout so the test doesn't wait for the real 30s default
       const workflow = {
@@ -646,19 +724,15 @@ describe("executeWorkflowTemporal", () => {
       expect(result.error?.message).toBe(
         'Checkpoint "myCheckpoint" for workflow "test-workflow" timed out after 10ms',
       );
+      expect((result.error as unknown as { code?: string }).code).toBe(
+        "COMPOSER_CHECKPOINT_TIMEOUT",
+      );
       expect(result.bag).toEqual({ inputField: "value" });
     });
 
     it("should use DEFAULT_CHECKPOINT_TIMEOUT_MS when checkpoint has no custom timeout", async () => {
       const neverResolves = new Promise(() => {});
-      const mockExecuteUpdate = vi.fn().mockReturnValue(neverResolves);
-      const mockGetHandle = vi.fn().mockReturnValue({
-        executeUpdate: mockExecuteUpdate,
-      });
-      mockCreateTemporalClient.mockResolvedValue({
-        workflow: { getHandle: mockGetHandle },
-      } as any);
-      mockExecuteWorkflow.mockResolvedValue({} as any);
+      mockStartWorkflowWithUpdate.mockReturnValue(neverResolves as never);
 
       // Use a tiny custom timeout to test the mechanism without waiting 30s;
       // separately verify the default timeout is applied correctly below
@@ -687,14 +761,7 @@ describe("executeWorkflowTemporal", () => {
 
     it("should return partial bag from checkpoint", async () => {
       const partialBag = { step1Result: "done", step2Result: "pending" };
-      const mockExecuteUpdate = vi.fn().mockResolvedValue(partialBag);
-      const mockGetHandle = vi.fn().mockReturnValue({
-        executeUpdate: mockExecuteUpdate,
-      });
-      mockCreateTemporalClient.mockResolvedValue({
-        workflow: { getHandle: mockGetHandle },
-      } as any);
-      mockExecuteWorkflow.mockResolvedValue({} as any);
+      mockStartWorkflowWithUpdate.mockResolvedValue(partialBag);
 
       const workflow = {
         name: "test-workflow",
@@ -772,12 +839,7 @@ describe("executeWorkflowTemporal", () => {
         steps: [],
         checkpoints: [{ name: "ready", afterStep: "someStep" }],
       } as unknown as Workflow<any, any, any>;
-      mockExecuteWorkflow.mockResolvedValue({
-        workflowId: mockWorkflowId,
-      } as unknown as Awaited<ReturnType<typeof temporalClient.executeWorkflow>>);
-      mockCreateTemporalClient.mockResolvedValue({
-        workflow: { getHandle: () => ({ executeUpdate: async () => ({}) }) },
-      } as unknown as Awaited<ReturnType<typeof temporalClient.createTemporalClient>>);
+      mockStartWorkflowWithUpdate.mockResolvedValue({});
 
       await executeWorkflowTemporal(
         workflow,
@@ -790,7 +852,7 @@ describe("executeWorkflowTemporal", () => {
         },
       );
 
-      expect(mockExecuteWorkflow).toHaveBeenCalledWith(
+      expect(mockStartWorkflowWithUpdate).toHaveBeenCalledWith(
         expect.objectContaining({ versioningOverride }),
       );
     });

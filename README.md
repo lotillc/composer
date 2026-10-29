@@ -294,6 +294,82 @@ const { bag, error } = await composer.runAsyncWorkflow(workflow, data, {
 
 Checkpoint names are validated at compile-time -- using a name that doesn't exist on the workflow produces a type error.
 
+### Long-Lived Workflows (Async Only)
+
+By default an async workflow is pinned to the build that started it, which keeps it on code that can replay its history. Pinning is the wrong fit for a workflow that lives for days or weeks: the starting build's workers must stay deployed until it finishes, and each build that leaves a workflow behind holds a slot in Temporal's per-deployment version limit. A long-lived workflow is instead split into **stages**, and each stage ends with a continue-as-new:
+
+```typescript
+import { createWorkflow, defineWorkflowSignal, waitForSignal } from "@lotiai/composer";
+
+// `parse` validates a payload before it is sent; the payload type is inferred from it.
+export const approvalSignal = defineWorkflowSignal("approval", { parse: ApprovalSchema.parse });
+
+const awaitApproval = waitForSignal<ReviewBag>()({
+  name: "awaitApproval",
+  signal: approvalSignal,
+  needs: ["requestSentAt"], // ordering only
+  provides: ["approval"], // exactly one field; the payload type must match it
+  timeout: "21 days", // optional; omit to wait without limit
+  timeoutValue: { approved: false }, // optional; without it a timeout fails the node
+});
+
+export const review = createWorkflow<ReviewBag>("review")
+  .requires("requestId")
+  .build([sendRequest, awaitApproval, verifyOutcome])
+  .versioning("AUTO_UPGRADE")
+  .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+  .continueAsNew("verifying", { afterStep: awaitApproval });
+
+// Start with an ID you can signal later. `ifRunning: "useExisting"` makes a retried start
+// resolve against the running workflow instead of failing.
+await composer.startAsyncWorkflow(review, { requestId }, {
+  workflowId: requestId,
+  ifRunning: "useExisting",
+});
+
+// Deliver the response whenever it arrives. The dedupe key makes a retried delivery safe.
+await composer.signalAsyncWorkflow(requestId, approvalSignal, response, {
+  dedupeKey: response.eventId,
+});
+```
+
+**Stage boundaries.** `.continueAsNew(name, { afterStep })` ends the run after the batch containing `afterStep` and starts a new run with the bag carried forward. By default the new run's first task goes to the current build (`initialVersioningBehavior: "AUTO_UPGRADE"`). The whole bag carries over, so it travels in the next run's input. Temporal caps a single payload at 2 MB by default (`limit.blobSize.error`), so keep large data out of the bag: store it elsewhere and keep a reference. Composer measures everything a run carries forward: the bag, pending signals and remembered dedupe keys. Above 512 KB it logs a warning. Above 1.5 MB the workflow fails with `COMPOSER_CONTINUATION_TOO_LARGE` (exported as `CONTINUATION_TOO_LARGE_CODE`) instead of retrying forever against Temporal's limit. The measure is the JSON the default converter writes. A payload codec runs outside the workflow and can't be measured from inside it. So if your `dataConverter` grows payloads (a base64 envelope, encryption), lower `temporal.continuationBudgetBytes` to match by dividing the default by the growth factor: about 1,125,000 for a codec that adds a third, as base64 does. Raise it only if the server's `limit.blobSize.error` is raised as well. The next run resumes by stage **name**. A build writes a stage's `name` and reads its `name` and `aliases`, so rename in two deploys to keep rollback safe. First ship the old name with the new one as an alias: `.continueAsNew("old-name", { afterStep, aliases: ["new-name"] })`. Once no older build can run, swap them: `.continueAsNew("new-name", { afterStep, aliases: ["old-name"] })`. In each step, the previous build can read what the next one writes. To remove one, add its name to the aliases of the boundary its in-flight runs should resume after. A name that no boundary or alias claims leaves those runs retrying until a build that knows it is deployed. A resumed run never repeats a step an earlier run ran. It also never runs a step that a newer build adds before the stage it resumes at, so a run already past that point gets nothing from the new step. Add new steps after the latest stage in-flight runs may be at, or have their consumers tolerate the missing field. `runAsyncWorkflow` follows the whole chain and returns the final run's result. Each run shows its stage, and any signal it is waiting for, as the workflow's current details, which Temporal UI and `temporal workflow describe` display. Sync execution ignores boundaries.
+
+**Durable waits.** `waitForSignal` blocks the workflow on a Temporal condition, plus a timer when a `timeout` is set. While it waits it holds no worker slot. A signal that arrives before its wait is reached, even in an earlier stage, is kept and consumed when the wait is reached. A workflow accepts only signal names some wait in it declares, in any stage; any other signal is dropped with a warning. Unconsumed signals carry across continue-as-new, up to `maxPendingSignals` per signal name (default 100), with the oldest dropped first. A signal has one queue, so every wait on it must declare the same cap; the builder rejects waits that disagree. A timeout without `timeoutValue` fails the node with `COMPOSER_SIGNAL_WAIT_TIMEOUT` (exported as `SIGNAL_WAIT_TIMEOUT_CODE`), which reaches `onError` like any step failure. Without `onError`, `result.error` is the batch's `WORKFLOW_BATCH_ERROR`, and the wait's own code is on its entry in `result.error.errors`. `timeoutValue` must be plain JSON data, since it is stored in the workflow plan; a `Date`, `Map`, `bigint` or class instance is rejected where the wait is defined. A wait must be alone in its batch: no step, fan-out or other wait may run alongside it. The builder rejects a workflow that breaks this and names what the wait would share its batch with. A wait can block for weeks, so a shared batch would hold up its siblings' failures and any checkpoint after it. To fix it, give the wait a `needs` on a field its sibling provides, as `needs: ["requestSentAt"]` does above, so it runs after them. A `timeout` must be a positive duration. Under `runSyncWorkflow`, a wait node fails.
+
+A checkpoint is answered only by the run that reaches it. Once that run has continued as new, `awaitCheckpoint` for it fails with `COMPOSER_CHECKPOINT_PASSED`, rather than answering with a later stage's bag.
+
+`signalAsyncWorkflow` runs the signal's `parse` first and sends nothing if it throws. With a `dedupeKey` (at most 256 bytes as JSON, escapes included), the workflow drops a later signal carrying the same name and key, across stages, for the most recent 1,000 keys. Take the key from the event being delivered, not from each attempt. A signal sent to a workflow that is no longer running rejects with `WorkflowNotFoundError`; that includes a workflow that has already finished because its wait timed out. A signal that arrives after its wait has timed out and taken its `timeoutValue` stays queued, and a later wait on the same signal consumes it.
+
+**Versioning.** `.versioning("AUTO_UPGRADE")` declares on the workflow itself that its runs move to the current build as it changes. Such a workflow is started **without** a build pin: a start-time pin would outrank the declaration and be inherited by every continue-as-new run. So is any workflow with stage boundaries, whatever it declares, since an inherited pin would override each boundary's routing. So is a workflow that fans out, at any depth, to a staged or `AUTO_UPGRADE` child: a child inherits its parent's start-time pin. A parent already running under an older build keeps the pin it started with, and so do the children it starts. A staged `"PINNED"` workflow keeps each run on one build and moves to the current build at each boundary. Workflows without stage boundaries that declare nothing, or `"PINNED"`, are still pinned to the starting build. Keep these in mind:
+
+- Replay compatibility is required **within a stage**. A run can move to a new build in the middle of a stage, and that build must replay the run's history. Changing the steps of a stage, or upgrading Composer, while runs are in that stage can fail their replay. Keep a stage that sits waiting for a long time small, ideally a single `waitForSignal`, and check every build with the replay check below.
+- An unpinned start sends the first task to the current build, not the caller's. If you deploy a new workflow type and start it before its build becomes current, its first tasks fail and retry until promotion.
+- On a worker without a `buildId` (unversioned, typically local dev), the declaration is left out of the bundle, and so is each stage boundary's next-run behavior. Temporal rejects a versioning behavior from an unversioned worker.
+- Checkpoints must come no later than the first stage boundary.
+- `use()` composes a workflow's steps, not its stage boundaries or versioning declaration. It refuses a workflow that declares stage boundaries, which would otherwise be dropped; declare them on the composing workflow instead, whose `.continueAsNew()` accepts a step of a composed workflow. The composing workflow's own `.versioning()` applies.
+- `.onError()` ends the builder chain, so call it last.
+- Temporal marks versioning behavior across continue-as-new as experimental.
+
+#### Checking Replay Before You Deploy
+
+Rolling back is only cheap if the build you roll back to can still replay the runs the newer build touched. The same goes for rolling forward. `replayWorkflowHistories` checks this offline, with no Temporal server and no activities: it bundles exactly what your workflow worker runs and replays saved histories against it.
+
+```typescript
+// In CI, before deploying: histories captured from the build serving long-lived workflows.
+const { replayed, failures } = await composer.replayWorkflowHistories({
+  workflows,
+  histories: client.workflow
+    .list({ query: "WorkflowType = 'review' AND ExecutionStatus = 'Running'" })
+    .intoHistories(),
+});
+if (failures.length > 0) {
+  throw new Error(`${failures.length} of ${replayed} in-flight histories no longer replay`);
+}
+```
+
+The composer method applies the composer's own data converter and workflow interceptors. The standalone `replayWorkflowHistories` export takes them as options. Histories can also be saved files, either JSON from `temporal workflow show --output json` or `History` objects. A failure means that deploying this build, or rolling back from it, would fail the in-flight runs.
+
 ### Error Handling
 
 Attach an error handler to workflows for domain-specific error recovery:
@@ -762,6 +838,13 @@ expect(findUndeclaredWorkerProfiles(allWorkflows, buildConfig)).toEqual([]);
 | `createWorkflow` | Create a workflow with compile-time dependency validation |
 | `step` | Factory for creating type-safe steps |
 | `use` | Compose a child workflow into a parent |
+| `waitForSignal` | Factory for a durable wait on a signal (async only) |
+| `defineWorkflowSignal` | Define a typed signal shared by a workflow and the code that delivers it |
+| `SIGNAL_WAIT_TIMEOUT_CODE` | Error code of a signal wait that timed out without a fallback |
+| `CONTINUATION_TOO_LARGE_CODE` | Error code of a staged workflow whose carried state is over budget |
+| `INVALID_SIGNAL_WAIT_CODE` | Error code of a signal wait the workflow cannot run (bad timeout, or not alone in its batch) |
+| `UNKNOWN_CHECKPOINT_CODE`, `CHECKPOINT_PASSED_CODE`, `CHECKPOINT_TIMEOUT_CODE` | Error codes `awaitCheckpoint` can return: a checkpoint the running build lacks, one an earlier run passed, or one not reached in time |
+| `replayWorkflowHistories` | Replay saved workflow histories against a build, offline, to catch replay-breaking changes |
 | `defineBuildConfig` | Type-safe build config helper (also available from `@lotiai/composer/build-config`) |
 | `startAllWorkers` | Start both Temporal workers in one process |
 | `startWorkflowWorker` | Start a Temporal workflow worker |

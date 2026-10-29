@@ -53,6 +53,96 @@ function evaluateWorkflowSource(code: string): Record<string, { name: string }> 
 }
 
 describe("writeWorkflowSourceFile", () => {
+  const upgrading = createWorkflow<ChildBag>("test-upgrading-workflow")
+    .requires("input")
+    .build([childStep])
+    .versioning("AUTO_UPGRADE");
+
+  it("emits a workflow's versioning behavior for a versioned worker", async () => {
+    const code = await readFile(
+      await writeWorkflowSourceFile([upgrading], { workerVersioning: true }),
+      "utf-8",
+    );
+    expect(code).toContain('"versioningBehavior":"AUTO_UPGRADE"');
+  });
+
+  // Temporal's core SDK rejects every completion that carries a versioning behavior from
+  // an unversioned worker, which would leave the workflow retrying its first task forever.
+  it("drops a workflow's versioning behavior for an unversioned worker", async () => {
+    const code = await readFile(await writeWorkflowSourceFile([upgrading]), "utf-8");
+    expect(code).not.toContain("versioningBehavior");
+  });
+
+  it("writes a continuation budget into staged plans only, and rejects a bad one", async () => {
+    const plain = createWorkflow<ChildBag>("test-plain-budget").requires("input").build([childStep]);
+    const code = await readFile(
+      await writeWorkflowSourceFile([plain, upgrading], { continuationBudgetBytes: 900_000 }),
+      "utf-8",
+    );
+    expect(code).not.toContain("continuationBudgetBytes");
+
+    interface StagedBag {
+      input: string;
+      output: string;
+      after: string;
+    }
+    const first = step<StagedBag>()({
+      name: "budgetFirst",
+      needs: ["input"],
+      provides: ["output"],
+      run: async () => ({ output: "o" }),
+    });
+    const after = step<StagedBag>()({
+      name: "budgetAfter",
+      needs: ["output"],
+      provides: ["after"],
+      run: async () => ({ after: "a" }),
+    });
+    const staged = createWorkflow<StagedBag>("test-staged-budget")
+      .requires("input")
+      .build([first, after])
+      .continueAsNew("later", { afterStep: first });
+    const stagedCode = await readFile(
+      await writeWorkflowSourceFile([staged], { continuationBudgetBytes: 900_000 }),
+      "utf-8",
+    );
+    expect(stagedCode).toContain('"continuationBudgetBytes":900000');
+    await expect(writeWorkflowSourceFile([plain], { continuationBudgetBytes: 0 })).rejects.toThrow(
+      "continuationBudgetBytes must be a positive integer",
+    );
+  });
+
+  it("drops stage boundaries' next-run behavior for an unversioned worker", async () => {
+    interface StagedBag {
+      input: string;
+      first: string;
+      second: string;
+    }
+    const first = step<StagedBag>()({
+      name: "first",
+      needs: ["input"],
+      provides: ["first"],
+      run: async () => ({ first: "1" }),
+    });
+    const second = step<StagedBag>()({
+      name: "second",
+      needs: ["first"],
+      provides: ["second"],
+      run: async () => ({ second: "2" }),
+    });
+    const staged = createWorkflow<StagedBag>("test-staged-workflow")
+      .requires("input")
+      .build([first, second])
+      .continueAsNew("after-first", { afterStep: first });
+    const versioned = await readFile(
+      await writeWorkflowSourceFile([staged], { workerVersioning: true }),
+      "utf-8",
+    );
+    expect(versioned).toContain('"initialVersioningBehavior":"AUTO_UPGRADE"');
+    const unversioned = await readFile(await writeWorkflowSourceFile([staged]), "utf-8");
+    expect(unversioned).toContain('"stageBoundaries":[{"name":"after-first","afterBatch":0}]');
+  });
+
   it("should include child workflows referenced by fanOut steps", async () => {
     const outputPath = await writeWorkflowSourceFile([parentWorkflow]);
     const code = await readFile(outputPath, "utf-8");

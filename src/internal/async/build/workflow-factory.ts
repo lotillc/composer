@@ -19,8 +19,26 @@
 
 import * as wf from "@temporalio/workflow";
 import type { DurationString } from "../../dag-sync-step.js";
+// Type-only, so nothing from the workflow module reaches the sandbox bundle.
+import type {
+  StageInitialVersioningBehavior,
+  WorkflowVersioningBehavior,
+} from "../../dag-sync-workflow.js";
+// Pure, with no imports beyond types and the leaf duration module, so safe in the sandbox.
+import { DEFAULT_MAX_PENDING_SIGNALS } from "../../dag-sync-signal.js";
+import { durationToMs } from "../../duration.js";
+import { jsonStringBytes, utf8Length } from "../../json-size.js";
 import { safeErrorName } from "../../error-for-log.js";
-import { STEP_NOT_READY_CODE, STEP_POLL_TIMEOUT_CODE } from "../../poll-codes.js";
+import { assignOwn, setOwn } from "../../own-properties.js";
+import {
+  CHECKPOINT_PASSED_CODE,
+  CONTINUATION_TOO_LARGE_CODE,
+  UNKNOWN_CHECKPOINT_CODE,
+  INVALID_SIGNAL_WAIT_CODE,
+  SIGNAL_WAIT_TIMEOUT_CODE,
+  STEP_NOT_READY_CODE,
+  STEP_POLL_TIMEOUT_CODE,
+} from "../../workflow-codes.js";
 
 /**
  * Input structure for our generated Temporal workflows.
@@ -34,6 +52,55 @@ export interface WorkflowInput {
 
   /** Deployment environment for activities that need environment-aware behavior */
   environment?: string;
+
+  /**
+   * State carried from the previous run of a staged workflow. Set only on runs started by
+   * continue-as-new at a stage boundary; never passed to activities.
+   */
+  continuation?: WorkflowContinuation;
+}
+
+/** A signal payload as a continuation carries it; see `WorkflowContinuation.signals`. */
+export interface CarriedSignal {
+  payload?: unknown;
+}
+
+/** Format version written into every continuation by this build. */
+export const CONTINUATION_VERSION = 1;
+
+/**
+ * State a staged workflow carries across continue-as-new.
+ *
+ * This is a wire format between builds: the build that ends a run writes it and whichever
+ * build is current reads it, possibly an older one after a rollback. Change it additively
+ * only -- never remove, rename or repurpose a field -- and read every field tolerantly, as
+ * a continuation written by another build may lack fields this one knows or carry fields it
+ * does not. Bump `version` only for a change an older reader must not misread: a build
+ * refuses a newer version, failing the workflow task until a build that reads it runs it.
+ */
+export interface WorkflowContinuation {
+  /** Format version of the build that wrote this continuation. Absent means 1. */
+  version?: number;
+  /** Name of the stage boundary the previous run ended at. */
+  stage: string;
+  /**
+   * Bag fields carried forward. Initial data travels in `initialData`; a field here that
+   * shares a name with initial data is a value the workflow changed, and wins.
+   */
+  bag?: Record<string, unknown>;
+  /** Steps that already ran in earlier runs; never run again even if the plan moved them. */
+  completedSteps?: string[];
+  /**
+   * Signals received but not yet consumed by a wait, oldest first, by signal name. Each
+   * payload is wrapped as `{ payload }`: JSON writes an `undefined` array element as `null`,
+   * while a missing `payload` key reads back as `undefined`, as the signal was sent.
+   */
+  signals?: Record<string, CarriedSignal[]>;
+  /**
+   * Signals already received with a dedupe key, oldest first. Each entry is the JSON
+   * encoding of `[signalName, dedupeKey]`, so no name or key can collide with another pair.
+   */
+  seenSignalKeys?: string[];
 }
 
 /**
@@ -124,38 +191,6 @@ const POLL_JITTER = 0.2;
 
 type PollConfig = NonNullable<StepActivityConfig["poll"]>;
 
-const DURATION_UNIT_MS: Record<string, number> = {
-  ms: 1,
-  s: 1000,
-  second: 1000,
-  seconds: 1000,
-  m: 60_000,
-  minute: 60_000,
-  minutes: 60_000,
-  h: 3_600_000,
-  hour: 3_600_000,
-  hours: 3_600_000,
-  d: 86_400_000,
-  day: 86_400_000,
-  days: 86_400_000,
-};
-
-/**
- * Parses a `DurationString` to milliseconds.
- *
- * Hand-rolled rather than imported: this module is bundled into Temporal's deterministic
- * sandbox and takes nothing but `@temporalio/workflow`. The numeric part accepts
- * everything the type's `${number}` admits -- sign, leading dot, exponent -- because the
- * type permits `".5s"` and `"1e3ms"` and a narrower parser would reject valid input.
- */
-function durationToMs(duration: DurationString): number {
-  const match = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*([a-z]+)$/i.exec(duration.trim());
-  const unitMs = match ? DURATION_UNIT_MS[match[2]!.toLowerCase()] : undefined;
-  if (!match || unitMs === undefined) {
-    throw new Error(`Unparseable duration: ${duration}`);
-  }
-  return Number(match[1]) * unitMs;
-}
 
 /**
  * True when a step signalled "not ready" rather than failing.
@@ -255,6 +290,220 @@ async function runWithPolling<T>(
       intervalMs = Math.min(intervalMs * coefficient, maximumIntervalMs);
     }
   }
+}
+
+// ============================================================================
+// Durable signal waits
+// ============================================================================
+
+
+/**
+ * Dedupe keys remembered across runs. A key older than this many later keys can be
+ * accepted again, so the window must outlast any plausible retry of the same delivery.
+ */
+const MAX_SEEN_SIGNAL_KEYS = 1000;
+
+/**
+ * Largest dedupe key the workflow remembers, in UTF-8 bytes of its JSON encoding (escapes
+ * included). Keys are carried across every continue-as-new, so this times
+ * `MAX_SEEN_SIGNAL_KEYS` -- about 256 KB -- must stay a small part of the payload budget;
+ * a limit in characters would not, since one escaped control character is six bytes.
+ * `signalAsyncWorkflow` rejects larger keys; one that reaches the workflow some other way is
+ * ignored, and the signal is accepted without dedupe.
+ */
+export const MAX_DEDUPE_KEY_BYTES = 256;
+
+/**
+ * Carried state above which a continue-as-new is refused. Temporal's default cap on one
+ * payload is 2 MB (`limit.blobSize.error`); this leaves room for the rest of the input and
+ * for a payload codec that grows what it encodes.
+ */
+export const CONTINUATION_BUDGET_BYTES = 1_500_000;
+
+/** Carried state above which a continue-as-new logs a warning (Temporal warns at 512 KB). */
+const CONTINUATION_WARN_BYTES = 512 * 1024;
+
+/** JSON replacer giving non-JSON values a size close to what a converter would write. */
+function measurableValue(_key: string, value: unknown): unknown {
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Map) return [...value.entries()];
+  if (value instanceof Set) return [...value.values()];
+  return value;
+}
+
+
+/** Delivery metadata `signalAsyncWorkflow` sends as the signal's second argument. */
+export interface SignalDeliveryMeta {
+  /** Caller-chosen key; a second signal with the same name and key is dropped. */
+  dedupeKey?: string;
+}
+
+/**
+ * Received, unconsumed signals, carried across continue-as-new.
+ *
+ * Accepts only the signal names some wait in this workflow declares (any stage, not just
+ * the current one), so a stray or hostile sender cannot grow the carried state. Queues a
+ * previous run carried in are kept even when this build no longer declares them, so a
+ * rollback to a build that still waits on them loses nothing.
+ */
+interface SignalInbox {
+  queues: Map<string, unknown[]>;
+  /** Maximum pending payloads per declared signal name. */
+  caps: Map<string, number>;
+  seenKeys: string[];
+  seenKeySet: Set<string>;
+}
+
+function createSignalInbox(plan: WorkflowPlan, continuation?: WorkflowContinuation): SignalInbox {
+  const caps = new Map<string, number>();
+  for (const batch of plan.batches) {
+    for (const wait of batch.signalWaits ?? []) {
+      const cap = wait.maxPendingSignals ?? DEFAULT_MAX_PENDING_SIGNALS;
+      caps.set(wait.signalName, Math.max(cap, caps.get(wait.signalName) ?? 0));
+    }
+  }
+  const seenKeys = [...(continuation?.seenSignalKeys ?? [])];
+  // A build may lower a signal's cap while runs carry longer queues; the newest payloads
+  // within the current cap are kept. Undeclared queues are carried as they are.
+  return {
+    queues: new Map(
+      Object.entries(continuation?.signals ?? {}).map(([name, carried]) => {
+        const queue = carried.map((entry) => {
+          // Every entry is written as an object. Anything else is not this format, so fail
+          // the workflow task, retried until a build that reads it runs it, rather than
+          // resume with payloads silently lost.
+          if (entry === null || typeof entry !== "object") {
+            throw new Error(`Workflow "${plan.name}": carried signal "${name}" is malformed`);
+          }
+          return entry.payload;
+        });
+        const cap = caps.get(name);
+        return [name, cap === undefined ? queue : queue.slice(-cap)];
+      }),
+    ),
+    caps,
+    seenKeys,
+    seenKeySet: new Set(seenKeys),
+  };
+}
+
+function receiveSignal(
+  inbox: SignalInbox,
+  signalName: string,
+  payload: unknown,
+  meta: SignalDeliveryMeta | undefined,
+): void {
+  const cap = inbox.caps.get(signalName);
+  if (cap === undefined) {
+    wf.log.warn("Dropped a signal no wait in this workflow declares", { signalName });
+    return;
+  }
+
+  let dedupeKey: string | undefined;
+  if (typeof meta?.dedupeKey === "string") {
+    if (jsonStringBytes(meta.dedupeKey) > MAX_DEDUPE_KEY_BYTES) {
+      wf.log.warn("Ignored a dedupe key larger than the limit; accepting the signal without it", {
+        signalName,
+        limitBytes: MAX_DEDUPE_KEY_BYTES,
+      });
+    } else {
+      dedupeKey = JSON.stringify([signalName, meta.dedupeKey]);
+    }
+  }
+  if (dedupeKey !== undefined) {
+    if (inbox.seenKeySet.has(dedupeKey)) {
+      wf.log.info("Dropped a duplicate signal", { signalName, dedupeKey: meta!.dedupeKey });
+      return;
+    }
+    inbox.seenKeys.push(dedupeKey);
+    inbox.seenKeySet.add(dedupeKey);
+    if (inbox.seenKeys.length > MAX_SEEN_SIGNAL_KEYS) {
+      inbox.seenKeySet.delete(inbox.seenKeys.shift()!);
+    }
+  }
+
+  const queue = inbox.queues.get(signalName) ?? [];
+  queue.push(payload);
+  if (queue.length > cap) {
+    queue.splice(0, queue.length - cap);
+    wf.log.warn("Signal inbox full; dropped the oldest pending payload", {
+      signalName,
+      limit: cap,
+    });
+  }
+  inbox.queues.set(signalName, queue);
+}
+
+/**
+ * Waits for the next payload of `wait.signalName` and returns the node's output.
+ *
+ * The wait is a workflow condition, optionally bounded by a durable timer, so it costs no
+ * worker slot however long it lasts. It is always alone in its batch, so nothing else in
+ * the workflow is held up behind it.
+ */
+async function runSignalWait(
+  wait: SignalWaitBatchEntry,
+  inbox: SignalInbox,
+): Promise<Record<string, unknown>> {
+  const hasPending = () => (inbox.queues.get(wait.signalName)?.length ?? 0) > 0;
+  const timeoutMs = wait.timeout === undefined ? undefined : durationToMs(wait.timeout);
+  if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
+    // `waitForSignal` rejects this where the wait is defined; a hand-built plan can still
+    // carry it. Fail the node, not the workflow task, so it reaches onError rather than
+    // retrying forever.
+    throw wf.ApplicationFailure.create({
+      type: INVALID_SIGNAL_WAIT_CODE,
+      message: `Signal wait "${wait.name}": timeout must be a positive duration, got ${wait.timeout}`,
+      details: [{ code: INVALID_SIGNAL_WAIT_CODE, data: { stepName: wait.name } }],
+      nonRetryable: true,
+    });
+  }
+  const deadlineMs = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
+
+  for (;;) {
+    if (hasPending()) {
+      return { [wait.provides]: inbox.queues.get(wait.signalName)!.shift() };
+    }
+    if (deadlineMs === undefined) {
+      await wf.condition(hasPending);
+      continue;
+    }
+    const remainingMs = deadlineMs - Date.now();
+    if (remainingMs > 0 && (await wf.condition(hasPending, remainingMs))) continue;
+
+    if (wait.hasTimeoutValue) {
+      wf.log.info("Signal wait timed out; using its timeout value", {
+        stepName: wait.name,
+        signalName: wait.signalName,
+      });
+      return { [wait.provides]: wait.timeoutValue };
+    }
+    throw wf.ApplicationFailure.create({
+      type: SIGNAL_WAIT_TIMEOUT_CODE,
+      message: `Signal wait "${wait.name}" got no "${wait.signalName}" signal within ${wait.timeout}`,
+      details: [
+        {
+          code: SIGNAL_WAIT_TIMEOUT_CODE,
+          data: { stepName: wait.name, signalName: wait.signalName, timeout: wait.timeout },
+        },
+      ],
+      nonRetryable: true,
+    });
+  }
+}
+
+/**
+ * Fails the whole workflow with a classified error, in the same details layout a failed
+ * batch uses (`[{ error }]`), so the client reports its code like any other failure. Carries
+ * no bag: these failures come before the bag matters, or because it is too big to send.
+ */
+function workflowFailure(code: string, message: string, data: Record<string, unknown>): Error {
+  return wf.ApplicationFailure.create({
+    type: code,
+    message,
+    details: [{ error: { message, code, type: code, data } }],
+    nonRetryable: true,
+  });
 }
 
 const WORKFLOW_ERROR_CODE = /^[A-Z0-9_]{2,50}$/;
@@ -446,6 +695,44 @@ export interface StepBatch {
 
   /** FanOut entries in this batch (execute in parallel alongside steps) */
   fanOuts?: FanOutBatchEntry[];
+
+  /** Signal waits in this batch (wait in parallel alongside steps) */
+  signalWaits?: SignalWaitBatchEntry[];
+}
+
+/**
+ * A durable wait in a batch: blocks until the named signal arrives, then provides its
+ * payload as a single bag field.
+ */
+export interface SignalWaitBatchEntry {
+  /** Wait node name */
+  name: string;
+  /** Signal to consume */
+  signalName: string;
+  /** The one bag field the payload is written to */
+  provides: string;
+  /** Bound on the wait; unset means no limit */
+  timeout?: DurationString;
+  /** Field value on timeout, when `hasTimeoutValue` */
+  timeoutValue?: unknown;
+  /** Without a timeout value, a timeout fails the node */
+  hasTimeoutValue: boolean;
+  /** Pending payloads of this signal kept for later waits; defaults to 100 */
+  maxPendingSignals?: number;
+}
+
+/**
+ * A stage boundary in the plan: after `afterBatch`, the run continues as new.
+ */
+export interface StageBoundaryPlanEntry {
+  /** Stage name the next run resumes at */
+  name: string;
+  /** 0-indexed batch the boundary follows */
+  afterBatch: number;
+  /** Versioning behavior of the next run's first task; absent on unversioned workers */
+  initialVersioningBehavior?: StageInitialVersioningBehavior;
+  /** Earlier names of this stage; a continuation carrying one resumes here */
+  aliases?: string[];
 }
 
 /**
@@ -484,6 +771,21 @@ export interface WorkflowPlan {
     /** Timeout in milliseconds for awaiting this checkpoint */
     timeout: number;
   }>;
+
+  /** Stage boundaries, in batch order, at which the run continues as new. */
+  stageBoundaries?: StageBoundaryPlanEntry[];
+
+  /**
+   * Worker Versioning behavior declared by the workflow, applied with
+   * `setWorkflowOptions`. Unset leaves the worker default in force.
+   */
+  versioningBehavior?: WorkflowVersioningBehavior;
+
+  /**
+   * Carried-state budget for continue-as-new, from `TemporalConfig.continuationBudgetBytes`.
+   * Unset uses `CONTINUATION_BUDGET_BYTES`.
+   */
+  continuationBudgetBytes?: number;
 }
 
 /**
@@ -542,20 +844,118 @@ export const awaitCheckpointUpdate = wf.defineUpdate<
  * @returns A Temporal workflow function ready for worker registration
  */
 export function createWorkflowFunction(plan: WorkflowPlan) {
-  return async function temporalWorkflow(input: WorkflowInput): Promise<TemporalWorkflowResult> {
+  const temporalWorkflow = async function temporalWorkflow(
+    input: WorkflowInput,
+  ): Promise<TemporalWorkflowResult> {
     const workflowId = wf.workflowInfo().workflowId;
+    const continuation = input.continuation;
 
     wf.log.info("Starting workflow execution", {
       workflowId: wf.workflowInfo().workflowId,
       workflowName: plan.name,
       initialDataKeys: Object.keys(input.initialData),
+      ...(continuation && { resumingStage: continuation.stage }),
     });
 
-    // Initialize bag with initial data
-    const bag: Record<string, any> = { ...input.initialData };
+    // `generateWorkflowPlan` only emits a wait alone in its batch; a hand-built plan might
+    // not. Sharing a batch, a wait would hold its siblings' results until its signal came, so
+    // the plan is refused before anything runs.
+    for (const [index, batch] of plan.batches.entries()) {
+      const waits = batch.signalWaits?.length ?? 0;
+      if (waits > 0 && waits + batch.steps.length + (batch.fanOuts?.length ?? 0) > 1) {
+        throw workflowFailure(
+          INVALID_SIGNAL_WAIT_CODE,
+          `Workflow "${plan.name}": batch ${index + 1} has a signal wait that is not alone`,
+          { batchNumber: index + 1 },
+        );
+      }
+    }
+
+    // Activities get the input without the continuation: the carried bag is already split
+    // into each step's own inputs, and repeating it would bloat every activity payload.
+    const { continuation: _continuation, ...activityInput } = input;
+
+    if (continuation && (continuation.version ?? 1) > CONTINUATION_VERSION) {
+      // A version is bumped only for a change an older reader must not misread, so this
+      // build must not resume it. Thrown as a plain Error, this fails the workflow task,
+      // and Temporal retries it until a build that reads this version picks it up.
+      wf.log.error("Cannot resume a continuation written by a newer format", {
+        version: continuation.version,
+        supported: CONTINUATION_VERSION,
+      });
+      throw new Error(
+        `Workflow "${plan.name}" cannot resume a continuation of format version ` +
+          `${continuation.version}; this build reads up to ${CONTINUATION_VERSION}`,
+      );
+    }
+
+    // Initialize bag with initial data, plus whatever an earlier run carried forward
+    const bag: Record<string, any> = assignOwn(assignOwn({}, input.initialData), continuation?.bag);
 
     // Track which checkpoints have been reached
     const reachedCheckpoints = new Set<string>();
+    // The bag as it stood when each checkpoint was reached. A request that arrives later --
+    // a retried start with `ifRunning: "useExisting"`, say -- gets that, not the live bag.
+    const checkpointSnapshots = new Map<string, Record<string, unknown>>();
+    // Checkpoints an earlier run of this workflow reached; their snapshots are gone.
+    const checkpointsPassedEarlier = new Set<string>();
+
+    // A resumed run starts after the stage boundary its predecessor ended at. The stage is
+    // found by name, which is stable across builds; batch indices are not.
+    let firstBatchIndex = 0;
+    const completedSteps = new Set<string>(continuation?.completedSteps ?? []);
+    if (continuation) {
+      const stage = plan.stageBoundaries?.find(
+        (b) => b.name === continuation.stage || (b.aliases?.includes(continuation.stage) ?? false),
+      );
+      if (!stage) {
+        // Thrown as a plain Error, this fails the workflow task rather than the workflow,
+        // so Temporal retries it until a build that knows the stage picks it up.
+        const known = plan.stageBoundaries?.map((b) => b.name).join(", ") ?? "none";
+        wf.log.error("Cannot resume at unknown stage", {
+          workflowName: plan.name,
+          stage: continuation.stage,
+          knownStages: known,
+        });
+        throw new Error(
+          `Workflow "${plan.name}" cannot resume at unknown stage "${continuation.stage}". ` +
+            `Known stages: [${known}]`,
+        );
+      }
+      firstBatchIndex = stage.afterBatch + 1;
+      // Checkpoints all precede the first boundary, so a resumed run has passed them. Its bag
+      // is the stage's, not the checkpoint's -- it may hold later outputs -- so a late
+      // awaitCheckpoint is refused at once rather than blocking forever or answering with
+      // the wrong snapshot.
+      for (const checkpoint of plan.checkpoints ?? []) {
+        if (checkpoint.afterBatch <= stage.afterBatch) checkpointsPassedEarlier.add(checkpoint.name);
+      }
+    }
+
+    // Staged or waiting workflows take signals into an inbox that outlives the run. The
+    // handler catches every name so an undeclared one is dropped visibly, not left buffered
+    // in the SDK to vanish at continue-as-new.
+    const usesSignals =
+      (plan.stageBoundaries?.length ?? 0) > 0 ||
+      plan.batches.some((batch) => (batch.signalWaits?.length ?? 0) > 0);
+    const inbox = createSignalInbox(plan, continuation);
+
+    // Shown by Temporal UI and describe, so an operator can see where a long-lived run is
+    // without decoding its input. A stage is named by the boundary that begins it.
+    const waitingOn = new Set<string>();
+    const showDetails = () => {
+      if (!usesSignals) return;
+      const stage = continuation?.stage ?? "(first stage)";
+      const waits = [...waitingOn].map((name) => `"${name}"`).join(", ");
+      wf.setCurrentDetails(`Stage: ${stage}${waits ? `\nWaiting for signal: ${waits}` : ""}`);
+    };
+    showDetails();
+
+    if (usesSignals) {
+      wf.setDefaultSignalHandler((signalName, ...args) => {
+        receiveSignal(inbox, signalName, args[0], args[1] as SignalDeliveryMeta | undefined);
+      });
+    }
 
     // Set up checkpoint update handler if workflow has checkpoints defined
     // The handler blocks until the requested checkpoint is reached, then returns the bag state
@@ -565,10 +965,26 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
         const checkpoint = plan.checkpoints?.find((c) => c.name === checkpointName);
         if (!checkpoint) {
           const validNames = plan.checkpoints?.map((c) => c.name).join(", ") ?? "none";
-          throw new Error(
-            `Unknown checkpoint "${checkpointName}" for workflow "${plan.name}". ` +
+          // An ApplicationFailure fails only this Update. A plain Error thrown from an
+          // update handler would fail the workflow task, and Temporal would retry it --
+          // redelivering the Update each time -- stalling the whole run.
+          throw wf.ApplicationFailure.create({
+            type: UNKNOWN_CHECKPOINT_CODE,
+            message:
+              `Unknown checkpoint "${checkpointName}" for workflow "${plan.name}". ` +
               `Valid checkpoints: [${validNames}]`,
-          );
+            nonRetryable: true,
+          });
+        }
+
+        if (checkpointsPassedEarlier.has(checkpointName)) {
+          throw wf.ApplicationFailure.create({
+            type: CHECKPOINT_PASSED_CODE,
+            message:
+              `Checkpoint "${checkpointName}" of workflow "${plan.name}" was reached by an ` +
+              `earlier run, which has since continued as new; its snapshot is no longer available`,
+            nonRetryable: true,
+          });
         }
 
         wf.log.debug("Awaiting checkpoint", {
@@ -587,12 +1003,12 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
         });
 
         // Return a snapshot of the bag at this checkpoint
-        return { ...bag };
+        return checkpointSnapshots.get(checkpointName) ?? assignOwn({}, bag);
       });
     }
 
     // Execute batches sequentially
-    for (let batchIndex = 0; batchIndex < plan.batches.length; batchIndex++) {
+    for (let batchIndex = firstBatchIndex; batchIndex < plan.batches.length; batchIndex++) {
       const batch = plan.batches[batchIndex]!;
       const batchNumber = batchIndex + 1;
 
@@ -651,12 +1067,14 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
 
       // Step promises
       for (const step of batch.steps) {
+        // An earlier run already ran it; a plan change may have moved it past the boundary.
+        if (completedSteps.has(step.name)) continue;
         allNames.push(step.name);
         allPromises.push(
           (async (): Promise<BatchResult> => {
             const stepInput: Record<string, any> = {};
             for (const neededField of step.needs) {
-              stepInput[neededField] = bag[neededField];
+              setOwn(stepInput, neededField, bag[neededField]);
             }
 
             wf.log.debug(`Executing step activity`, {
@@ -676,8 +1094,8 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
 
             const poll = step.activityConfig?.poll;
             const stepOutput = poll
-              ? await runWithPolling(step.name, poll, () => activityFn(input, stepInput))
-              : await activityFn(input, stepInput);
+              ? await runWithPolling(step.name, poll, () => activityFn(activityInput, stepInput))
+              : await activityFn(activityInput, stepInput);
 
             wf.log.debug(`Step completed`, {
               stepName: step.name,
@@ -691,18 +1109,38 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
 
       // FanOut promises
       for (const fanOut of batch.fanOuts ?? []) {
+        if (completedSteps.has(fanOut.name)) continue;
         allNames.push(fanOut.name);
         allPromises.push(
           (async (): Promise<BatchResult> => {
             const output = await executeFanOutInWorkflow(
               fanOut,
               bag,
-              input,
+              activityInput,
               workflowId,
               activityProxiesByKey,
               getProxyKey,
             );
             return { stepName: fanOut.name, output };
+          })(),
+        );
+      }
+
+      // Signal wait promises (a wait is always alone in its batch)
+      for (const wait of batch.signalWaits ?? []) {
+        if (completedSteps.has(wait.name)) continue;
+        allNames.push(wait.name);
+        allPromises.push(
+          (async (): Promise<BatchResult> => {
+            waitingOn.add(wait.signalName);
+            showDetails();
+            try {
+              const output = await runSignalWait(wait, inbox);
+              return { stepName: wait.name, output };
+            } finally {
+              waitingOn.delete(wait.signalName);
+              showDetails();
+            }
           })(),
         );
       }
@@ -726,8 +1164,11 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
       // First, merge successful step outputs into the bag
       // This ensures the bag has all available data even if some steps failed
       for (const { output } of fulfilled) {
-        Object.assign(bag, output);
+        assignOwn(bag, output);
       }
+
+      // Everything that ran, failed or not, is done: a resumed run must not repeat it.
+      for (const name of allNames) completedSteps.add(name);
 
       // Mark any checkpoints that trigger after this batch completes
       // This happens regardless of whether some steps in the batch failed,
@@ -740,6 +1181,7 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
             batchIndex,
             batchNumber,
           });
+          checkpointSnapshots.set(checkpoint.name, assignOwn({}, bag));
           reachedCheckpoints.add(checkpoint.name);
         }
       }
@@ -815,10 +1257,10 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
                 batchNumber,
               });
 
-              const handlerResult = await errorHandlerFn(input, bag, batchErrorInfo);
+              const handlerResult = await errorHandlerFn(activityInput, bag, batchErrorInfo);
 
               if (handlerResult.bag) {
-                Object.assign(bag, handlerResult.bag);
+                assignOwn(bag, handlerResult.bag);
               }
 
               wf.log.info("Error handler activity completed", {
@@ -877,6 +1319,18 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
         }
         // Error was handled - continue processing remaining batches
       }
+
+      const boundary = plan.stageBoundaries?.find((b) => b.afterBatch === batchIndex);
+      if (boundary) {
+        await continueAtStage(
+          boundary,
+          input,
+          bag,
+          completedSteps,
+          inbox,
+          plan.continuationBudgetBytes ?? CONTINUATION_BUDGET_BYTES,
+        );
+      }
     }
 
     wf.log.info("Workflow execution completed successfully", {
@@ -886,6 +1340,106 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
 
     return { bag, error: undefined };
   };
+
+  // Declared on the function itself so Temporal reads it before the first task completes.
+  if (plan.versioningBehavior) {
+    wf.setWorkflowOptions({ versioningBehavior: plan.versioningBehavior }, temporalWorkflow);
+  }
+
+  return temporalWorkflow;
+}
+
+/**
+ * Ends the run at a stage boundary and continues as new, carrying the bag, the steps that
+ * already ran, and any unconsumed signals into the next run.
+ *
+ * Waits for in-flight signal and update handlers first, so none is cut off mid-run.
+ */
+async function continueAtStage(
+  boundary: StageBoundaryPlanEntry,
+  input: WorkflowInput,
+  bag: Record<string, any>,
+  completedSteps: Set<string>,
+  inbox: SignalInbox,
+  budgetBytes: number,
+): Promise<never> {
+  await wf.condition(wf.allHandlersFinished);
+
+  // Initial data travels in `initialData`; the continuation holds produced fields, plus any
+  // initial field the workflow changed (an error handler can), which would otherwise revert.
+  // Field and signal names are the author's and the sender's, so these records have no
+  // prototype: a name like `__proto__` must land as data, not hit an inherited setter.
+  const carried: Record<string, unknown> = Object.create(null);
+  for (const [field, value] of Object.entries(bag)) {
+    if (Object.hasOwn(input.initialData, field) && value === input.initialData[field]) continue;
+    setOwn(carried, field, value);
+  }
+
+  const signals: Record<string, CarriedSignal[]> = Object.create(null);
+  for (const [name, queue] of inbox.queues) {
+    if (queue.length > 0) setOwn(signals, name, queue.map((payload) => ({ payload })));
+  }
+
+  wf.log.info("Stage complete; continuing as new", {
+    workflowId: wf.workflowInfo().workflowId,
+    stage: boundary.name,
+    carriedKeys: Object.keys(carried),
+    initialVersioningBehavior: boundary.initialVersioningBehavior,
+  });
+
+  const { continuation: _previous, ...rest } = input;
+  const next: WorkflowInput = {
+    ...rest,
+    continuation: {
+      version: CONTINUATION_VERSION,
+      stage: boundary.name,
+      bag: carried,
+      completedSteps: [...completedSteps],
+      signals,
+      ...(inbox.seenKeys.length > 0 && { seenSignalKeys: [...inbox.seenKeys] }),
+    },
+  };
+  // Every limit on its parts still leaves the whole unbounded, so the whole is measured. The
+  // measure is the JSON the default payload converter writes, with the values a custom
+  // converter commonly adds (bigint, Map, Set) written out the way such converters write
+  // them. A codec changes the real size, which the budget's margin under 2 MB allows for.
+  let bytes: number;
+  try {
+    bytes = utf8Length(JSON.stringify(next, measurableValue));
+  } catch {
+    // Cannot be measured (a cycle, say), so it cannot be shown to fit. Fail here rather
+    // than issue a command Temporal might reject on every retry.
+    throw workflowFailure(
+      CONTINUATION_TOO_LARGE_CODE,
+      `Stage "${boundary.name}" of workflow "${wf.workflowInfo().workflowType}" carries ` +
+        `state that cannot be measured, so it cannot be shown to fit the payload limit.`,
+      { stage: boundary.name, measurable: false },
+    );
+  }
+  if (bytes > budgetBytes) {
+    // Fail rather than issue a command Temporal would reject on every retry. The state
+    // itself stays out of the failure, which goes to event history and has the same cap.
+    throw workflowFailure(
+      CONTINUATION_TOO_LARGE_CODE,
+      `Stage "${boundary.name}" of workflow "${wf.workflowInfo().workflowType}" would carry ` +
+        `${bytes} bytes into its next run, over the ${budgetBytes}-byte budget. ` +
+        `Keep large data out of the bag and carry a reference to it instead.`,
+      { stage: boundary.name, bytes, budget: budgetBytes },
+    );
+  }
+  if (bytes > Math.min(CONTINUATION_WARN_BYTES, budgetBytes / 2)) {
+    wf.log.warn("Carried state is large; keep big data out of the bag", {
+      stage: boundary.name,
+      bytes,
+      budget: budgetBytes,
+    });
+  }
+
+  return wf.makeContinueAsNewFunc<(input: WorkflowInput) => Promise<TemporalWorkflowResult>>(
+    boundary.initialVersioningBehavior
+      ? { initialVersioningBehavior: boundary.initialVersioningBehavior }
+      : {},
+  )(next);
 }
 
 /**
@@ -912,7 +1466,7 @@ async function executeFanOutInWorkflow(
   // Build bag slice with only the fields mapInput needs
   const bagSlice: Record<string, any> = {};
   for (const field of fanOut.needs) {
-    bagSlice[field] = bag[field];
+    setOwn(bagSlice, field, bag[field]);
   }
 
   wf.log.info("FanOut: calling mapInput", {

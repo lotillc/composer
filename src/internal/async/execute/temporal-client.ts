@@ -29,7 +29,13 @@
  */
 
 import type { WorkflowExecutionStatusName, WorkflowHandle } from "@temporalio/client";
-import { Client, Connection, WorkflowNotFoundError } from "@temporalio/client";
+import {
+  Client,
+  Connection,
+  WithStartWorkflowOperation,
+  WorkflowNotFoundError,
+} from "@temporalio/client";
+import type { UpdateDefinition } from "@temporalio/common";
 import type { DataConverter, PayloadCodec, VersioningOverride } from "@temporalio/common";
 import type { UUIDV7 } from "../../types.js";
 import type { WorkflowInput } from "../build/workflow-factory.js";
@@ -91,6 +97,12 @@ export interface ExecuteWorkflowOptions {
    * to a specific deployment version (buildId + deploymentName).
    */
   versioningOverride?: VersioningOverride;
+
+  /**
+   * What to do when a workflow with this ID is already running. `FAIL` (Temporal's
+   * default) rejects the start; `USE_EXISTING` returns a handle to the running workflow.
+   */
+  workflowIdConflictPolicy?: "FAIL" | "USE_EXISTING";
 
   /**
    * Override Temporal client config for this execution
@@ -209,9 +221,40 @@ export async function executeWorkflow(
     workflowId: options.workflowId,
     args: [options.input],
     ...(options.versioningOverride ? { versioningOverride: options.versioningOverride } : {}),
+    ...(options.workflowIdConflictPolicy
+      ? { workflowIdConflictPolicy: options.workflowIdConflictPolicy }
+      : {}),
   });
 
   return handle;
+}
+
+/**
+ * Starts a workflow and sends it an Update in one request (Temporal's Update-With-Start).
+ *
+ * The Update is delivered with the workflow's first task, so its handler is registered
+ * before any of the workflow's own code runs. Sending the Update after a separate start
+ * leaves a window in which a fast workflow can pass the point the Update waits for, or
+ * continue as new, before the Update arrives.
+ *
+ * Resolves with the Update's result; rejects if the start or the Update fails.
+ */
+export async function startWorkflowWithUpdate<Ret, Args extends any[]>(
+  options: ExecuteWorkflowOptions & { update: UpdateDefinition<Ret, Args>; updateArgs: Args },
+): Promise<Ret> {
+  const client = await createTemporalClient(options.clientConfig);
+  const startWorkflowOperation = new WithStartWorkflowOperation(options.workflowName, {
+    taskQueue: options.taskQueue ?? "workflow-tasks",
+    workflowId: options.workflowId,
+    args: [options.input],
+    // Required by Update-With-Start; FAIL is what a plain start does by default.
+    workflowIdConflictPolicy: options.workflowIdConflictPolicy ?? "FAIL",
+    ...(options.versioningOverride ? { versioningOverride: options.versioningOverride } : {}),
+  });
+  return client.workflow.executeUpdateWithStart(options.update, {
+    args: options.updateArgs,
+    startWorkflowOperation,
+  });
 }
 
 /**
@@ -328,7 +371,10 @@ export async function signalWorkflow(
   signalName: string,
   data: any,
   config: TemporalClientConfig,
+  meta?: Record<string, unknown>,
 ): Promise<void> {
   const handle = await getWorkflowHandle(workflowId, config);
-  await handle.signal(signalName, data);
+  // Metadata rides as a second argument so the payload itself is unchanged for any
+  // handler that reads only the first.
+  await (meta ? handle.signal(signalName, data, meta) : handle.signal(signalName, data));
 }

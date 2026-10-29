@@ -22,12 +22,13 @@ import {
   type WorkflowResult,
 } from "../../dag-sync-workflow.js";
 import type { UUIDV7 } from "../../types.js";
+import { CHECKPOINT_TIMEOUT_CODE } from "../../workflow-codes.js";
 import type { TemporalWorkflowResult } from "../build/workflow-factory.js";
 import { awaitCheckpointUpdate } from "../build/workflow-factory.js";
 import {
-  createTemporalClient,
   executeWorkflow,
   executeWorkflowAndWait,
+  startWorkflowWithUpdate,
   type TemporalClientConfig,
 } from "./temporal-client.js";
 
@@ -46,6 +47,11 @@ export interface TemporalExecutionOptions {
    * Versioning override for Worker Versioning.
    */
   versioningOverride?: VersioningOverride;
+
+  /**
+   * What to do when a workflow with this ID is already running.
+   */
+  workflowIdConflictPolicy?: "FAIL" | "USE_EXISTING";
 
   /**
    * Optional checkpoint name to await.
@@ -140,40 +146,47 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
         taskQueue: "workflow-tasks",
         clientConfig,
         versioningOverride: options.versioningOverride,
+        workflowIdConflictPolicy: options.workflowIdConflictPolicy,
       });
 
+      // With USE_EXISTING the start may have attached to a run begun earlier with other
+      // data, which Temporal kept and this call's data did not reach. Returning this call's
+      // input would present it as that run's state, so the bag is left empty.
+      if (options.workflowIdConflictPolicy === "USE_EXISTING") {
+        return { bag: {} as Bag, error: undefined };
+      }
       return { bag: mergedInitialData as Bag, error: undefined };
     }
 
     if (options.awaitCheckpoint) {
-      // Start the workflow (don't wait for completion)
-      await executeWorkflow({
+      // Start the workflow and send the checkpoint Update in one request (no polling!).
+      // The Update arrives with the first workflow task, so its handler is in place before
+      // any batch runs: a separate Update could arrive after the run had already passed the
+      // checkpoint, or continued as new past it.
+      // Race the update against the configured checkpoint timeout so callers
+      // get a timely error instead of blocking indefinitely when the workflow
+      // never reaches the checkpoint (e.g. a step hangs or fails earlier).
+      const updatePromise = startWorkflowWithUpdate({
         workflowName: wf.name,
         workflowId: options.workflowId,
         input: workflowInput,
         taskQueue: "workflow-tasks",
         clientConfig,
         versioningOverride: options.versioningOverride,
-      });
-
-      // Use Temporal Update to wait for checkpoint (no polling!)
-      // The workflow's update handler blocks until the checkpoint is reached
-      const client = await createTemporalClient(clientConfig);
-      const typedHandle = client.workflow.getHandle(options.workflowId);
-
-      // Race the update against the configured checkpoint timeout so callers
-      // get a timely error instead of blocking indefinitely when the workflow
-      // never reaches the checkpoint (e.g. a step hangs or fails earlier).
-      const updatePromise = typedHandle.executeUpdate(awaitCheckpointUpdate, {
-        args: [{ checkpointName: options.awaitCheckpoint }],
+        workflowIdConflictPolicy: options.workflowIdConflictPolicy,
+        update: awaitCheckpointUpdate,
+        updateArgs: [{ checkpointName: options.awaitCheckpoint }],
       });
 
       const partialBag = await new Promise<Record<string, unknown>>((resolve, reject) => {
         const timeoutId = setTimeout(() => {
           reject(
-            new Error(
-              `Checkpoint "${options.awaitCheckpoint}" for workflow "${wf.name}" ` +
-                `timed out after ${checkpointTimeoutMs}ms`,
+            Object.assign(
+              new Error(
+                `Checkpoint "${options.awaitCheckpoint}" for workflow "${wf.name}" ` +
+                  `timed out after ${checkpointTimeoutMs}ms`,
+              ),
+              { code: CHECKPOINT_TIMEOUT_CODE },
             ),
           );
         }, checkpointTimeoutMs);
@@ -201,6 +214,7 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
       taskQueue: "workflow-tasks",
       clientConfig,
       versioningOverride: options.versioningOverride,
+      workflowIdConflictPolicy: options.workflowIdConflictPolicy,
     });
 
     return result as WorkflowResult<Bag>;
@@ -220,7 +234,7 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
               batchNumber: errorInfo.batchNumber,
               errors: errorInfo.errors,
             })
-          : new Error(err.message);
+          : withFailureCode(new Error(err.message), err);
         // The bag is its own details entry. `details[0].bag` is the pre-split layout: a
         // workflow started by an older bundle can still be completing against this client.
         const bagDetail = err.cause.details?.[1] as { bag?: Record<string, unknown> } | undefined;
@@ -229,8 +243,32 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
       }
     }
     const error = err instanceof Error ? err : new Error(String(err));
-    return { bag: mergedInitialData as Bag, error };
+    return { bag: mergedInitialData as Bag, error: withFailureCode(error, err) };
   }
+}
+
+/** Shape of a classifier code a workflow puts on an ApplicationFailure's `type`. */
+const FAILURE_CODE = /^[A-Z0-9_]{2,50}$/;
+
+/** The first ApplicationFailure in a Temporal error's cause chain. */
+function applicationFailureIn(err: unknown, depth = 0): ApplicationFailure | undefined {
+  if (err instanceof ApplicationFailure) return err;
+  if (depth < 5 && err instanceof Error) return applicationFailureIn(err.cause, depth + 1);
+  return undefined;
+}
+
+/**
+ * Carries a coded ApplicationFailure's code onto the error a caller receives, whatever
+ * wrapper it arrived in -- a failed workflow, a failed checkpoint update -- so every
+ * documented failure code reaches `result.error.code`. An error that already has a code
+ * keeps it.
+ */
+function withFailureCode(error: Error, err: unknown): Error {
+  const code = applicationFailureIn(err)?.type;
+  if (code && FAILURE_CODE.test(code) && (error as { code?: unknown }).code === undefined) {
+    Object.assign(error, { code });
+  }
+  return error;
 }
 
 /**
@@ -249,7 +287,10 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
 export async function startWorkflowTemporal<Bag extends Record<string, any>>(
   wf: Workflow<Bag, any, any>,
   initialData: Partial<Bag>,
-  options: Pick<TemporalExecutionOptions, "workflowId" | "clientConfig" | "versioningOverride">,
+  options: Pick<
+    TemporalExecutionOptions,
+    "workflowId" | "clientConfig" | "versioningOverride" | "workflowIdConflictPolicy"
+  >,
 ): Promise<{ workflowId: string }> {
   // Merge configured values with initial data (like sync path does)
   const mergedInitialData = {
@@ -271,6 +312,7 @@ export async function startWorkflowTemporal<Bag extends Record<string, any>>(
     taskQueue: "workflow-tasks",
     clientConfig: options.clientConfig,
     versioningOverride: options.versioningOverride,
+    workflowIdConflictPolicy: options.workflowIdConflictPolicy,
   });
 
   return { workflowId: options.workflowId };
