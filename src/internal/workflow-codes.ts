@@ -1,5 +1,6 @@
 /**
- * Classifier codes for the workflow-side poll loop, signal waits and stage boundaries.
+ * Classifier codes for the workflow-side poll loop, signal waits, checkpoints and stage
+ * boundaries.
  *
  * Kept in a leaf module with no imports: the workflow factory runs in Temporal's
  * deterministic sandbox and cannot reach the Node-side error classes, while step
@@ -23,3 +24,15 @@ export const SIGNAL_WAIT_TIMEOUT_CODE = "COMPOSER_SIGNAL_WAIT_TIMEOUT";
  * it fails its workflow task on every retry, so the workflow fails clearly instead.
  */
 export const CONTINUATION_TOO_LARGE_CODE = "COMPOSER_CONTINUATION_TOO_LARGE";
+
+/** A signal wait the workflow cannot run: a non-positive timeout, or a wait not alone. */
+export const INVALID_SIGNAL_WAIT_CODE = "COMPOSER_INVALID_SIGNAL_WAIT";
+
+/** `awaitCheckpoint` named a checkpoint the running build's workflow does not declare. */
+export const UNKNOWN_CHECKPOINT_CODE = "COMPOSER_UNKNOWN_CHECKPOINT";
+
+/** `awaitCheckpoint` named a checkpoint an earlier run reached before continuing as new. */
+export const CHECKPOINT_PASSED_CODE = "COMPOSER_CHECKPOINT_PASSED";
+
+/** `awaitCheckpoint` gave up waiting after the checkpoint's timeout. */
+export const CHECKPOINT_TIMEOUT_CODE = "COMPOSER_CHECKPOINT_TIMEOUT";

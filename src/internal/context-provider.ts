@@ -293,6 +293,7 @@ export interface SignalAsyncWorkflowOptions {
    * Idempotency key for this delivery. The workflow remembers keys across stages and
    * drops a later signal with the same name and key, so retrying a send is safe. Derive
    * it from the event being delivered (a webhook's event ID, say), not per attempt.
+   * At most 256 bytes as JSON (UTF-8, escapes included); a larger key is rejected.
    */
   dedupeKey?: string;
 }

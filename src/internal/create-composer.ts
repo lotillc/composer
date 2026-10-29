@@ -18,7 +18,8 @@ import {
 import { executeWorkflowTemporal, startWorkflowTemporal } from "./async/execute/workflow-execution.js";
 import { runActivityWorkers as runActivityWorkersInternal } from "./async/register/activity-worker.js";
 import { replayWorkflowHistories as replayWorkflowHistoriesInternal } from "./async/register/replay-histories.js";
-import { MAX_DEDUPE_KEY_LENGTH } from "./async/build/workflow-factory.js";
+import { MAX_DEDUPE_KEY_BYTES } from "./async/build/workflow-factory.js";
+import { jsonStringBytes } from "./json-size.js";
 import { runWorkflowWorkers as runWorkflowWorkersInternal } from "./async/register/workflow-worker.js";
 import type { ScheduleDefinition } from "./async/schedule/define-schedule.js";
 import { syncSchedules as syncSchedulesInternal } from "./async/schedule/sync-schedules.js";
@@ -316,9 +317,13 @@ export function createComposer<TContext>(
       payload: Payload,
       options?: SignalAsyncWorkflowOptions,
     ): Promise<void> {
-      if (options?.dedupeKey !== undefined && options.dedupeKey.length > MAX_DEDUPE_KEY_LENGTH) {
+      if (
+        options?.dedupeKey !== undefined &&
+        jsonStringBytes(options.dedupeKey) > MAX_DEDUPE_KEY_BYTES
+      ) {
         throw new Error(
-          `signalAsyncWorkflow: dedupeKey must be at most ${MAX_DEDUPE_KEY_LENGTH} characters`,
+          `signalAsyncWorkflow: dedupeKey must be at most ${MAX_DEDUPE_KEY_BYTES} bytes as ` +
+            `JSON (UTF-8, escapes included)`,
         );
       }
       const value = signal.parse ? signal.parse(payload) : payload;

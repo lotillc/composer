@@ -22,6 +22,7 @@ import {
   type WorkflowResult,
 } from "../../dag-sync-workflow.js";
 import type { UUIDV7 } from "../../types.js";
+import { CHECKPOINT_TIMEOUT_CODE } from "../../workflow-codes.js";
 import type { TemporalWorkflowResult } from "../build/workflow-factory.js";
 import { awaitCheckpointUpdate } from "../build/workflow-factory.js";
 import {
@@ -174,9 +175,12 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
       const partialBag = await new Promise<Record<string, unknown>>((resolve, reject) => {
         const timeoutId = setTimeout(() => {
           reject(
-            new Error(
-              `Checkpoint "${options.awaitCheckpoint}" for workflow "${wf.name}" ` +
-                `timed out after ${checkpointTimeoutMs}ms`,
+            Object.assign(
+              new Error(
+                `Checkpoint "${options.awaitCheckpoint}" for workflow "${wf.name}" ` +
+                  `timed out after ${checkpointTimeoutMs}ms`,
+              ),
+              { code: CHECKPOINT_TIMEOUT_CODE },
             ),
           );
         }, checkpointTimeoutMs);

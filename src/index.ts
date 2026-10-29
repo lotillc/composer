@@ -134,10 +134,14 @@ export {
   WorkflowStepError,
 } from "./internal/errors.js";
 export {
+  CHECKPOINT_PASSED_CODE,
+  CHECKPOINT_TIMEOUT_CODE,
   CONTINUATION_TOO_LARGE_CODE,
+  INVALID_SIGNAL_WAIT_CODE,
   SIGNAL_WAIT_TIMEOUT_CODE,
   STEP_NOT_READY_CODE,
   STEP_POLL_TIMEOUT_CODE,
+  UNKNOWN_CHECKPOINT_CODE,
 } from "./internal/workflow-codes.js";
 export type { ComposerLogger, TraceErrorMessage } from "./internal/types.js";
 export type { WorkflowExecutionStatusName } from "@temporalio/client";

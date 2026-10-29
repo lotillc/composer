@@ -781,6 +781,18 @@ describe("carried state limits", () => {
     expect(Object.hasOwn(result.bag, "__proto__")).toBe(true);
   });
 
+  it("counts a dedupe key's size as escaped JSON bytes, not characters", async () => {
+    // 50 control characters: 50 characters, but 302 bytes once JSON escapes them.
+    const escaped = "\u0001".repeat(50);
+    mocks.activityFunctions.a = vi.fn(async () => {
+      mocks.defaultSignalHandler!("approval", "first", { dedupeKey: escaped });
+      return { x: "X" };
+    });
+    const continued = await runUntilContinued(stagedPlanWithWait(), { initialData: { id: "1" } });
+    expect(continued.next.continuation).not.toHaveProperty("seenSignalKeys");
+    expect(continued.next.continuation?.signals?.approval).toEqual(["first"]);
+  });
+
   it("ignores an over-long dedupe key and accepts the signal without it", async () => {
     mocks.activityFunctions.a = vi.fn(async () => {
       mocks.defaultSignalHandler!("approval", "first", { dedupeKey: "k".repeat(257) });
@@ -790,6 +802,25 @@ describe("carried state limits", () => {
     const continued = await runUntilContinued(stagedPlanWithWait(), { initialData: { id: "1" } });
     expect(continued.next.continuation?.signals?.approval).toEqual(["first", "second"]);
     expect(continued.next.continuation).not.toHaveProperty("seenSignalKeys");
+  });
+});
+
+describe("checkpoint requests the workflow cannot answer", () => {
+  it("fails only the request, not the workflow task, for an unknown checkpoint", async () => {
+    let handler: ((args: { checkpointName: string }) => Promise<unknown>) | undefined;
+    mocks.setHandler.mockImplementation((_def: unknown, fn: typeof handler) => {
+      handler = fn;
+    });
+    const plan = stagedPlan({ checkpoints: [{ name: "started", afterBatch: 0, timeout: 30_000 }] });
+    const run = createWorkflowFunction(plan)({ initialData: { id: "1" } }).catch(() => undefined);
+
+    // An ApplicationFailure fails the Update alone; a plain Error would fail the task and
+    // stall the run on every retry.
+    const outcome = await handler!({ checkpointName: "renamed" }).catch((err: unknown) => err);
+    expect(outcome).toBeInstanceOf(ApplicationFailure);
+    expect((outcome as ApplicationFailure).type).toBe("COMPOSER_UNKNOWN_CHECKPOINT");
+    expect((outcome as ApplicationFailure).nonRetryable).toBe(true);
+    await run;
   });
 });
 

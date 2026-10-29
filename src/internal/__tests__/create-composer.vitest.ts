@@ -368,16 +368,16 @@ describe("signalAsyncWorkflow", () => {
     expect(mockSignalWorkflow.mock.calls[0]?.[4]).toEqual({ dedupeKey: "evt-1" });
   });
 
-  it("rejects a dedupe key over 256 characters before sending", async () => {
+  it("rejects a dedupe key over 256 JSON bytes before sending, counting escapes", async () => {
     const mockSignalWorkflow = vi.mocked(temporalClient.signalWorkflow);
     mockSignalWorkflow.mockReset().mockResolvedValue(undefined);
     const approval = defineWorkflowSignal<{ approved: boolean }>("approval");
 
     await expect(
       composer.signalAsyncWorkflow("request-42", approval, { approved: true }, {
-        dedupeKey: "k".repeat(257),
+        dedupeKey: "\u0001".repeat(50), // 50 characters, 302 bytes escaped
       }),
-    ).rejects.toThrow("dedupeKey must be at most 256 characters");
+    ).rejects.toThrow("dedupeKey must be at most 256 bytes as JSON");
     expect(mockSignalWorkflow).not.toHaveBeenCalled();
   });
 

@@ -25,10 +25,14 @@ import type {
   WorkflowVersioningBehavior,
 } from "../../dag-sync-workflow.js";
 import { durationToMs } from "../../duration.js";
+import { jsonStringBytes, utf8Length } from "../../json-size.js";
 import { safeErrorName } from "../../error-for-log.js";
 import { assignOwn, setOwn } from "../../own-properties.js";
 import {
+  CHECKPOINT_PASSED_CODE,
   CONTINUATION_TOO_LARGE_CODE,
+  UNKNOWN_CHECKPOINT_CODE,
+  INVALID_SIGNAL_WAIT_CODE,
   SIGNAL_WAIT_TIMEOUT_CODE,
   STEP_NOT_READY_CODE,
   STEP_POLL_TIMEOUT_CODE,
@@ -295,12 +299,14 @@ export const DEFAULT_MAX_PENDING_SIGNALS = 100;
 const MAX_SEEN_SIGNAL_KEYS = 1000;
 
 /**
- * Longest dedupe key the workflow remembers. Keys are carried across every continue-as-new,
- * so their length times `MAX_SEEN_SIGNAL_KEYS` must stay a small part of the payload budget.
- * `signalAsyncWorkflow` rejects longer keys; one that reaches the workflow some other way is
+ * Largest dedupe key the workflow remembers, in UTF-8 bytes of its JSON encoding (escapes
+ * included). Keys are carried across every continue-as-new, so this times
+ * `MAX_SEEN_SIGNAL_KEYS` -- about 256 KB -- must stay a small part of the payload budget;
+ * a limit in characters would not, since one escaped control character is six bytes.
+ * `signalAsyncWorkflow` rejects larger keys; one that reaches the workflow some other way is
  * ignored, and the signal is accepted without dedupe.
  */
-export const MAX_DEDUPE_KEY_LENGTH = 256;
+export const MAX_DEDUPE_KEY_BYTES = 256;
 
 /**
  * Carried state above which a continue-as-new is refused. Temporal's default cap on one
@@ -320,20 +326,6 @@ function measurableValue(_key: string, value: unknown): unknown {
   return value;
 }
 
-/** UTF-8 byte length of a string, without TextEncoder or Buffer. */
-function utf8Length(text: string): number {
-  let bytes = 0;
-  for (let i = 0; i < text.length; i++) {
-    const unit = text.charCodeAt(i);
-    if (unit < 0x80) bytes += 1;
-    else if (unit < 0x800) bytes += 2;
-    else if (unit >= 0xd800 && unit < 0xdc00 && i + 1 < text.length) {
-      bytes += 4; // a surrogate pair is one 4-byte code point
-      i++;
-    } else bytes += 3;
-  }
-  return bytes;
-}
 
 /** Delivery metadata `signalAsyncWorkflow` sends as the signal's second argument. */
 export interface SignalDeliveryMeta {
@@ -395,10 +387,10 @@ function receiveSignal(
 
   let dedupeKey: string | undefined;
   if (typeof meta?.dedupeKey === "string") {
-    if (meta.dedupeKey.length > MAX_DEDUPE_KEY_LENGTH) {
-      wf.log.warn("Ignored a dedupe key longer than the limit; accepting the signal without it", {
+    if (jsonStringBytes(meta.dedupeKey) > MAX_DEDUPE_KEY_BYTES) {
+      wf.log.warn("Ignored a dedupe key larger than the limit; accepting the signal without it", {
         signalName,
-        limit: MAX_DEDUPE_KEY_LENGTH,
+        limitBytes: MAX_DEDUPE_KEY_BYTES,
       });
     } else {
       dedupeKey = JSON.stringify([signalName, meta.dedupeKey]);
@@ -446,9 +438,9 @@ async function runSignalWait(
     // carry it. Fail the node, not the workflow task, so it reaches onError rather than
     // retrying forever.
     throw wf.ApplicationFailure.create({
-      type: "COMPOSER_INVALID_SIGNAL_WAIT",
+      type: INVALID_SIGNAL_WAIT_CODE,
       message: `Signal wait "${wait.name}": timeout must be a positive duration, got ${wait.timeout}`,
-      details: [{ code: "COMPOSER_INVALID_SIGNAL_WAIT", data: { stepName: wait.name } }],
+      details: [{ code: INVALID_SIGNAL_WAIT_CODE, data: { stepName: wait.name } }],
       nonRetryable: true,
     });
   }
@@ -852,7 +844,7 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
       const waits = batch.signalWaits?.length ?? 0;
       if (waits > 0 && waits + batch.steps.length + (batch.fanOuts?.length ?? 0) > 1) {
         throw workflowFailure(
-          "COMPOSER_INVALID_SIGNAL_WAIT",
+          INVALID_SIGNAL_WAIT_CODE,
           `Workflow "${plan.name}": batch ${index + 1} has a signal wait that is not alone`,
           { batchNumber: index + 1 },
         );
@@ -950,15 +942,21 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
         const checkpoint = plan.checkpoints?.find((c) => c.name === checkpointName);
         if (!checkpoint) {
           const validNames = plan.checkpoints?.map((c) => c.name).join(", ") ?? "none";
-          throw new Error(
-            `Unknown checkpoint "${checkpointName}" for workflow "${plan.name}". ` +
+          // An ApplicationFailure fails only this Update. A plain Error thrown from an
+          // update handler would fail the workflow task, and Temporal would retry it --
+          // redelivering the Update each time -- stalling the whole run.
+          throw wf.ApplicationFailure.create({
+            type: UNKNOWN_CHECKPOINT_CODE,
+            message:
+              `Unknown checkpoint "${checkpointName}" for workflow "${plan.name}". ` +
               `Valid checkpoints: [${validNames}]`,
-          );
+            nonRetryable: true,
+          });
         }
 
         if (checkpointsPassedEarlier.has(checkpointName)) {
           throw wf.ApplicationFailure.create({
-            type: "COMPOSER_CHECKPOINT_PASSED",
+            type: CHECKPOINT_PASSED_CODE,
             message:
               `Checkpoint "${checkpointName}" of workflow "${plan.name}" was reached by an ` +
               `earlier run, which has since continued as new; its snapshot is no longer available`,

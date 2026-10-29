@@ -713,6 +713,9 @@ describe("executeWorkflowTemporal", () => {
       expect(result.error?.message).toBe(
         'Checkpoint "myCheckpoint" for workflow "test-workflow" timed out after 10ms',
       );
+      expect((result.error as unknown as { code?: string }).code).toBe(
+        "COMPOSER_CHECKPOINT_TIMEOUT",
+      );
       expect(result.bag).toEqual({ inputField: "value" });
     });
 
