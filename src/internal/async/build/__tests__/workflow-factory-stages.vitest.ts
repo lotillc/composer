@@ -68,11 +68,17 @@ vi.mock("@temporalio/workflow", async (importOriginal) => {
       return mocks.allHandlersFinished;
     },
     // A scripted stand-in for Temporal's condition: evaluate, let the test deliver
-    // signals or advance the clock, evaluate again, then report a timeout or give up.
+    // signals or advance the clock, then keep re-evaluating while other promises in the
+    // workflow settle -- as Temporal does between microtasks -- before reporting a
+    // timeout or giving up.
     condition: async (fn: () => boolean, timeoutMs?: number) => {
       if (fn()) return true;
       mocks.conditionTimeouts.push(timeoutMs);
       mocks.onBlock?.(timeoutMs);
+      for (let tick = 0; tick < 50; tick++) {
+        if (fn()) return true;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
       if (fn()) return true;
       if (timeoutMs === undefined) {
         throw new Error("test: workflow would block forever");
@@ -187,6 +193,13 @@ describe("stage boundaries", () => {
         signals: {},
       },
     });
+  });
+
+  it("sets no next-run versioning behavior when the plan carries none", async () => {
+    const plan = stagedPlan();
+    delete plan.stageBoundaries![0]!.initialVersioningBehavior;
+    const continued = await runUntilContinued(plan, { initialData: { id: "1" } });
+    expect(continued.options).toEqual({});
   });
 
   it("uses a boundary's own initial versioning behavior", async () => {
@@ -551,6 +564,17 @@ describe("continuation format", () => {
     );
   });
 
+  it("carries an optional input field a step later provides, so it does not revert", async () => {
+    // Callers may pass any bag field; only required and configured ones are protected.
+    mocks.activityFunctions.a = activity({ x: "from step" });
+    const continued = await runUntilContinued(stagedPlan(), { initialData: { id: "1", x: "from caller" } });
+    expect(continued.next.continuation?.bag).toEqual({ x: "from step" });
+
+    mocks.activityFunctions.b = vi.fn(async (_input, stepInput) => ({ y: stepInput }));
+    const second = await runUntilContinued(stagedPlan(), continued.next);
+    expect(second.next.continuation?.bag?.y).toEqual({ x: "from step" });
+  });
+
   it("carries an initial field the workflow changed, so it does not revert", async () => {
     mocks.activityFunctions["staged__errorHandler"] = vi.fn(async () => ({
       handled: true,
@@ -563,6 +587,90 @@ describe("continuation format", () => {
     const continued = await runUntilContinued(plan, { initialData: { id: "1" } });
     expect(continued.next.initialData).toEqual({ id: "1" });
     expect(continued.next.continuation?.bag).toEqual({ id: "corrected" });
+  });
+});
+
+describe("waits beside failures", () => {
+  function batchWithWait(wait: Partial<NonNullable<StepBatch["signalWaits"]>[number]> = {}) {
+    return {
+      name: "mixed",
+      batches: [
+        {
+          steps: [step("fails", ["id"], ["x"])],
+          signalWaits: [
+            {
+              name: "awaitApproval",
+              signalName: "approval",
+              provides: "approval",
+              hasTimeoutValue: false,
+              ...wait,
+            },
+          ],
+        },
+        { steps: [step("after", ["approval"], ["y"])] },
+      ],
+    } satisfies WorkflowPlan;
+  }
+
+  function failureOf(outcome: unknown) {
+    expect(outcome).toBeInstanceOf(ApplicationFailure);
+    return ((outcome as ApplicationFailure).details?.[0] as { error: TemporalWorkflowResult["error"] })
+      .error;
+  }
+
+  beforeEach(() => {
+    mocks.activityFunctions.fails = vi.fn(async () => {
+      throw new Error("boom");
+    });
+  });
+
+  it("fails the batch on a sibling failure instead of waiting forever on a signal", async () => {
+    const outcome = await createWorkflowFunction(batchWithWait())({ initialData: { id: "1" } }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    const error = failureOf(outcome);
+    expect(error?.errors?.map((e) => e.stepName)).toEqual(["fails"]);
+    expect(mocks.activityFunctions.after).toBeUndefined();
+    expect(mocks.log.warn).toHaveBeenCalledWith(
+      "Released signal waits because their batch failed",
+      expect.objectContaining({ releasedWaits: ["awaitApproval"] }),
+    );
+  });
+
+  it("surfaces a wait's own timeout beside another wait with no timeout", async () => {
+    const plan: WorkflowPlan = {
+      name: "two-waits",
+      batches: [
+        {
+          steps: [],
+          signalWaits: [
+            { name: "bounded", signalName: "a", provides: "a", timeout: "1 day", hasTimeoutValue: false },
+            { name: "unbounded", signalName: "b", provides: "b", hasTimeoutValue: false },
+          ],
+        },
+      ],
+    };
+    const outcome = await createWorkflowFunction(plan)({ initialData: {} }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(failureOf(outcome)?.errors).toEqual([
+      expect.objectContaining({ stepName: "bounded", code: SIGNAL_WAIT_TIMEOUT_CODE }),
+    ]);
+  });
+
+  it("does not count a released wait as completed when the failure is handled", async () => {
+    mocks.activityFunctions["mixed__errorHandler"] = vi.fn(async () => ({ handled: true }));
+    const plan: WorkflowPlan = {
+      ...batchWithWait(),
+      batches: [batchWithWait().batches[0]!, { steps: [step("after", ["id"], ["y"])] }],
+      stageBoundaries: [{ name: "later", afterBatch: 0 }],
+      errorHandlerActivityName: "mixed__errorHandler",
+    };
+    mocks.activityFunctions.after = activity({ y: "Y" });
+    const continued = await runUntilContinued(plan, { initialData: { id: "1" } });
+    expect(continued.next.continuation?.completedSteps).toEqual(["fails"]);
   });
 });
 

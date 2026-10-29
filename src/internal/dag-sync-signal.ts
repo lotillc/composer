@@ -86,6 +86,22 @@ export function isSignalWaitStep(
 }
 
 /**
+ * True when `value` survives `JSON.stringify` / `JSON.parse` unchanged. The plan a wait's
+ * `timeoutValue` travels in is serialized as JSON, so a `Date`, `Map`, `bigint`, class
+ * instance or non-finite number would arrive altered, or stop the worker from starting.
+ */
+function isJsonSafe(value: unknown, depth = 0): boolean {
+  if (depth > 100) return false;
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every((item) => isJsonSafe(item, depth + 1));
+  if (typeof value !== "object") return false;
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return false;
+  return Object.values(value).every((item) => isJsonSafe(item, depth + 1));
+}
+
+/**
  * Factory for a durable wait on a signal.
  *
  * The workflow waits, without holding a worker slot, until the signal is delivered with
@@ -94,7 +110,7 @@ export function isSignalWaitStep(
  * is kept and consumed when the wait is reached.
  *
  * `timeout` bounds the wait. When it elapses, the field gets `timeoutValue` if one was
- * given; otherwise the node fails with `SIGNAL_WAIT_TIMEOUT_CODE`, which the workflow's
+ * given (it must be plain JSON data); otherwise the node fails with `SIGNAL_WAIT_TIMEOUT_CODE`, which the workflow's
  * `onError` handler sees like any step failure. With no `timeout`, the wait has no limit.
  *
  * `needs` only orders the wait after the steps that produce those fields.
@@ -134,6 +150,14 @@ export function waitForSignal<Bag extends Record<string, any>>() {
     if (!Array.isArray(definition.provides) || definition.provides.length !== 1) {
       throw new Error(
         `waitForSignal "${definition.name}": provides must list exactly one field`,
+      );
+    }
+    // `undefined` is allowed: a missing value is what an omitted JSON key reads back as.
+    if (definition.timeoutValue !== undefined && !isJsonSafe(definition.timeoutValue)) {
+      throw new Error(
+        `waitForSignal "${definition.name}": timeoutValue must be plain JSON data ` +
+          `(objects, arrays, strings, finite numbers, booleans, null); it is stored in the ` +
+          `workflow plan as JSON, so a Date, Map, bigint or class instance would not survive`,
       );
     }
     const maxPending = definition.maxPendingSignals;

@@ -404,11 +404,16 @@ function receiveSignal(
  * worker slot however long it lasts. Two waits on the same signal can wake together; the
  * loop lets the one that finds the queue already drained go back to waiting.
  */
+/** Ends a wait its batch no longer needs: a sibling failed, so the batch is finishing. */
+class SignalWaitReleased extends Error {}
+
 async function runSignalWait(
   wait: SignalWaitBatchEntry,
   inbox: SignalInbox,
+  released: () => boolean,
 ): Promise<Record<string, unknown>> {
   const hasPending = () => (inbox.queues.get(wait.signalName)?.length ?? 0) > 0;
+  const wake = () => hasPending() || released();
   const timeoutMs = wait.timeout === undefined ? undefined : durationToMs(wait.timeout);
   if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
     throw new Error(`Signal wait "${wait.name}": timeout must be a positive duration`);
@@ -419,12 +424,13 @@ async function runSignalWait(
     if (hasPending()) {
       return { [wait.provides]: inbox.queues.get(wait.signalName)!.shift() };
     }
+    if (released()) throw new SignalWaitReleased();
     if (deadlineMs === undefined) {
-      await wf.condition(hasPending);
+      await wf.condition(wake);
       continue;
     }
     const remainingMs = deadlineMs - Date.now();
-    if (remainingMs > 0 && (await wf.condition(hasPending, remainingMs))) continue;
+    if (remainingMs > 0 && (await wf.condition(wake, remainingMs))) continue;
 
     if (wait.hasTimeoutValue) {
       wf.log.info("Signal wait timed out; using its timeout value", {
@@ -445,6 +451,42 @@ async function runSignalWait(
       nonRetryable: true,
     });
   }
+}
+
+/**
+ * Settles a batch. Like `Promise.allSettled`, except that a wait does not hold the batch
+ * open once it has failed: when any entry rejects, the batch still lets its steps finish,
+ * as it always has, then releases the waits still blocked. Without this, a failure beside
+ * a wait with no timeout would never be handled, and the run would hang.
+ *
+ * Released waits are returned as `undefined`: they neither succeeded nor failed.
+ */
+async function settleBatch<T>(
+  promises: Promise<T>[],
+  isWait: boolean[],
+  releaseWaits: () => void,
+): Promise<Array<PromiseSettledResult<T> | undefined>> {
+  let markFailed!: () => void;
+  const failed = new Promise<void>((resolve) => {
+    markFailed = resolve;
+  });
+  const settled = promises.map((promise) =>
+    promise.then(
+      (value): PromiseSettledResult<T> | undefined => ({ status: "fulfilled", value }),
+      (reason: unknown): PromiseSettledResult<T> | undefined => {
+        if (reason instanceof SignalWaitReleased) return undefined;
+        markFailed();
+        return { status: "rejected", reason };
+      },
+    ),
+  );
+  const all = Promise.all(settled);
+  const stepsDone = Promise.all(settled.filter((_, i) => !isWait[i]));
+
+  await Promise.race([all, failed.then(() => stepsDone)]);
+  // A no-op when everything has settled; otherwise wakes the waits so they end.
+  releaseWaits();
+  return all;
 }
 
 const WORKFLOW_ERROR_CODE = /^[A-Z0-9_]{2,50}$/;
@@ -672,8 +714,8 @@ export interface StageBoundaryPlanEntry {
   afterBatch: number;
   /** Produced fields to carry; unset carries all of them */
   carry?: string[];
-  /** Versioning behavior of the next run's first task */
-  initialVersioningBehavior: StageInitialVersioningBehavior;
+  /** Versioning behavior of the next run's first task; absent on unversioned workers */
+  initialVersioningBehavior?: StageInitialVersioningBehavior;
   /** Earlier names of this stage; a continuation carrying one resumes here */
   aliases?: string[];
 }
@@ -1021,15 +1063,19 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
       }
 
       // Signal wait promises
+      let waitsReleased = false;
+      const isWait = allPromises.map(() => false);
       for (const wait of batch.signalWaits ?? []) {
         if (completedSteps.has(wait.name)) continue;
         allNames.push(wait.name);
+        isWait.push(true);
         allPromises.push(
           (async (): Promise<BatchResult> => {
             waitingOn.add(wait.signalName);
             showDetails();
             try {
-              return { stepName: wait.name, output: await runSignalWait(wait, inbox) };
+              const output = await runSignalWait(wait, inbox, () => waitsReleased);
+              return { stepName: wait.name, output };
             } finally {
               waitingOn.delete(wait.signalName);
               showDetails();
@@ -1038,16 +1084,21 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
         );
       }
 
-      // Execute all in parallel using allSettled
-      const settledResults = await Promise.allSettled(allPromises);
+      // Execute all in parallel; a failure releases any waits still blocked
+      const settledResults = await settleBatch(allPromises, isWait, () => {
+        waitsReleased = true;
+      });
 
-      // Separate fulfilled and rejected results
+      // Separate fulfilled and rejected results; a released wait is neither
       const fulfilled: Array<BatchResult> = [];
       const rejected: Array<{ stepName: string; error: unknown }> = [];
+      const released: string[] = [];
 
       for (let i = 0; i < settledResults.length; i++) {
-        const result = settledResults[i]!;
-        if (result.status === "fulfilled") {
+        const result = settledResults[i];
+        if (result === undefined) {
+          released.push(allNames[i]!);
+        } else if (result.status === "fulfilled") {
           fulfilled.push(result.value);
         } else {
           rejected.push({ stepName: allNames[i]!, error: result.reason });
@@ -1060,8 +1111,18 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
         Object.assign(bag, output);
       }
 
-      // Everything that ran, failed or not, is done: a resumed run must not repeat it.
-      for (const name of allNames) completedSteps.add(name);
+      // Everything that ran, failed or not, is done: a resumed run must not repeat it. A
+      // released wait consumed nothing, so it is not done.
+      for (const name of allNames) {
+        if (!released.includes(name)) completedSteps.add(name);
+      }
+      if (released.length > 0) {
+        wf.log.warn("Released signal waits because their batch failed", {
+          workflowId,
+          batchNumber,
+          releasedWaits: released,
+        });
+      }
 
       // Mark any checkpoints that trigger after this batch completes
       // This happens regardless of whether some steps in the batch failed,
@@ -1285,9 +1346,11 @@ async function continueAtStage(
       ...(inbox.seenKeys.length > 0 && { seenSignalKeys: [...inbox.seenKeys] }),
     },
   };
-  return wf.makeContinueAsNewFunc<(input: WorkflowInput) => Promise<TemporalWorkflowResult>>({
-    initialVersioningBehavior: boundary.initialVersioningBehavior,
-  })(next);
+  return wf.makeContinueAsNewFunc<(input: WorkflowInput) => Promise<TemporalWorkflowResult>>(
+    boundary.initialVersioningBehavior
+      ? { initialVersioningBehavior: boundary.initialVersioningBehavior }
+      : {},
+  )(next);
 }
 
 /**

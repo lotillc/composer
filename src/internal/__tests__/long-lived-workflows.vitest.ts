@@ -61,6 +61,35 @@ describe("waitForSignal", () => {
     ).toThrow("exactly one field");
   });
 
+  it.each([
+    ["a Date", new Date(0)],
+    ["a Map", new Map()],
+    ["a bigint", 1n],
+    ["a nested non-finite number", { approved: false, score: Number.NaN }],
+  ])("rejects %s as a timeout value, since the plan stores it as JSON", (_label, value) => {
+    expect(() =>
+      waitForSignal<Bag>()({
+        name: "w",
+        signal: approvalSignal,
+        provides: ["approval"],
+        timeoutValue: value as never,
+      }),
+    ).toThrow("timeoutValue must be plain JSON data");
+  });
+
+  it("accepts plain JSON data, and undefined, as a timeout value", () => {
+    for (const timeoutValue of [{ approved: false }, undefined]) {
+      expect(() =>
+        waitForSignal<Bag>()({
+          name: "w",
+          signal: approvalSignal,
+          provides: ["approval"],
+          timeoutValue: timeoutValue as never,
+        }),
+      ).not.toThrow();
+    }
+  });
+
   it("rejects a maxPendingSignals that is not a positive integer", () => {
     expect(() =>
       waitForSignal<Bag>()({

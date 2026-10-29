@@ -279,16 +279,22 @@ export async function writeWorkflowSourceFile(
     /**
      * Whether the worker that bundles this source runs with Worker Versioning. Temporal's
      * core SDK rejects every task completion that carries a versioning behavior when the
-     * worker is unversioned, so declarations are dropped unless this is set.
+     * worker is unversioned, so declarations are dropped unless this is set. A stage
+     * boundary's next-run behavior means nothing without versioning, so it goes too.
      */
     workerVersioning?: boolean;
+    /**
+     * File name within the temp directory. Defaults to the one the workflow worker uses;
+     * a caller bundling alongside a live worker in the same process passes its own.
+     */
+    fileName?: string;
   } = {},
 ): Promise<string> {
   const factoryPath = resolveWorkflowFactoryPath().replaceAll("\\", "/");
   // realpathSync resolves OS-level symlinks (e.g. macOS /tmp -> /private/tmp).
   // Temporal's bundler writes an entrypoint to memfs using this path, but webpack
   // resolves symlinks when reading, causing a mismatch if the path contains symlinks.
-  const outputPath = resolve(realpathSync(tmpdir()), "__workflow-source.js");
+  const outputPath = resolve(realpathSync(tmpdir()), options.fileName ?? "__workflow-source.js");
 
   const allWorkflows = collectAllWorkflows(workflows);
 
@@ -298,7 +304,10 @@ export async function writeWorkflowSourceFile(
 
   for (const workflow of allWorkflows) {
     const plan = generateWorkflowPlan(workflow);
-    if (!options.workerVersioning) delete plan.versioningBehavior;
+    if (!options.workerVersioning) {
+      delete plan.versioningBehavior;
+      for (const boundary of plan.stageBoundaries ?? []) delete boundary.initialVersioningBehavior;
+    }
     const safeName = workflow.name.replace(/-/g, "_").replace(/\./g, "_");
 
     code += `const ${safeName}Plan = ${JSON.stringify(plan)};\n`;

@@ -61,6 +61,37 @@ describe("writeWorkflowSourceFile", () => {
     expect(code).not.toContain("versioningBehavior");
   });
 
+  it("drops stage boundaries' next-run behavior for an unversioned worker", async () => {
+    interface StagedBag {
+      input: string;
+      first: string;
+      second: string;
+    }
+    const first = step<StagedBag>()({
+      name: "first",
+      needs: ["input"],
+      provides: ["first"],
+      run: async () => ({ first: "1" }),
+    });
+    const second = step<StagedBag>()({
+      name: "second",
+      needs: ["first"],
+      provides: ["second"],
+      run: async () => ({ second: "2" }),
+    });
+    const staged = createWorkflow<StagedBag>("test-staged-workflow")
+      .requires("input")
+      .build([first, second])
+      .continueAsNew("after-first", { afterStep: first });
+    const versioned = await readFile(
+      await writeWorkflowSourceFile([staged], { workerVersioning: true }),
+      "utf-8",
+    );
+    expect(versioned).toContain('"initialVersioningBehavior":"AUTO_UPGRADE"');
+    const unversioned = await readFile(await writeWorkflowSourceFile([staged]), "utf-8");
+    expect(unversioned).toContain('"stageBoundaries":[{"name":"after-first","afterBatch":0}]');
+  });
+
   it("should include child workflows referenced by fanOut steps", async () => {
     const outputPath = await writeWorkflowSourceFile([parentWorkflow]);
     const code = await readFile(outputPath, "utf-8");
