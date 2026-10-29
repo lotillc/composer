@@ -739,6 +739,48 @@ describe("waits beside failures", () => {
     });
   });
 
+  it("does not mark the batch's checkpoint until a re-run wait has finished", async () => {
+    mocks.activityFunctions["mixed__errorHandler"] = vi.fn(async () => ({ handled: true }));
+    mocks.activityFunctions.after = activity({ y: "Y" });
+    let handler: ((args: { checkpointName: string }) => Promise<unknown>) | undefined;
+    mocks.setHandler.mockImplementation((_def: unknown, fn: typeof handler) => {
+      handler = fn;
+    });
+    let snapshot: Promise<unknown> | undefined;
+    let blocks = 0;
+    mocks.onBlock = () => {
+      blocks++;
+      // While the wait is blocked again after the handled failure, ask for the checkpoint;
+      // the request itself blocks (block 3), and then the signal arrives.
+      if (blocks === 2) snapshot = handler!({ checkpointName: "batch-1" });
+      if (blocks === 3) mocks.defaultSignalHandler!("approval", { ok: true });
+    };
+    const plan: WorkflowPlan = {
+      ...batchWithWait(),
+      errorHandlerActivityName: "mixed__errorHandler",
+      checkpoints: [{ name: "batch-1", afterBatch: 0, timeout: 30_000 }],
+    };
+
+    await createWorkflowFunction(plan)({ initialData: { id: "1" } });
+
+    await expect(snapshot).resolves.toMatchObject({ approval: { ok: true } });
+  });
+
+  it("still marks the checkpoint, for partial results, when the batch fails unhandled", async () => {
+    let handler: ((args: { checkpointName: string }) => Promise<unknown>) | undefined;
+    mocks.setHandler.mockImplementation((_def: unknown, fn: typeof handler) => {
+      handler = fn;
+    });
+    const plan: WorkflowPlan = {
+      ...batchWithWait(),
+      checkpoints: [{ name: "batch-1", afterBatch: 0, timeout: 30_000 }],
+    };
+
+    await createWorkflowFunction(plan)({ initialData: { id: "1" } }).catch(() => undefined);
+
+    await expect(handler!({ checkpointName: "batch-1" })).resolves.toMatchObject({ id: "1" });
+  });
+
   it("keeps a re-run wait's original deadline", async () => {
     mocks.activityFunctions["mixed__errorHandler"] = vi.fn(async () => ({ handled: true }));
     mocks.activityFunctions.fails = vi.fn(async () => {

@@ -1140,9 +1140,14 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
 
         // Mark any checkpoints that trigger after this batch completes
         // This happens regardless of whether some steps in the batch failed,
-        // allowing clients to receive partial results if they requested a checkpoint
-        for (const checkpoint of rerunWaits ? [] : (plan.checkpoints ?? [])) {
-          if (checkpoint.afterBatch === batchIndex) {
+        // allowing clients to receive partial results if they requested a checkpoint.
+        // While a released wait is still to run again the batch is not complete, so marking
+        // waits for that round -- or for the workflow failing without it.
+        const markBatchCheckpoints = () => {
+          for (const checkpoint of plan.checkpoints ?? []) {
+            if (checkpoint.afterBatch !== batchIndex || reachedCheckpoints.has(checkpoint.name)) {
+              continue;
+            }
             wf.log.debug("Marking checkpoint as reached", {
               workflowId,
               checkpointName: checkpoint.name,
@@ -1151,7 +1156,8 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
             });
             reachedCheckpoints.add(checkpoint.name);
           }
-        }
+        };
+        if (released.length === 0) markBatchCheckpoints();
 
         // If any steps failed, handle the batch error
         if (rejected.length > 0) {
@@ -1272,6 +1278,8 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
           }
 
           if (resultError) {
+            // Failing without the released waits, so the batch is as complete as it gets.
+            markBatchCheckpoints();
             // Unhandled error: throw ApplicationFailure to mark workflow as Failed.
             // The bag is a details entry of its own, not a key on the error entry: it is every
             // value the workflow touched, it goes to Temporal event history at rest, and a
