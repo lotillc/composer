@@ -739,6 +739,17 @@ describe("carried state limits", () => {
     expect(mocks.continueAsNewOptions).toHaveLength(0);
   });
 
+  it("applies a budget the plan sets, for codecs that grow payloads", async () => {
+    mocks.activityFunctions.a = activity({ x: "a".repeat(200_000) });
+    const outcome = await createWorkflowFunction(stagedPlan({ continuationBudgetBytes: 100_000 }))({
+      initialData: { id: "1" },
+    }).catch((err: unknown) => err);
+    expect((outcome as ApplicationFailure).type).toBe(CONTINUATION_TOO_LARGE_CODE);
+    expect((outcome as ApplicationFailure).details?.[0]).toMatchObject({
+      error: { data: { budget: 100_000 } },
+    });
+  });
+
   it("warns when the carried state is large but within budget", async () => {
     mocks.activityFunctions.a = activity({ x: "a".repeat(600_000) });
     await runUntilContinued(stagedPlan(), { initialData: { id: "1" } });

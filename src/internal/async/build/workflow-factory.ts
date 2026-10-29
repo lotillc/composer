@@ -762,6 +762,12 @@ export interface WorkflowPlan {
    * `setWorkflowOptions`. Unset leaves the worker default in force.
    */
   versioningBehavior?: WorkflowVersioningBehavior;
+
+  /**
+   * Carried-state budget for continue-as-new, from `TemporalConfig.continuationBudgetBytes`.
+   * Unset uses `CONTINUATION_BUDGET_BYTES`.
+   */
+  continuationBudgetBytes?: number;
 }
 
 /**
@@ -1298,7 +1304,14 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
 
       const boundary = plan.stageBoundaries?.find((b) => b.afterBatch === batchIndex);
       if (boundary) {
-        await continueAtStage(boundary, input, bag, completedSteps, inbox);
+        await continueAtStage(
+          boundary,
+          input,
+          bag,
+          completedSteps,
+          inbox,
+          plan.continuationBudgetBytes ?? CONTINUATION_BUDGET_BYTES,
+        );
       }
     }
 
@@ -1330,6 +1343,7 @@ async function continueAtStage(
   bag: Record<string, any>,
   completedSteps: Set<string>,
   inbox: SignalInbox,
+  budgetBytes: number,
 ): Promise<never> {
   await wf.condition(wf.allHandlersFinished);
 
@@ -1384,22 +1398,22 @@ async function continueAtStage(
       { stage: boundary.name, measurable: false },
     );
   }
-  if (bytes > CONTINUATION_BUDGET_BYTES) {
+  if (bytes > budgetBytes) {
     // Fail rather than issue a command Temporal would reject on every retry. The state
     // itself stays out of the failure, which goes to event history and has the same cap.
     throw workflowFailure(
       CONTINUATION_TOO_LARGE_CODE,
       `Stage "${boundary.name}" of workflow "${wf.workflowInfo().workflowType}" would carry ` +
-        `${bytes} bytes into its next run, over the ${CONTINUATION_BUDGET_BYTES}-byte budget. ` +
+        `${bytes} bytes into its next run, over the ${budgetBytes}-byte budget. ` +
         `Keep large data out of the bag and carry a reference to it instead.`,
-      { stage: boundary.name, bytes, budget: CONTINUATION_BUDGET_BYTES },
+      { stage: boundary.name, bytes, budget: budgetBytes },
     );
   }
-  if (bytes > CONTINUATION_WARN_BYTES) {
+  if (bytes > Math.min(CONTINUATION_WARN_BYTES, budgetBytes / 2)) {
     wf.log.warn("Carried state is large; keep big data out of the bag", {
       stage: boundary.name,
       bytes,
-      budget: CONTINUATION_BUDGET_BYTES,
+      budget: budgetBytes,
     });
   }
 

@@ -134,6 +134,12 @@ export interface WorkflowWorkerConfig {
   buildId?: string;
 
   /**
+   * Most bytes a staged workflow may carry into its next run. See
+   * `TemporalConfig.continuationBudgetBytes`.
+   */
+  continuationBudgetBytes?: number;
+
+  /**
    * Logger for worker lifecycle messages.
    * If not provided, defaults to the console-based defaultLogger.
    */
@@ -205,6 +211,7 @@ export async function createWorkflowWorkers(
   // Worker Versioning is on exactly when a buildId is set (see workerDeploymentOptions below).
   const workflowsPath = await writeWorkflowSourceFile(config.workflows, {
     workerVersioning: Boolean(config.buildId),
+    continuationBudgetBytes: config.continuationBudgetBytes,
   });
 
   logger.info("Workflow source file generated", { workflowsPath });

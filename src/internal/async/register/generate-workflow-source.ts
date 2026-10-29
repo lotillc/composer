@@ -340,8 +340,16 @@ export async function writeWorkflowSourceFile(
      * a caller bundling alongside a live worker in the same process passes its own.
      */
     fileName?: string;
+    /** Carried-state budget written into staged plans; unset leaves the default. */
+    continuationBudgetBytes?: number;
   } = {},
 ): Promise<string> {
+  const budget = options.continuationBudgetBytes;
+  if (budget !== undefined && (!Number.isInteger(budget) || budget <= 0)) {
+    throw new Error(
+      `continuationBudgetBytes must be a positive integer, got ${String(budget)}`,
+    );
+  }
   const factoryPath = resolveWorkflowFactoryPath().replaceAll("\\", "/");
   // realpathSync resolves OS-level symlinks (e.g. macOS /tmp -> /private/tmp).
   // Temporal's bundler writes an entrypoint to memfs using this path, but webpack
@@ -363,6 +371,7 @@ export async function writeWorkflowSourceFile(
       delete plan.versioningBehavior;
       for (const boundary of plan.stageBoundaries ?? []) delete boundary.initialVersioningBehavior;
     }
+    if (budget !== undefined && plan.stageBoundaries) plan.continuationBudgetBytes = budget;
     const planId = `plan${index}`;
 
     code += `const ${planId} = ${JSON.stringify(plan)};\n`;

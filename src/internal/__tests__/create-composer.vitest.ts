@@ -5,6 +5,7 @@ import * as temporalClient from "../async/execute/temporal-client.js";
 import * as activityWorker from "../async/register/activity-worker.js";
 import * as scheduleSync from "../async/schedule/sync-schedules.js";
 import * as workflowWorker from "../async/register/workflow-worker.js";
+import * as replayHistories from "../async/register/replay-histories.js";
 import { createComposer } from "../create-composer.js";
 import { defineWorkflowSignal } from "../dag-sync-signal.js";
 import type { Workflow } from "../dag-sync-workflow.js";
@@ -13,6 +14,7 @@ vi.mock("../async/execute/temporal-client.js");
 vi.mock("../async/register/activity-worker.js");
 vi.mock("../async/schedule/sync-schedules.js");
 vi.mock("../async/register/workflow-worker.js");
+vi.mock("../async/register/replay-histories.js");
 
 const mockDescribeWorkflow = vi.mocked(temporalClient.describeWorkflow);
 const mockRunActivityWorkers = vi.mocked(activityWorker.runActivityWorkers);
@@ -274,11 +276,26 @@ describe("per-workflow start-time pinning", () => {
     stageBoundaries: [{ name: "later", afterStep: "s" }],
   } as unknown as Workflow<any, any, any>;
 
+  // A fan-out child inherits its parent's start-time pin, which would outrank its own stages.
+  const parentOfStagedChild = {
+    name: "parent-of-staged",
+    steps: [
+      {
+        name: "fan",
+        needs: [],
+        provides: [],
+        run: async () => ({}),
+        __fanOut: { childWorkflow: stagedPinnedWorkflow, concurrency: 1 },
+      },
+    ],
+  } as unknown as Workflow<any, any, any>;
+
   it.each([
     ["no declaration", defaultWorkflow, pinned],
     ["PINNED", pinnedWorkflow, pinned],
     ["AUTO_UPGRADE", upgradingWorkflow, undefined],
     ["PINNED with stage boundaries", stagedPinnedWorkflow, undefined],
+    ["a fan-out to a staged child", parentOfStagedChild, undefined],
   ])("startAsyncWorkflow with %s", async (_label, workflow, expected) => {
     await versioned.startAsyncWorkflow(workflow, {});
     expect(overrideOfLastStart()).toEqual(expected);
@@ -405,5 +422,40 @@ describe("signalAsyncWorkflow", () => {
     const approval = defineWorkflowSignal<{ approved: boolean }>("approval");
     // @ts-expect-error -- payload must match the signal's declared type
     void composer.signalAsyncWorkflow("request-42", approval, { approved: "yes" });
+  });
+});
+
+// The budget decides whether a boundary continues as new or fails, so the replay check must
+// use the same one the workers do.
+describe("continuation budget", () => {
+  const budgeted = createComposer({
+    contextProvider: noOpContextProvider,
+    temporal: {
+      serverAddress: "localhost:7233",
+      namespace: "test",
+      serviceName: "test-service",
+      continuationBudgetBytes: 900_000,
+    },
+  });
+
+  it("passes the budget to the workflow workers and to the replay check alike", async () => {
+    vi.mocked(workflowWorker.runWorkflowWorkers).mockReset().mockResolvedValue(undefined);
+    vi.mocked(replayHistories.replayWorkflowHistories)
+      .mockReset()
+      .mockResolvedValue({ replayed: 0, failures: [] });
+
+    await budgeted.runWorkflowWorkers({
+      taskQueues: ["workflow-tasks"],
+      maxConcurrentWorkflowTaskExecutions: 1,
+      workflows: [],
+    });
+    await budgeted.replayWorkflowHistories({ workflows: [], histories: [] });
+
+    expect(vi.mocked(workflowWorker.runWorkflowWorkers).mock.calls[0]?.[0]).toMatchObject({
+      continuationBudgetBytes: 900_000,
+    });
+    expect(vi.mocked(replayHistories.replayWorkflowHistories).mock.calls[0]?.[0]).toMatchObject({
+      continuationBudgetBytes: 900_000,
+    });
   });
 });

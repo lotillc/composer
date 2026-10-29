@@ -17,6 +17,7 @@ import {
 } from "./async/execute/temporal-client.js";
 import { executeWorkflowTemporal, startWorkflowTemporal } from "./async/execute/workflow-execution.js";
 import { runActivityWorkers as runActivityWorkersInternal } from "./async/register/activity-worker.js";
+import { collectAllWorkflows } from "./async/register/generate-workflow-source.js";
 import { replayWorkflowHistories as replayWorkflowHistoriesInternal } from "./async/register/replay-histories.js";
 import { MAX_DEDUPE_KEY_BYTES } from "./async/build/workflow-factory.js";
 import { jsonStringBytes } from "./json-size.js";
@@ -189,10 +190,16 @@ export function createComposer<TContext>(
         },
       }
     : undefined;
+  //
+  // The same goes for a workflow whose fan-out children (at any depth) are staged or
+  // AUTO_UPGRADE: a child inherits its parent's start-time pin, and it would outrank the
+  // child's own boundaries and declaration in the same way.
   const versioningOverrideFor = (
     workflow: Workflow<any, any, any, any, any>,
   ): VersioningOverride | undefined =>
-    workflow.versioningBehavior === "AUTO_UPGRADE" || (workflow.stageBoundaries?.length ?? 0) > 0
+    collectAllWorkflows([workflow]).some(
+      (wf) => wf.versioningBehavior === "AUTO_UPGRADE" || (wf.stageBoundaries?.length ?? 0) > 0,
+    )
       ? undefined
       : pinnedOverride;
 
@@ -383,6 +390,7 @@ export function createComposer<TContext>(
         buildId: temporalConfig.buildId,
         dataConverter: temporalConfig.dataConverter,
         interceptors: temporalConfig.interceptors,
+        continuationBudgetBytes: temporalConfig.continuationBudgetBytes,
         ...config,
         logger: resolvedLogger,
       });
@@ -393,6 +401,7 @@ export function createComposer<TContext>(
         ...options,
         dataConverter: temporalConfig.dataConverter,
         interceptors: temporalConfig.interceptors,
+        continuationBudgetBytes: temporalConfig.continuationBudgetBytes,
       });
     },
 

@@ -194,6 +194,23 @@ export interface TemporalConfig {
    * Interceptors applied to the workers Composer creates.
    */
   interceptors?: ComposerWorkerInterceptors;
+
+  /**
+   * Most bytes a staged workflow may carry into its next run, measured as the UTF-8 JSON
+   * the default payload converter writes. Over it, the workflow fails with
+   * `COMPOSER_CONTINUATION_TOO_LARGE` instead of continuing as new. Defaults to 1,500,000,
+   * which leaves a margin under Temporal's default 2 MB payload cap.
+   *
+   * A payload codec runs outside the workflow, so its effect cannot be measured there. If
+   * `dataConverter` grows payloads (a base64 envelope, encryption), divide the default by
+   * the growth factor: about 1,125,000 for a codec that adds a third, as base64 does.
+   *
+   * Raise it only together with the server's `limit.blobSize.error`: at or above that
+   * limit (2 MiB by default) the guard no longer prevents a continue-as-new Temporal would
+   * reject on every retry. The replay check must use the same value as the workers, which
+   * `composer.replayWorkflowHistories` does.
+   */
+  continuationBudgetBytes?: number;
 }
 
 /**

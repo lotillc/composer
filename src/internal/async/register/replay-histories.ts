@@ -37,6 +37,11 @@ export interface ReplayWorkflowHistoriesOptions {
   dataConverter?: DataConverter;
   /** Workflow interceptor modules the workers load; they take part in replay too. */
   interceptors?: Pick<ComposerWorkerInterceptors, "workflowModules">;
+  /**
+   * The workers' carried-state budget. It decides whether a stage boundary continues as new
+   * or fails, so replaying under a different one can report histories that are fine.
+   */
+  continuationBudgetBytes?: number;
 }
 
 /** A history the build under test could not replay. */
@@ -83,6 +88,7 @@ export async function replayWorkflowHistories(
   const workflowsPath = await writeWorkflowSourceFile(options.workflows, {
     workerVersioning: false,
     fileName: `__workflow-source-replay-${process.pid}-${++replayCounter}.js`,
+    continuationBudgetBytes: options.continuationBudgetBytes,
   });
 
   try {

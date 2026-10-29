@@ -73,6 +73,45 @@ describe("writeWorkflowSourceFile", () => {
     expect(code).not.toContain("versioningBehavior");
   });
 
+  it("writes a continuation budget into staged plans only, and rejects a bad one", async () => {
+    const plain = createWorkflow<ChildBag>("test-plain-budget").requires("input").build([childStep]);
+    const code = await readFile(
+      await writeWorkflowSourceFile([plain, upgrading], { continuationBudgetBytes: 900_000 }),
+      "utf-8",
+    );
+    expect(code).not.toContain("continuationBudgetBytes");
+
+    interface StagedBag {
+      input: string;
+      output: string;
+      after: string;
+    }
+    const first = step<StagedBag>()({
+      name: "budgetFirst",
+      needs: ["input"],
+      provides: ["output"],
+      run: async () => ({ output: "o" }),
+    });
+    const after = step<StagedBag>()({
+      name: "budgetAfter",
+      needs: ["output"],
+      provides: ["after"],
+      run: async () => ({ after: "a" }),
+    });
+    const staged = createWorkflow<StagedBag>("test-staged-budget")
+      .requires("input")
+      .build([first, after])
+      .continueAsNew("later", { afterStep: first });
+    const stagedCode = await readFile(
+      await writeWorkflowSourceFile([staged], { continuationBudgetBytes: 900_000 }),
+      "utf-8",
+    );
+    expect(stagedCode).toContain('"continuationBudgetBytes":900000');
+    await expect(writeWorkflowSourceFile([plain], { continuationBudgetBytes: 0 })).rejects.toThrow(
+      "continuationBudgetBytes must be a positive integer",
+    );
+  });
+
   it("drops stage boundaries' next-run behavior for an unversioned worker", async () => {
     interface StagedBag {
       input: string;
