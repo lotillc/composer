@@ -17,6 +17,8 @@ import type {
   StageInitialVersioningBehavior,
   Workflow,
 } from "./dag-sync-workflow.js";
+import { isSignalWaitStep } from "./dag-sync-signal.js";
+import type { Step } from "./dag-sync-step.js";
 import { planWorkflowBatches } from "./workflow-planning.js";
 
 /** A stage boundary placed on the batch it follows. */
@@ -128,4 +130,31 @@ export function resolveStageBoundaries(
   }
 
   return resolved;
+}
+
+/**
+ * Checks that every signal wait is alone in its batch.
+ *
+ * A wait can block for weeks, so a batch it shares would wait on it: a sibling's failure
+ * could not be handled until the signal arrived, and a checkpoint after the batch would not
+ * fire. Alone, a wait's batch ends exactly when the wait does, and its only failure is its
+ * own timeout. Plans nothing for a workflow without waits.
+ *
+ * @throws Error naming the wait and what shares its batch
+ */
+export function assertSignalWaitsAlone(workflow: Workflow<any, any, any, any, any>): void {
+  const steps: Step<any, any, any, any, any>[] = [...workflow.steps];
+  if (!steps.some((step) => isSignalWaitStep(step))) return;
+
+  const { batches } = planWorkflowBatches(steps, initialFieldsOf(workflow));
+  for (const batch of batches) {
+    const wait = batch.find((step) => isSignalWaitStep(step));
+    if (!wait || batch.length === 1) continue;
+    const others = batch.filter((step) => step !== wait).map((step) => step.name);
+    throw new Error(
+      `Workflow "${workflow.name}": signal wait "${wait.name}" would run alongside ` +
+        `[${others.join(", ")}]. A wait must be alone in its batch. Give it a \`needs\` on a ` +
+        `field one of them provides, so it runs after them, or have them need its field.`,
+    );
+  }
 }

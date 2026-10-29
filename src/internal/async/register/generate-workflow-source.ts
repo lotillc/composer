@@ -24,7 +24,11 @@ import type {
 } from "../../dag-sync-step.js";
 import { DEFAULT_CHECKPOINT_TIMEOUT_MS, type Workflow } from "../../dag-sync-workflow.js";
 import { planWorkflowBatches } from "../../workflow-planning.js";
-import { initialFieldsOf, resolveStageBoundaries } from "../../workflow-stages.js";
+import {
+  assertSignalWaitsAlone,
+  initialFieldsOf,
+  resolveStageBoundaries,
+} from "../../workflow-stages.js";
 import type {
   SignalWaitBatchEntry,
   StepActivityConfig,
@@ -73,6 +77,7 @@ function buildActivityConfig(step: Step<any, any, any>): StepActivityConfig | un
  */
 export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>): WorkflowPlan {
   const initialFields = initialFieldsOf(workflow);
+  assertSignalWaitsAlone(workflow);
 
   const flattenedSteps = denamespaceSyntheticSteps(workflow.steps);
   const planResult = planWorkflowBatches([...flattenedSteps], initialFields);

@@ -150,6 +150,51 @@ describe("waitForSignal", () => {
   });
 });
 
+describe("a wait alone in its batch", () => {
+  // Needs nothing, so it would run alongside sendRequest in the first batch.
+  const eagerWait = waitForSignal<Bag>()({
+    name: "eagerWait",
+    signal: approvalSignal,
+    provides: ["approval"],
+  });
+
+  it("rejects a wait that would share its batch, naming what it shares it with", () => {
+    expect(() =>
+      createWorkflow<Bag>("crowded").requires("requestId").build([sendRequest, eagerWait, verify]),
+    ).toThrow(
+      'signal wait "eagerWait" would run alongside [sendRequest]. A wait must be alone in its batch',
+    );
+  });
+
+  it("accepts the same wait once a need orders it after its sibling", () => {
+    expect(() => baseWorkflow()).not.toThrow();
+  });
+
+  it("checks a wait that a composed workflow brings in", () => {
+    const inner = createWorkflow<Bag>("inner").build([eagerWait]);
+    expect(() =>
+      createWorkflow<Bag>("outer").requires("requestId").build([sendRequest, use(inner), verify]),
+    ).toThrow("A wait must be alone in its batch");
+  });
+
+  it("rejects a hand-assembled workflow when its plan is generated", () => {
+    const wf = { ...baseWorkflow(), steps: [sendRequest, eagerWait, verify] };
+    expect(() => generateWorkflowPlan(wf as never)).toThrow("A wait must be alone in its batch");
+  });
+
+  it("does not hold sync-only workflows without waits to the rule", () => {
+    const parallel = step<Bag>()({
+      name: "parallel",
+      needs: ["requestId"],
+      provides: ["scratch"],
+      run: async () => ({ scratch: "s" }),
+    });
+    expect(() =>
+      createWorkflow<Bag>("plain").requires("requestId").build([sendRequest, parallel]),
+    ).not.toThrow();
+  });
+});
+
 describe("builder", () => {
   it("records stage boundaries and versioning, keeping checkpoints alongside", () => {
     const wf = baseWorkflow()
