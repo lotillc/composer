@@ -78,6 +78,17 @@ describe("waitForSignal", () => {
     ).toThrow("timeoutValue must be plain JSON data");
   });
 
+  it("rejects an undefined property in a timeout value, since JSON drops the key", () => {
+    expect(() =>
+      waitForSignal<Bag>()({
+        name: "w",
+        signal: approvalSignal,
+        provides: ["approval"],
+        timeoutValue: { approved: false, note: undefined } as never,
+      }),
+    ).toThrow("timeoutValue must be plain JSON data");
+  });
+
   it("rejects a sparse array as a timeout value, since JSON writes its holes as null", () => {
     expect(() =>
       waitForSignal<Bag>()({
@@ -96,7 +107,7 @@ describe("waitForSignal", () => {
   });
 
   it("accepts plain JSON data, and undefined, as a timeout value", () => {
-    for (const timeoutValue of [{ approved: false }, undefined, { approved: false, note: undefined }]) {
+    for (const timeoutValue of [{ approved: false }, undefined]) {
       expect(() =>
         waitForSignal<Bag>()({
           name: "w",
@@ -358,6 +369,75 @@ describe("builder", () => {
         ...(aliases && { aliases }),
       }),
     ).toThrow(/Stage name/);
+  });
+
+  it("places a boundary after the composed node passed, not a parent node of the same name", () => {
+    interface SameBag {
+      requestId: string;
+      sentAt: string;
+      outer: { approved: boolean };
+      inner: { approved: boolean };
+      done: boolean;
+    }
+    const sent = step<SameBag>()({
+      name: "sent",
+      needs: ["requestId"],
+      provides: ["sentAt"],
+      run: async () => ({ sentAt: "t" }),
+    });
+    const parentWait = waitForSignal<SameBag>()({
+      name: "await",
+      signal: approvalSignal,
+      needs: ["sentAt"],
+      provides: ["outer"],
+    });
+    const childWait = waitForSignal<SameBag>()({
+      name: "await",
+      signal: approvalSignal,
+      needs: ["outer"],
+      provides: ["inner"],
+    });
+    const done = step<SameBag>()({
+      name: "done",
+      needs: ["inner"],
+      provides: ["done"],
+      run: async () => ({ done: true }),
+    });
+    const inner = createWorkflow<SameBag>("inner").requires("outer").build([childWait]);
+    const wf = createWorkflow<SameBag>("same-names")
+      .requires("requestId")
+      .build([sent, parentWait, use(inner), done])
+      .continueAsNew("after-inner", { afterStep: childWait });
+
+    expect(wf.stageBoundaries?.[0]?.afterStep).toBe("inner.await");
+  });
+
+  it("falls back to the name for hand-built steps that share one run function", () => {
+    const run = async () => ({});
+    const handA = { name: "handA", needs: ["requestId"], provides: [], run } as never;
+    const handB = { name: "handB", needs: ["requestId"], provides: [], run } as never;
+    const wf = createWorkflow<Bag>("hand-built")
+      .requires("requestId")
+      .build([handA, handB, sendRequest, awaitApproval, verify] as never)
+      .checkpoint("after-a", { afterStep: handA });
+    expect(wf.checkpoints?.[0]?.afterStep).toBe("handA");
+  });
+
+  it("refuses a boundary after a step that occurs twice", () => {
+    const notify = step<Bag>()({
+      name: "notify",
+      needs: ["requestId"],
+      provides: [],
+      run: async () => ({}),
+    });
+    const first = createWorkflow<Bag>("first").requires("requestId").build([notify]);
+    const second = createWorkflow<Bag>("second").requires("requestId").build([notify]);
+    const wf = createWorkflow<Bag>("twice")
+      .requires("requestId")
+      .build([use(first), use(second), sendRequest, awaitApproval, verify]);
+    expect(() => wf.continueAsNew("s", { afterStep: notify })).toThrow(
+      'Step "notify" occurs more than once in the workflow',
+    );
   });
 
   it("rejects a duplicate stage name", () => {

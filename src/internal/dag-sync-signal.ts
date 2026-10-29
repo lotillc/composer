@@ -114,8 +114,9 @@ function isJsonSafe(value: unknown, depth = 0): boolean {
   if (typeof value !== "object") return false;
   const proto = Object.getPrototypeOf(value);
   if (proto !== Object.prototype && proto !== null) return false;
-  // An `undefined` property is dropped by JSON, and reads back as `undefined` all the same.
-  return Object.values(value).every((item) => item === undefined || isJsonSafe(item, depth + 1));
+  // An `undefined` property is rejected too: JSON drops the key, so the value would come back
+  // a different shape, which `Object.hasOwn`, key enumeration or a schema would notice.
+  return Object.values(value).every((item) => isJsonSafe(item, depth + 1));
 }
 
 /**
@@ -194,7 +195,8 @@ export function waitForSignal<Bag extends Record<string, any>>() {
     if (definition.timeoutValue !== undefined && !isJsonSafe(definition.timeoutValue)) {
       throw new Error(
         `waitForSignal "${definition.name}": timeoutValue must be plain JSON data ` +
-          `(objects, arrays, strings, finite numbers, booleans, null); it is stored in the ` +
+          `(objects, arrays, strings, finite numbers, booleans, null, with no undefined ` +
+          `properties or array holes); it is stored in the ` +
           `workflow plan as JSON, so a Date, Map, bigint or class instance would not survive`,
       );
     }

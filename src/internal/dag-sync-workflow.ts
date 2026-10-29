@@ -746,7 +746,7 @@ function workflow<
         // Validate step exists (supports both namespaced and unnamespaced)
         // The TypeScript constraint S extends Steps[number] provides compile-time validation,
         // but we still do runtime validation for composed workflows where step names get namespaced
-        const resolvedStepName = resolveStepName(steps, stepName);
+        const resolvedStepName = resolveStepReference(steps, options.afterStep);
         if (!resolvedStepName) {
           const availableSteps = steps.map((s) => s.name).join(", ");
           throw new Error(
@@ -792,7 +792,7 @@ function workflow<
         }
 
         const stepName = options.afterStep.name;
-        const resolvedStepName = resolveStepName(steps, stepName);
+        const resolvedStepName = resolveStepReference(steps, options.afterStep);
         if (!resolvedStepName) {
           const availableSteps = steps.map((s) => s.name).join(", ");
           throw new Error(
@@ -850,6 +850,39 @@ function workflow<
 
   // Explicitly pass 'never' as the type parameter since no checkpoints are defined yet
   return createBuilder<never>(wf);
+}
+
+/**
+ * Resolves the node a caller passed (to `.checkpoint` or `.continueAsNew`) to its name in
+ * the flattened workflow.
+ *
+ * Composition copies nodes under namespaced names, but each copy keeps its node's `run`, and
+ * every `step()`, `fanOut()` and `waitForSignal()` call creates its own. Matching on `run`
+ * finds the occurrence of the very node passed, even when a parent node and a composed
+ * child's node share a local name, where a name lookup would pick the parent's. Falls back
+ * to the name for a node that isn't in the workflow by reference.
+ *
+ * @throws Error when the node occurs more than once (the same step reused in two children)
+ */
+function resolveStepReference<Bag extends Record<string, any>>(
+  steps: readonly Step<Bag, any, any, any, any>[],
+  node: Step<any, any, any, any, any>,
+): string | null {
+  // Only nodes from the factories have a `run` of their own; a hand-built step may share one
+  // or lack it, so the local name must match too, and anything else falls back to the name.
+  if (typeof node.run !== "function") return resolveStepName(steps, node.name);
+  const occurrences = steps.filter(
+    (step) => step.run === node.run && step.name.split(".").at(-1) === node.name,
+  );
+  if (occurrences.length === 1) return occurrences[0]!.name;
+  if (occurrences.length > 1) {
+    throw new Error(
+      `Step "${node.name}" occurs more than once in the workflow ` +
+        `[${occurrences.map((step) => step.name).join(", ")}], so it cannot identify one ` +
+        `place to put a checkpoint or stage boundary. Use a separate step for that place.`,
+    );
+  }
+  return resolveStepName(steps, node.name);
 }
 
 /**
