@@ -131,7 +131,7 @@ export {
   SIGNAL_WAIT_TIMEOUT_CODE,
   STEP_NOT_READY_CODE,
   STEP_POLL_TIMEOUT_CODE,
-} from "./internal/poll-codes.js";
+} from "./internal/workflow-codes.js";
 export type { ComposerLogger, TraceErrorMessage } from "./internal/types.js";
 export type { WorkflowExecutionStatusName } from "@temporalio/client";
 // Re-exported so a consumer can type a converter or an interceptor without taking a direct

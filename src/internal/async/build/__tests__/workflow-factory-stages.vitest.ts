@@ -7,7 +7,7 @@
 import { ApplicationFailure } from "@temporalio/workflow";
 import { beforeEach, describe, expect, it, type MockedFunction, vi } from "vitest";
 
-import { SIGNAL_WAIT_TIMEOUT_CODE } from "../../../poll-codes.js";
+import { SIGNAL_WAIT_TIMEOUT_CODE } from "../../../workflow-codes.js";
 import type {
   StepBatch,
   TemporalWorkflowResult,

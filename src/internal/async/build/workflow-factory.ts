@@ -19,12 +19,17 @@
 
 import * as wf from "@temporalio/workflow";
 import type { DurationString } from "../../dag-sync-step.js";
+// Type-only, so nothing from the workflow module reaches the sandbox bundle.
+import type {
+  StageInitialVersioningBehavior,
+  WorkflowVersioningBehavior,
+} from "../../dag-sync-workflow.js";
 import { safeErrorName } from "../../error-for-log.js";
 import {
   SIGNAL_WAIT_TIMEOUT_CODE,
   STEP_NOT_READY_CODE,
   STEP_POLL_TIMEOUT_CODE,
-} from "../../poll-codes.js";
+} from "../../workflow-codes.js";
 
 /**
  * Input structure for our generated Temporal workflows.
@@ -668,7 +673,7 @@ export interface StageBoundaryPlanEntry {
   /** Produced fields to carry; unset carries all of them */
   carry?: string[];
   /** Versioning behavior of the next run's first task */
-  initialVersioningBehavior: "AUTO_UPGRADE" | "USE_RAMPING_VERSION";
+  initialVersioningBehavior: StageInitialVersioningBehavior;
   /** Earlier names of this stage; a continuation carrying one resumes here */
   aliases?: string[];
 }
@@ -717,7 +722,7 @@ export interface WorkflowPlan {
    * Worker Versioning behavior declared by the workflow, applied with
    * `setWorkflowOptions`. Unset leaves the worker default in force.
    */
-  versioningBehavior?: "PINNED" | "AUTO_UPGRADE";
+  versioningBehavior?: WorkflowVersioningBehavior;
 }
 
 /**

@@ -5,7 +5,7 @@
  * deterministic sandbox and cannot reach the Node-side error classes, while step
  * code cannot import the workflow factory. Both sides share these constants.
  *
- * @module poll-codes
+ * @module workflow-codes
  */
 
 /** Thrown by a step to mean "not done yet"; the workflow sleeps and re-invokes it. */

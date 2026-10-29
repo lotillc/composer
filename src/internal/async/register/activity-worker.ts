@@ -37,7 +37,7 @@ import type { AsyncStepRuntime, Step } from "../../dag-sync-step.js";
 import type { Workflow } from "../../dag-sync-workflow.js";
 import { defaultLogger } from "../../defaults.js";
 import { errorForLog } from "../../error-for-log.js";
-import { STEP_NOT_READY_CODE } from "../../poll-codes.js";
+import { STEP_NOT_READY_CODE } from "../../workflow-codes.js";
 import type { ComposerLogger } from "../../types.js";
 import { denamespaceSyntheticSteps } from "../build-scripts/utils/common.js";
 import { isFanOut, isSignalWait } from "../build-scripts/utils/type-guards.js";
