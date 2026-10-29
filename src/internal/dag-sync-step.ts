@@ -1,4 +1,5 @@
 import type { WorkerProfile } from "./async/config/worker-profiles.js";
+import { assertValidName } from "./validate-name.js";
 
 // ============================================================================
 // DURATION AND ACTIVITY CONFIGURATION TYPES
@@ -519,6 +520,7 @@ export function step<Bag extends Record<string, any>, Context = unknown>() {
       | Promise<AssertSerializable<StrictStepReturn<Bag, Provides[number]>>>
       | AssertSerializable<StrictStepReturn<Bag, Provides[number]>>;
   }): Step<Bag, Needs, Provides, Context, Name> => {
+    assertValidName("Step", stepDefinition.name);
     const originalRun = stepDefinition.run;
     const wrappedRun = async (
       context: Context & AsyncStepRuntime,
