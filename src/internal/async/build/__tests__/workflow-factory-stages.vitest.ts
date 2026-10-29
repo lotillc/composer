@@ -215,14 +215,13 @@ describe("stage boundaries", () => {
     expect(mocks.allHandlersFinished).toHaveBeenCalled();
   });
 
-  it("carries only the listed produced fields when the boundary restricts carry", async () => {
-    mocks.activityFunctions.a = activity({ x: "X", scratch: "big" });
+  it("carries every produced field into the next run", async () => {
+    mocks.activityFunctions.a = activity({ x: "X", scratch: "kept" });
     const plan = stagedPlan();
     plan.batches[0]!.steps[0]!.provides = ["x", "scratch"];
-    plan.stageBoundaries![0]!.carry = ["x"];
 
     const continued = await runUntilContinued(plan, { initialData: { id: "1" } });
-    expect(continued.next.continuation?.bag).toEqual({ x: "X" });
+    expect(continued.next.continuation?.bag).toEqual({ x: "X", scratch: "kept" });
   });
 
   it("keeps metadata and environment on the next run", async () => {

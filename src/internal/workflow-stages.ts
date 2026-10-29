@@ -3,8 +3,8 @@
  *
  * A stage boundary sits after a batch. Resolving it maps the boundary's step to that batch
  * and checks the rules continue-as-new depends on: something must run after it, at most one
- * boundary per batch, checkpoints only in the first stage, and every carried field a later
- * step needs.
+ * boundary per batch, a name or alias for exactly one boundary, and checkpoints only in the
+ * first stage.
  *
  * Shared by the workflow builder, so a mistake fails where the workflow is defined, and by
  * plan generation, which turns the result into the serialized plan.
@@ -24,7 +24,6 @@ export interface ResolvedStageBoundary {
   name: string;
   /** 0-indexed batch after which the run continues as new. */
   afterBatch: number;
-  carry?: string[];
   initialVersioningBehavior: StageInitialVersioningBehavior;
   /** Earlier names a resuming run may carry instead of `name`. */
   aliases?: string[];
@@ -79,7 +78,6 @@ export function resolveStageBoundaries(
     return {
       name: boundary.name,
       afterBatch,
-      ...(boundary.carry && { carry: [...boundary.carry] }),
       initialVersioningBehavior: boundary.initialVersioningBehavior ?? "AUTO_UPGRADE",
       ...(boundary.aliases && boundary.aliases.length > 0 && { aliases: [...boundary.aliases] }),
     };
@@ -127,40 +125,6 @@ export function resolveStageBoundaries(
           `Checkpoints must be reached before the first continue-as-new.`,
       );
     }
-  }
-
-  // Walk the stages in order, tracking which produced fields survive each boundary.
-  // Initial data always carries; a `carry` list restricts the produced fields.
-  let available = new Set<string>();
-  let batchIndex = 0;
-  for (const boundary of resolved) {
-    for (; batchIndex <= boundary.afterBatch; batchIndex++) {
-      for (const step of batches[batchIndex]!) {
-        for (const field of step.provides) available.add(String(field));
-      }
-    }
-    if (!boundary.carry) continue;
-
-    const carry = new Set(boundary.carry);
-    for (const field of carry) {
-      if (!available.has(field) && !initialFields.has(field)) {
-        throw new Error(
-          `${prefix}: stage "${boundary.name}" carries "${field}", which no step before it provides`,
-        );
-      }
-    }
-    for (const later of batches.slice(boundary.afterBatch + 1).flat()) {
-      for (const need of later.needs) {
-        const field = String(need);
-        if (available.has(field) && !carry.has(field)) {
-          throw new Error(
-            `${prefix}: stage "${boundary.name}" does not carry "${field}", which step ` +
-              `"${later.name}" needs. Add it to carry.`,
-          );
-        }
-      }
-    }
-    available = new Set([...available].filter((field) => carry.has(field)));
   }
 
   return resolved;

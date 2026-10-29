@@ -696,8 +696,6 @@ export interface StageBoundaryPlanEntry {
   name: string;
   /** 0-indexed batch the boundary follows */
   afterBatch: number;
-  /** Produced fields to carry; unset carries all of them */
-  carry?: string[];
   /** Versioning behavior of the next run's first task; absent on unversioned workers */
   initialVersioningBehavior?: StageInitialVersioningBehavior;
   /** Earlier names of this stage; a continuation carrying one resumes here */
@@ -864,9 +862,9 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
       }
       firstBatchIndex = stage.afterBatch + 1;
       // Checkpoints all precede the first boundary, so a resumed run has passed them. Its bag
-      // is the stage's, not the checkpoint's -- it may hold later outputs and lack fields
-      // `carry` dropped -- so a late awaitCheckpoint is refused at once rather than blocking
-      // forever or answering with the wrong snapshot.
+      // is the stage's, not the checkpoint's -- it may hold later outputs -- so a late
+      // awaitCheckpoint is refused at once rather than blocking forever or answering with
+      // the wrong snapshot.
       for (const checkpoint of plan.checkpoints ?? []) {
         if (checkpoint.afterBatch <= stage.afterBatch) checkpointsPassedEarlier.add(checkpoint.name);
       }
@@ -1337,7 +1335,6 @@ async function continueAtStage(
       if (value !== input.initialData[field]) carried[field] = value;
       continue;
     }
-    if (boundary.carry && !boundary.carry.includes(field)) continue;
     carried[field] = value;
   }
 

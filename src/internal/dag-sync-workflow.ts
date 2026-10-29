@@ -222,7 +222,7 @@ export type StageInitialVersioningBehavior = "AUTO_UPGRADE" | "USE_RAMPING_VERSI
 
 /**
  * A stage boundary: after the batch containing `afterStep` completes, the async workflow
- * ends its run and continues as new, carrying the bag forward. The next run resumes after
+ * ends its run and continues as new, carrying the whole bag forward. The next run resumes after
  * this boundary, located by `name`, so the name is the compatibility contract between the
  * build that ended the run and the build that resumes it.
  *
@@ -233,11 +233,6 @@ export interface StageBoundary {
   name: string;
   /** Step whose batch ends the stage (namespaced name, resolved by the builder). */
   afterStep: string;
-  /**
-   * Produced fields to carry into the next run. Initial data always carries. When unset,
-   * every produced field carries.
-   */
-  carry?: string[];
   /** Defaults to `AUTO_UPGRADE`, so the next run starts on the current build. */
   initialVersioningBehavior?: StageInitialVersioningBehavior;
   /**
@@ -251,17 +246,9 @@ export interface StageBoundary {
 /**
  * Options for declaring a stage boundary on a workflow.
  */
-export interface StageBoundaryOptions<
-  Bag extends Record<string, any>,
-  S extends Step<any, any, any, any, any>,
-> {
+export interface StageBoundaryOptions<S extends Step<any, any, any, any, any>> {
   /** Step reference whose batch ends the stage. */
   afterStep: S;
-  /**
-   * Produced fields to carry into the next run. Every produced field a later step needs
-   * must be listed; the builder rejects a list that would starve one.
-   */
-  carry?: readonly (keyof Bag & string)[];
   /** Defaults to `AUTO_UPGRADE`. */
   initialVersioningBehavior?: StageInitialVersioningBehavior;
   /**
@@ -517,12 +504,12 @@ export type WorkflowBuilder<
    * @example
    * ```typescript
    * .continueAsNew("awaiting-approval", { afterStep: sendRequestStep })
-   * .continueAsNew("verifying", { afterStep: awaitApproval, carry: ["approval"] })
+   * .continueAsNew("verifying", { afterStep: awaitApproval })
    * ```
    */
   continueAsNew<S extends Steps[number]>(
     name: string,
-    options: StageBoundaryOptions<Bag, S>,
+    options: StageBoundaryOptions<S>,
   ): WorkflowBuilder<Bag, RequiredInitial, ConfiguredValues, Steps, CheckpointNames>;
 
   /**
@@ -784,7 +771,7 @@ function workflow<
 
       continueAsNew<S extends Steps[number]>(
         stageName: string,
-        options: StageBoundaryOptions<Bag, S>,
+        options: StageBoundaryOptions<S>,
       ): WorkflowBuilder<Bag, RequiredInitial, ConfiguredValues, Steps, CurrentCheckpointNames> {
         if (typeof stageName !== "string" || stageName.length === 0) {
           throw new Error("Stage name must be a non-empty string.");
@@ -808,7 +795,6 @@ function workflow<
         const boundary: StageBoundary = {
           name: stageName,
           afterStep: resolvedStepName,
-          ...(options.carry && { carry: [...options.carry] }),
           ...(options.initialVersioningBehavior && {
             initialVersioningBehavior: options.initialVersioningBehavior,
           }),

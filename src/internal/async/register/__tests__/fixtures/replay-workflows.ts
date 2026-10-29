@@ -60,7 +60,7 @@ export const stagedWorkflow = createWorkflow<StagedBag>("replay-fixture-staged")
   .build([sendRequest, awaitApproval, verifyOutcome])
   .versioning("AUTO_UPGRADE")
   .continueAsNew("awaiting-approval", { afterStep: sendRequest })
-  .continueAsNew("verifying", { afterStep: awaitApproval, carry: ["approval"] });
+  .continueAsNew("verifying", { afterStep: awaitApproval });
 
 // --- DAG workflow: parallel batch, checkpoint, handled failure, polling, fan-out ---
 

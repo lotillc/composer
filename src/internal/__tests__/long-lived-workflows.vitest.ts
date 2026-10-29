@@ -158,7 +158,6 @@ describe("builder", () => {
       .continueAsNew("awaiting-approval", { afterStep: sendRequest })
       .continueAsNew("verifying", {
         afterStep: awaitApproval,
-        carry: ["approval"],
         initialVersioningBehavior: "USE_RAMPING_VERSION",
       });
 
@@ -169,7 +168,6 @@ describe("builder", () => {
       {
         name: "verifying",
         afterStep: "awaitApproval",
-        carry: ["approval"],
         initialVersioningBehavior: "USE_RAMPING_VERSION",
       },
     ]);
@@ -268,33 +266,6 @@ describe("builder", () => {
     ).not.toThrow();
   });
 
-  it("rejects a carry list that drops a field a later step needs", () => {
-    expect(() =>
-      baseWorkflow().continueAsNew("s", { afterStep: sendRequest, carry: ["scratch"] }),
-    ).toThrow('does not carry "sentAt", which step "awaitApproval" needs');
-  });
-
-  it("rejects a carry list naming a field nothing before the boundary provides", () => {
-    expect(() =>
-      baseWorkflow().continueAsNew("s", { afterStep: sendRequest, carry: ["sentAt", "verified"] }),
-    ).toThrow('carries "verified", which no step before it provides');
-  });
-
-  it("rejects a later stage needing a field an earlier boundary dropped", () => {
-    const late = step<Bag>()({
-      name: "late",
-      needs: ["scratch", "approval"],
-      provides: ["verified"],
-      run: async () => ({ verified: true }),
-    });
-    const wf = createWorkflow<Bag>("drops")
-      .requires("requestId")
-      .build([sendRequest, awaitApproval, late]);
-    expect(() =>
-      wf.continueAsNew("s", { afterStep: sendRequest, carry: ["sentAt"] }),
-    ).toThrow('does not carry "scratch", which step "late" needs');
-  });
-
   it("rejects an unknown versioning behavior at runtime", () => {
     expect(() => baseWorkflow().versioning("LATEST" as never)).toThrow(
       'Unknown versioning behavior "LATEST"',
@@ -317,7 +288,7 @@ describe("generateWorkflowPlan", () => {
       baseWorkflow()
         .versioning("AUTO_UPGRADE")
         .continueAsNew("awaiting-approval", { afterStep: sendRequest, aliases: ["requested"] })
-        .continueAsNew("verifying", { afterStep: awaitApproval, carry: ["approval"] }),
+        .continueAsNew("verifying", { afterStep: awaitApproval }),
     );
 
     expect(plan.versioningBehavior).toBe("AUTO_UPGRADE");
@@ -328,12 +299,7 @@ describe("generateWorkflowPlan", () => {
         initialVersioningBehavior: "AUTO_UPGRADE",
         aliases: ["requested"],
       },
-      {
-        name: "verifying",
-        afterBatch: 1,
-        carry: ["approval"],
-        initialVersioningBehavior: "AUTO_UPGRADE",
-      },
+      { name: "verifying", afterBatch: 1, initialVersioningBehavior: "AUTO_UPGRADE" },
     ]);
     expect(plan.batches[1]).toEqual({
       steps: [],
