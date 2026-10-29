@@ -94,6 +94,12 @@ export {
   type WorkerProfileConfig,
 } from "./internal/async/config/worker-profiles.js";
 export {
+  type ReplayFailure,
+  type ReplayWorkflowHistoriesOptions,
+  type ReplayWorkflowHistoriesResult,
+  replayWorkflowHistories,
+} from "./internal/async/register/replay-histories.js";
+export {
   type StartActivityWorkerOptions,
   startActivityWorker,
 } from "./internal/async/register-scripts/start-activity-worker.js";

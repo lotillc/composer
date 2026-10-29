@@ -341,12 +341,31 @@ await composer.signalAsyncWorkflow(requestId, approvalSignal, response, {
 
 **Versioning.** `.versioning("AUTO_UPGRADE")` declares on the workflow itself that its runs move to the current build as it changes. Such a workflow is started **without** a build pin: a start-time pin would outrank the declaration and be inherited by every continue-as-new run. Workflows that declare nothing, or `"PINNED"`, are still pinned to the starting build. Keep these in mind:
 
-- Replay compatibility is required **within a stage**. A run can move to a new build in the middle of a stage, and that build must replay the run's history. Changing the steps of a stage, or upgrading Composer, while runs are in that stage can fail their replay. Keep a stage that sits waiting for a long time small, ideally a single `waitForSignal`.
+- Replay compatibility is required **within a stage**. A run can move to a new build in the middle of a stage, and that build must replay the run's history. Changing the steps of a stage, or upgrading Composer, while runs are in that stage can fail their replay. Keep a stage that sits waiting for a long time small, ideally a single `waitForSignal`, and check every build with the replay check below.
 - An unpinned start sends the first task to the current build, not the caller's. If you deploy a new workflow type and start it before its build becomes current, its first tasks fail and retry until promotion.
 - On a worker without a `buildId` (unversioned, typically local dev), the declaration is left out of the bundle, and so is each stage boundary's next-run behavior. Temporal rejects a versioning behavior from an unversioned worker.
 - Checkpoints must come no later than the first stage boundary.
 - `.onError()` ends the builder chain, so call it last.
 - Temporal marks versioning behavior across continue-as-new as experimental.
+
+#### Checking Replay Before You Deploy
+
+Rolling back is only cheap if the build you roll back to can still replay the runs the newer build touched. The same goes for rolling forward. `replayWorkflowHistories` checks this offline, with no Temporal server and no activities: it bundles exactly what your workflow worker runs and replays saved histories against it.
+
+```typescript
+// In CI, before deploying: histories captured from the build serving long-lived workflows.
+const { replayed, failures } = await composer.replayWorkflowHistories({
+  workflows,
+  histories: client.workflow
+    .list({ query: "WorkflowType = 'review' AND ExecutionStatus = 'Running'" })
+    .intoHistories(),
+});
+if (failures.length > 0) {
+  throw new Error(`${failures.length} of ${replayed} in-flight histories no longer replay`);
+}
+```
+
+The composer method applies the composer's own data converter and workflow interceptors. The standalone `replayWorkflowHistories` export takes them as options. Histories can also be saved files, either JSON from `temporal workflow show --output json` or `History` objects. A failure means that deploying this build, or rolling back from it, would fail the in-flight runs.
 
 ### Error Handling
 
@@ -819,6 +838,7 @@ expect(findUndeclaredWorkerProfiles(allWorkflows, buildConfig)).toEqual([]);
 | `waitForSignal` | Factory for a durable wait on a signal (async only) |
 | `defineWorkflowSignal` | Define a typed signal shared by a workflow and the code that delivers it |
 | `SIGNAL_WAIT_TIMEOUT_CODE` | Error code of a signal wait that timed out without a fallback |
+| `replayWorkflowHistories` | Replay saved workflow histories against a build, offline, to catch replay-breaking changes |
 | `defineBuildConfig` | Type-safe build config helper (also available from `@lotiai/composer/build-config`) |
 | `startAllWorkers` | Start both Temporal workers in one process |
 | `startWorkflowWorker` | Start a Temporal workflow worker |

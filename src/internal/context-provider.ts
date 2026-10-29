@@ -12,6 +12,10 @@ import type { WorkflowExecutionStatusName } from "@temporalio/client";
 import type { DataConverter } from "@temporalio/common";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
 import type { ScheduleDefinition } from "./async/schedule/define-schedule.js";
+import type {
+  ReplayWorkflowHistoriesOptions,
+  ReplayWorkflowHistoriesResult,
+} from "./async/register/replay-histories.js";
 import type { SyncSchedulesResult } from "./async/schedule/sync-schedules.js";
 import type { WorkflowSignal } from "./dag-sync-signal.js";
 import type {
@@ -552,6 +556,19 @@ export interface Composer<TContext> extends SyncComposer<TContext> {
     maxConcurrentWorkflowTaskExecutions: number;
     workflows: Workflow<any, any, any>[];
   }) => Promise<void>;
+
+  /**
+   * Replay recorded workflow histories against workflow definitions, offline, with this
+   * Composer's data converter and workflow interceptors.
+   *
+   * Run it in CI before deploying a build that serves AUTO_UPGRADE workflows, against
+   * histories captured from the build in production: a failure means in-flight runs, or a
+   * rollback to that build, would break. See `replayWorkflowHistories`.
+   */
+  replayWorkflowHistories: (options: {
+    workflows: Workflow<any, any, any>[];
+    histories: ReplayWorkflowHistoriesOptions["histories"];
+  }) => Promise<ReplayWorkflowHistoriesResult>;
 
   /**
    * Declaratively sync schedule definitions to the Temporal server.

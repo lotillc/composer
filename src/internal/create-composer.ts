@@ -17,6 +17,7 @@ import {
 } from "./async/execute/temporal-client.js";
 import { executeWorkflowTemporal, startWorkflowTemporal } from "./async/execute/workflow-execution.js";
 import { runActivityWorkers as runActivityWorkersInternal } from "./async/register/activity-worker.js";
+import { replayWorkflowHistories as replayWorkflowHistoriesInternal } from "./async/register/replay-histories.js";
 import { runWorkflowWorkers as runWorkflowWorkersInternal } from "./async/register/workflow-worker.js";
 import type { ScheduleDefinition } from "./async/schedule/define-schedule.js";
 import { syncSchedules as syncSchedulesInternal } from "./async/schedule/sync-schedules.js";
@@ -368,6 +369,14 @@ export function createComposer<TContext>(
         interceptors: temporalConfig.interceptors,
         ...config,
         logger: resolvedLogger,
+      });
+    },
+
+    async replayWorkflowHistories(options) {
+      return replayWorkflowHistoriesInternal({
+        ...options,
+        dataConverter: temporalConfig.dataConverter,
+        interceptors: temporalConfig.interceptors,
       });
     },
 

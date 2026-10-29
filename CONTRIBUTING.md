@@ -18,6 +18,7 @@ The package is ESM-only, targets Node 24.14.1+, and uses pnpm (see `packageManag
 - One logical change per PR. Keep diffs reviewable.
 - Add or update tests for any behavioral change.
 - Avoid introducing new dependencies unless necessary; prefer the standard library or existing deps.
+- The workflow factory (`src/internal/async/build/workflow-factory.ts`) is part of every consumer's replay contract. Workflows that declare `AUTO_UPGRADE` replay their in-flight history on whatever Composer version the current build ships. `replay-histories.vitest.ts` replays recorded histories on every test run. If it fails, the change alters the commands the factory emits: gate it behind `patched()` from `@temporalio/workflow` so existing histories still replay. If a fixture workflow changes, or a replay-breaking change is intended, re-record the fixtures (see `record-replay-histories.vitest.ts`) and say so in the changeset.
 
 ## Reporting issues
 
