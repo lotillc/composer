@@ -962,6 +962,19 @@ function flattenSteps<Bag extends Record<string, any>>(
       const childWorkflow = item.workflow;
       const childPath = [...parentPath, childWorkflow.name];
 
+      // Composition takes a workflow's steps, not its stage boundaries, so the boundaries
+      // would be dropped: its waits would land in one parent run, pinned for as long as they
+      // wait. Refuse it, so the boundaries are declared where the runs end, on the parent.
+      const childBoundaries = childWorkflow.stageBoundaries ?? [];
+      if (childBoundaries.length > 0) {
+        const names = childBoundaries.map((boundary) => `"${boundary.name}"`).join(", ");
+        throw new Error(
+          `Workflow "${childWorkflow.name}" declares stage boundaries [${names}], which use() ` +
+            `does not carry into the workflow that composes it. Declare them on that workflow ` +
+            `instead: its .continueAsNew() accepts a step of a composed workflow.`,
+        );
+      }
+
       // Recursively flatten child workflow's steps
       const childSteps = flattenSteps(childWorkflow.steps, childPath);
 

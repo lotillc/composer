@@ -567,6 +567,19 @@ describe("builder", () => {
       .continueAsNew("s", { afterStep: sendRequest });
     expect(outer.stageBoundaries?.[0]?.afterStep).toBe("inner.sendRequest");
   });
+
+  it("refuses to compose a workflow that declares stage boundaries, rather than drop them", () => {
+    const inner = createWorkflow<Bag>("inner")
+      .requires("requestId")
+      .build([sendRequest, awaitApproval, verify])
+      .continueAsNew("awaiting-approval", { afterStep: sendRequest });
+    expect(() =>
+      createWorkflow<Bag>("outer").requires("requestId").build([use(inner)]),
+    ).toThrow(
+      'Workflow "inner" declares stage boundaries ["awaiting-approval"], which use() does not ' +
+        "carry into the workflow that composes it",
+    );
+  });
 });
 
 describe("generateWorkflowPlan", () => {
