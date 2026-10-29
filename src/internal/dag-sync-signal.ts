@@ -97,26 +97,57 @@ export function isSignalWaitStep(
 
 /**
  * True when `value` survives `JSON.stringify` / `JSON.parse` unchanged. The plan a wait's
- * `timeoutValue` travels in is serialized as JSON, so a `Date`, `Map`, `bigint`, class
- * instance or non-finite number would arrive altered, or stop the worker from starting.
+ * `timeoutValue` travels in is serialized as JSON, so a value that does not come back
+ * identical would reach the workflow altered, or stop the worker from starting.
+ *
+ * Checked by doing the round trip and comparing, not by listing what JSON mishandles: a
+ * `Date`, `Map`, `bigint`, class instance, non-finite number, `-0`, array hole, extra array
+ * property, `undefined` property, non-enumerable property or getter each fails the same
+ * way.
  */
-function isJsonSafe(value: unknown, depth = 0): boolean {
-  if (depth > 100) return false;
-  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) {
-    // Indexed, not `every`: a hole would be skipped, and JSON writes it back as null.
-    for (let i = 0; i < value.length; i++) {
-      if (!(i in value) || !isJsonSafe(value[i], depth + 1)) return false;
-    }
-    return true;
+function isJsonSafe(value: unknown): boolean {
+  let copy: unknown;
+  try {
+    const text = JSON.stringify(value);
+    if (text === undefined) return false;
+    copy = JSON.parse(text);
+  } catch {
+    return false; // a bigint or a cycle
   }
-  if (typeof value !== "object") return false;
-  const proto = Object.getPrototypeOf(value);
-  if (proto !== Object.prototype && proto !== null) return false;
-  // An `undefined` property is rejected too: JSON drops the key, so the value would come back
-  // a different shape, which `Object.hasOwn`, key enumeration or a schema would notice.
-  return Object.values(value).every((item) => isJsonSafe(item, depth + 1));
+  try {
+    return sameAsJsonCopy(value, copy);
+  } catch {
+    return false; // nested past what the stack allows
+  }
+}
+
+function sameAsJsonCopy(original: unknown, copy: unknown): boolean {
+  if (typeof original === "number") return typeof copy === "number" && Object.is(original, copy);
+  if (original === null || typeof original !== "object") return original === copy;
+  if (copy === null || typeof copy !== "object") return false;
+  if (Array.isArray(original) !== Array.isArray(copy)) return false;
+  // JSON writes an instance's own fields as a plain object; only plain data comes back as is.
+  const proto = Object.getPrototypeOf(original);
+  const plain = Array.isArray(original)
+    ? proto === Array.prototype
+    : proto === Object.prototype || proto === null;
+  if (!plain || Object.getOwnPropertySymbols(original).length > 0) return false;
+
+  // Own names, non-enumerable ones included: anything JSON drops makes the lists differ.
+  const names = Object.getOwnPropertyNames(original);
+  if (names.length !== Object.getOwnPropertyNames(copy).length) return false;
+  for (const name of names) {
+    if (!Object.hasOwn(copy, name)) return false;
+    if (name === "length" && Array.isArray(original)) continue;
+    // A getter is read again whenever the plan is serialized, so it could hand the workflow
+    // a different value than the one checked here; only plain data properties qualify.
+    const descriptor = Object.getOwnPropertyDescriptor(original, name);
+    if (descriptor?.get || descriptor?.set) return false;
+    const a = (original as Record<string, unknown>)[name];
+    const b = (copy as Record<string, unknown>)[name];
+    if (!sameAsJsonCopy(a, b)) return false;
+  }
+  return true;
 }
 
 /**

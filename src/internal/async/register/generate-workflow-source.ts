@@ -98,7 +98,7 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
   // silently never run. Two different steps sharing an activity name would run whichever
   // registered last. Both are refused here; the same step reused in two children is fine.
   const seenNames = new Set<string>();
-  const runByActivityName = new Map<string, unknown>();
+  const stepByActivityName = new Map<string, { run: unknown; name: string }>();
   for (const step of flattenedSteps) {
     if (seenNames.has(step.name)) {
       throw new Error(
@@ -110,14 +110,15 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
 
     const activityName = (step as { activityName?: string }).activityName;
     if (activityName === undefined || isSignalWait(step)) continue;
-    const run = runByActivityName.get(activityName);
-    if (run !== undefined && run !== step.run) {
+    const earlier = stepByActivityName.get(activityName);
+    if (earlier !== undefined && earlier.run !== step.run) {
       throw new Error(
-        `Workflow "${workflow.name}": two different steps are both named "${activityName}". ` +
-          `Activities are registered by that name, so rename one.`,
+        `Workflow "${workflow.name}": two different steps, "${earlier.name}" and ` +
+          `"${step.name}", both register activity "${activityName}". Activities are ` +
+          `registered by a step's name without composition prefixes, so rename one.`,
       );
     }
-    runByActivityName.set(activityName, step.run);
+    stepByActivityName.set(activityName, { run: step.run, name: step.name });
   }
   const planResult = planWorkflowBatches([...flattenedSteps], initialFields);
 

@@ -78,6 +78,36 @@ describe("waitForSignal", () => {
     ).toThrow("timeoutValue must be plain JSON data");
   });
 
+  it.each([
+    ["an array with an extra property", Object.assign([false], { reason: "expired" })],
+    ["negative zero", { approved: false, score: -0 }],
+    ["a non-enumerable property", Object.defineProperty({ approved: false }, "hidden", { value: 1 })],
+    ["a class instance", new (class Approval { approved = false })()],
+    ["a getter", { approved: false, get note() { return "x"; } }],
+  ])("rejects %s as a timeout value, since it does not survive JSON", (_label, value) => {
+    expect(() =>
+      waitForSignal<Bag>()({
+        name: "w",
+        signal: approvalSignal,
+        provides: ["approval"],
+        timeoutValue: value as never,
+      }),
+    ).toThrow("timeoutValue must be plain JSON data");
+  });
+
+  it("accepts plain JSON data nested deeper than a hundred levels", () => {
+    let deep: unknown = { approved: false };
+    for (let i = 0; i < 150; i++) deep = [deep];
+    expect(() =>
+      waitForSignal<Bag>()({
+        name: "w",
+        signal: approvalSignal,
+        provides: ["approval"],
+        timeoutValue: deep as never,
+      }),
+    ).not.toThrow();
+  });
+
   it("rejects an undefined property in a timeout value, since JSON drops the key", () => {
     expect(() =>
       waitForSignal<Bag>()({
@@ -412,6 +442,39 @@ describe("builder", () => {
     expect(wf.stageBoundaries?.[0]?.afterStep).toBe("inner.await");
   });
 
+  it("resolves a composed node whose own name contains dots", () => {
+    interface DotBag {
+      requestId: string;
+      sentAt: string;
+      mailed: string;
+      done: boolean;
+    }
+    const parentSend = step<DotBag>()({
+      name: "send.email",
+      needs: ["requestId"],
+      provides: ["sentAt"],
+      run: async () => ({ sentAt: "t" }),
+    });
+    const childSend = step<DotBag>()({
+      name: "send.email",
+      needs: ["sentAt"],
+      provides: ["mailed"],
+      run: async () => ({ mailed: "m" }),
+    });
+    const done = step<DotBag>()({
+      name: "done",
+      needs: ["mailed"],
+      provides: ["done"],
+      run: async () => ({ done: true }),
+    });
+    const inner = createWorkflow<DotBag>("inner").requires("sentAt").build([childSend]);
+    const wf = createWorkflow<DotBag>("dots")
+      .requires("requestId")
+      .build([parentSend, use(inner), done])
+      .checkpoint("mailed", { afterStep: childSend });
+    expect(wf.checkpoints?.[0]?.afterStep).toBe("inner.send.email");
+  });
+
   it("falls back to the name for hand-built steps that share one run function", () => {
     const run = async () => ({});
     const handA = { name: "handA", needs: ["requestId"], provides: [], run } as never;
@@ -600,7 +663,7 @@ describe("generateWorkflowPlan", () => {
     });
     const outer = createWorkflow<Bag>("outer").requires("requestId").build([again, use(inner)]);
     expect(() => generateWorkflowPlan(outer)).toThrow(
-      'two different steps are both named "sendRequest". Activities are registered by that name',
+      'two different steps, "sendRequest" and "inner.sendRequest", both register activity "sendRequest"',
     );
   });
 

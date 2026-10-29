@@ -381,6 +381,24 @@ function createActivitiesFromWorkflows<TContext>(
     }
   }
 
+  // Activities are registered by bare step name across every workflow this worker serves.
+  // Two different steps with one name would leave whichever registered last running for
+  // both, so refuse that before registering anything. One step reused is fine.
+  const stepByActivityName = new Map<string, Step<any, any, any>>();
+  for (const step of allSteps) {
+    const earlier = stepByActivityName.get(step.name);
+    if (earlier && earlier.run !== step.run) {
+      const describe = (s: Step<any, any, any>) =>
+        `"${(s as { _syntheticName?: string })._syntheticName ?? s.name}"`;
+      throw new Error(
+        `Two different steps, ${describe(earlier)} and ${describe(step)}, both register ` +
+          `activity "${step.name}". Activities are registered by a step's name without ` +
+          `composition prefixes, so rename one.`,
+      );
+    }
+    stepByActivityName.set(step.name, step);
+  }
+
   for (const step of allSteps) {
     const activityName = step.name;
     const stepName = step.name;

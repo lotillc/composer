@@ -872,7 +872,7 @@ function resolveStepReference<Bag extends Record<string, any>>(
   // or lack it, so the local name must match too, and anything else falls back to the name.
   if (typeof node.run !== "function") return resolveStepName(steps, node.name);
   const occurrences = steps.filter(
-    (step) => step.run === node.run && step.name.split(".").at(-1) === node.name,
+    (step) => step.run === node.run && hasLocalName(step.name, node.name),
   );
   if (occurrences.length === 1) return occurrences[0]!.name;
   if (occurrences.length > 1) {
@@ -883,6 +883,15 @@ function resolveStepReference<Bag extends Record<string, any>>(
     );
   }
   return resolveStepName(steps, node.name);
+}
+
+/**
+ * True when a flattened name is `localName` itself or `localName` under composition
+ * prefixes. A local name may contain dots of its own, so this compares the whole local
+ * name rather than the last dot-separated segment.
+ */
+function hasLocalName(flattenedName: string, localName: string): boolean {
+  return flattenedName === localName || flattenedName.endsWith(`.${localName}`);
 }
 
 /**
@@ -905,11 +914,7 @@ function resolveStepName<Bag extends Record<string, any>>(
   }
 
   // Try to find by suffix (unnamespaced name matching namespaced step)
-  const suffixMatches = steps.filter((s) => {
-    const parts = s.name.split(".");
-    const unnamespaced = parts[parts.length - 1];
-    return unnamespaced === stepName;
-  });
+  const suffixMatches = steps.filter((s) => hasLocalName(s.name, stepName));
 
   if (suffixMatches.length === 1) {
     return suffixMatches[0]!.name;

@@ -14,3 +14,5 @@ Async workflows can now run for days or weeks without pinning the build that sta
 Within a stage, an `AUTO_UPGRADE` workflow must replay across builds; the README's "Long-Lived Workflows" section covers the rules.
 
 Under Temporal, a step inside a workflow composed with `use()` is now identified by its namespaced name (`child.step`), as it already was in sync execution. That name is what an error handler sees in `errors[].stepName`, what a checkpoint or stage boundary refers to, and what is recorded as already run. Its activity is still registered under the bare name. A fan-out keeps its bare name everywhere, since its child workflow IDs are built from it.
+
+The activity worker now refuses to start when two different steps, in any of the workflows it serves, would register the same activity name. Activities are registered by a step's name without composition prefixes, so a collision used to leave whichever registered last running for both, silently.

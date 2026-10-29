@@ -218,6 +218,28 @@ describe("Activity Worker", () => {
       expect(activityNames).toContain("anotherStep");
     });
 
+    it("refuses two different steps that register one activity across workflows", async () => {
+      const workflows = [
+        { name: "first-workflow", steps: [{ name: "shared", needs: [], provides: [], run: vi.fn() }] },
+        { name: "second-workflow", steps: [{ name: "shared", needs: [], provides: [], run: vi.fn() }] },
+      ] as unknown as ActivityWorkerConfig<MockStepContext>["workflows"];
+
+      await expect(createActivityWorkers(createTestConfig({ workflows }))).rejects.toThrow(
+        'both register activity "shared"',
+      );
+    });
+
+    it("registers one step reused by two workflows once", async () => {
+      const shared = { name: "shared", needs: [], provides: [], run: vi.fn() };
+      const workflows = [
+        { name: "first-workflow", steps: [shared] },
+        { name: "second-workflow", steps: [shared] },
+      ] as unknown as ActivityWorkerConfig<MockStepContext>["workflows"];
+
+      await createActivityWorkers(createTestConfig({ workflows }));
+      expect(Object.keys(mockWorkerCreate.mock.calls[0]![0].activities)).toContain("shared");
+    });
+
     it("does not register an activity for a signal wait", async () => {
       const workflows = [
         {
