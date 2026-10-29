@@ -347,6 +347,7 @@ A checkpoint is answered only by the run that reaches it. Once that run has cont
 - An unpinned start sends the first task to the current build, not the caller's. If you deploy a new workflow type and start it before its build becomes current, its first tasks fail and retry until promotion.
 - On a worker without a `buildId` (unversioned, typically local dev), the declaration is left out of the bundle, and so is each stage boundary's next-run behavior. Temporal rejects a versioning behavior from an unversioned worker.
 - Checkpoints must come no later than the first stage boundary.
+- `use()` composes a workflow's steps, not its stage boundaries or versioning declaration. It refuses a workflow that declares stage boundaries, which would otherwise be dropped; declare them on the composing workflow instead, whose `.continueAsNew()` accepts a step of a composed workflow. The composing workflow's own `.versioning()` applies.
 - `.onError()` ends the builder chain, so call it last.
 - Temporal marks versioning behavior across continue-as-new as experimental.
 
