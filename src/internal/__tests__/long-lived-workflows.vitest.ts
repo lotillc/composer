@@ -7,6 +7,7 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { testComposer } from "../../__tests__/test-utils.js";
 import { generateWorkflowPlan } from "../async/register/generate-workflow-source.js";
+import { fanOut } from "../dag-sync-fanout.js";
 import { defineWorkflowSignal, waitForSignal } from "../dag-sync-signal.js";
 import { type DurationString, step } from "../dag-sync-step.js";
 import { createWorkflow, use } from "../dag-sync-workflow.js";
@@ -77,8 +78,25 @@ describe("waitForSignal", () => {
     ).toThrow("timeoutValue must be plain JSON data");
   });
 
+  it("rejects a sparse array as a timeout value, since JSON writes its holes as null", () => {
+    expect(() =>
+      waitForSignal<Bag>()({
+        name: "w",
+        signal: approvalSignal,
+        provides: ["approval"],
+        timeoutValue: { approved: false, list: new Array(1) } as never,
+      }),
+    ).toThrow("timeoutValue must be plain JSON data");
+  });
+
+  it.each(["has space", "__proto__", "1st"])("rejects the wait name %j", (name) => {
+    expect(() =>
+      waitForSignal<Bag>()({ name, signal: approvalSignal, provides: ["approval"] }),
+    ).toThrow(/SignalWait name/);
+  });
+
   it("accepts plain JSON data, and undefined, as a timeout value", () => {
-    for (const timeoutValue of [{ approved: false }, undefined]) {
+    for (const timeoutValue of [{ approved: false }, undefined, { approved: false, note: undefined }]) {
       expect(() =>
         waitForSignal<Bag>()({
           name: "w",
@@ -132,6 +150,37 @@ describe("waitForSignal", () => {
     );
   });
 
+  it("rejects two waits on one signal name that use different definitions", () => {
+    interface DefBag {
+      requestId: string;
+      sentAt: string;
+      a: { approved: boolean };
+      b: { approved: boolean };
+    }
+    const otherApproval = defineWorkflowSignal<{ approved: boolean }>("approval");
+    const sent = step<DefBag>()({
+      name: "sent",
+      needs: ["requestId"],
+      provides: ["sentAt"],
+      run: async () => ({ sentAt: "t" }),
+    });
+    const waitA = waitForSignal<DefBag>()({
+      name: "waitA",
+      signal: approvalSignal,
+      needs: ["sentAt"],
+      provides: ["a"],
+    });
+    const waitB = waitForSignal<DefBag>()({
+      name: "waitB",
+      signal: otherApproval,
+      needs: ["a"],
+      provides: ["b"],
+    });
+    expect(() =>
+      createWorkflow<DefBag>("defs").requires("requestId").build([sent, waitA, waitB]),
+    ).toThrow('both wait on signal "approval" but use different definitions of it');
+  });
+
   it("rejects a maxPendingSignals that is not a positive integer", () => {
     expect(() =>
       waitForSignal<Bag>()({
@@ -159,7 +208,11 @@ describe("waitForSignal", () => {
       signal: approvalSignal,
       provides: ["approval"],
     });
-    expect(noFallback.__signalWait).toEqual({ signalName: "approval", hasTimeoutValue: false });
+    expect(noFallback.__signalWait).toEqual({
+      signalName: "approval",
+      signal: approvalSignal,
+      hasTimeoutValue: false,
+    });
   });
 
   it("types the signal payload against the provided field", () => {
@@ -292,6 +345,19 @@ describe("builder", () => {
     expect(() =>
       baseWorkflow().continueAsNew("a", { afterStep: sendRequest, aliases: ["a"] }),
     ).toThrow('stage "a" lists "a" more than once');
+  });
+
+  it.each([
+    ["a stage name", "has space", undefined],
+    ["a reserved stage name", "constructor", undefined],
+    ["an alias", "ok", ["bad alias"]],
+  ])("rejects %s that is not a safe name", (_label, name, aliases) => {
+    expect(() =>
+      baseWorkflow().continueAsNew(name, {
+        afterStep: sendRequest,
+        ...(aliases && { aliases }),
+      }),
+    ).toThrow(/Stage name/);
   });
 
   it("rejects a duplicate stage name", () => {
@@ -476,6 +542,49 @@ describe("generateWorkflowPlan", () => {
     expect(steps.map((s) => [s.name, s.activityName])).toEqual([
       ["first.notify", "notify"],
       ["second.notify", "notify"],
+    ]);
+  });
+
+  it("places a checkpoint after a fan-out inside a composed workflow", () => {
+    interface ChildBag {
+      item: string;
+      doubled: string;
+    }
+    interface FanBag {
+      items: string[];
+      doubled: string[];
+      done: boolean;
+    }
+    const double = step<ChildBag>()({
+      name: "double",
+      needs: ["item"],
+      provides: ["doubled"],
+      run: async (_ctx, bag) => ({ doubled: bag.item + bag.item }),
+    });
+    const child = createWorkflow<ChildBag>("child").requires("item").build([double]);
+    const fan = fanOut<FanBag>()({
+      name: "fan",
+      needs: ["items"],
+      childWorkflow: child,
+      mapInput: (bag) => bag.items.map((item) => ({ item })),
+      provides: ["doubled"],
+      aggregateResults: (results) => ({ doubled: results.map((r) => r.doubled) }),
+    });
+    const finish = step<FanBag>()({
+      name: "finish",
+      needs: ["doubled"],
+      provides: ["done"],
+      run: async () => ({ done: true }),
+    });
+    const inner = createWorkflow<FanBag>("inner").requires("items").build([fan]);
+    const outer = createWorkflow<FanBag>("outer")
+      .requires("items")
+      .build([use(inner), finish])
+      .checkpoint("fanned", { afterStep: fan });
+
+    expect(outer.checkpoints?.[0]?.afterStep).toBe("inner.fan");
+    expect(generateWorkflowPlan(outer).checkpoints).toEqual([
+      { name: "fanned", afterBatch: 0, timeout: 30_000 },
     ]);
   });
 

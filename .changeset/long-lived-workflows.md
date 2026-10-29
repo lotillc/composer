@@ -12,3 +12,5 @@ Async workflows can now run for days or weeks without pinning the build that sta
 - `replayWorkflowHistories` (standalone, and on the composer) replays saved histories against a build offline, so a change that would break in-flight runs, or the rollback to them, is caught in CI before it ships.
 
 Within a stage, an `AUTO_UPGRADE` workflow must replay across builds; the README's "Long-Lived Workflows" section covers the rules.
+
+Under Temporal, a step inside a workflow composed with `use()` is now identified by its namespaced name (`child.step`), as it already was in sync execution. That name is what an error handler sees in `errors[].stepName`, what a checkpoint or stage boundary refers to, and what is recorded as already run. Its activity is still registered under the bare name. A fan-out keeps its bare name everywhere, since its child workflow IDs are built from it.

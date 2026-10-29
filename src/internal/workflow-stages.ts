@@ -160,28 +160,41 @@ export function assertSignalWaitsAlone(workflow: Workflow<any, any, any, any, an
 }
 
 /**
- * Checks that every wait on one signal declares the same `maxPendingSignals`.
+ * Checks that every wait on one signal uses the same definition and the same
+ * `maxPendingSignals`.
  *
  * Signals queue per name for the whole workflow, before any particular wait is reached, so
- * a queue has one cap. Waits declaring different caps for one name would each expect
- * their own, and a later wait could find a queue its cap says should not exist.
+ * all waits on a name share one queue. Two definitions of one name could declare different
+ * payload types, and a payload sent for one wait could be consumed by another and written
+ * into a field typed differently. Waits declaring different caps would each expect their
+ * own, and a later wait could find a queue its cap says should not exist.
  *
  * @throws Error naming the signal and the waits that disagree
  */
-export function assertSignalCapsAgree(workflow: Workflow<any, any, any, any, any>): void {
-  const caps = new Map<string, { cap: number; wait: string }>();
+export function assertSignalWaitsAgree(workflow: Workflow<any, any, any, any, any>): void {
+  const first = new Map<string, { cap: number; wait: string; signal: unknown }>();
   for (const step of workflow.steps as Step<any, any, any, any, any>[]) {
     if (!isSignalWaitStep(step)) continue;
-    const { signalName, maxPendingSignals } = step.__signalWait;
+    const { signalName, maxPendingSignals, signal } = step.__signalWait;
     const cap = maxPendingSignals ?? DEFAULT_MAX_PENDING_SIGNALS;
-    const earlier = caps.get(signalName);
-    if (earlier && earlier.cap !== cap) {
+    const earlier = first.get(signalName);
+    if (!earlier) {
+      first.set(signalName, { cap, wait: step.name, signal });
+      continue;
+    }
+    if (earlier.signal !== signal) {
+      throw new Error(
+        `Workflow "${workflow.name}": waits "${earlier.wait}" and "${step.name}" both wait on ` +
+          `signal "${signalName}" but use different definitions of it. Waits on one signal ` +
+          `share one queue, so define the signal once and use that definition for both.`,
+      );
+    }
+    if (earlier.cap !== cap) {
       throw new Error(
         `Workflow "${workflow.name}": waits "${earlier.wait}" and "${step.name}" both wait on ` +
           `signal "${signalName}" but declare maxPendingSignals ${earlier.cap} and ${cap}. ` +
           `A signal has one queue, so give them the same cap.`,
       );
     }
-    caps.set(signalName, { cap, wait: step.name });
   }
 }

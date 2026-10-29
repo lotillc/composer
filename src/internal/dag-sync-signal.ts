@@ -1,5 +1,6 @@
 import type { DurationString, Step } from "./dag-sync-step.js";
 import { durationToMs } from "./duration.js";
+import { assertValidName } from "./validate-name.js";
 
 /**
  * A named signal a workflow can wait on, typed by its payload.
@@ -56,6 +57,11 @@ export const DEFAULT_MAX_PENDING_SIGNALS = 100;
  */
 export interface SignalWaitMetadata {
   signalName: string;
+  /**
+   * The definition this wait was declared with. Never serialized: it lets the builder
+   * require every wait on a name to use one definition, since they share one queue.
+   */
+  signal: WorkflowSignal<unknown>;
   timeout?: DurationString;
   maxPendingSignals?: number;
   timeoutValue?: unknown;
@@ -98,11 +104,18 @@ function isJsonSafe(value: unknown, depth = 0): boolean {
   if (depth > 100) return false;
   if (value === null || typeof value === "string" || typeof value === "boolean") return true;
   if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every((item) => isJsonSafe(item, depth + 1));
+  if (Array.isArray(value)) {
+    // Indexed, not `every`: a hole would be skipped, and JSON writes it back as null.
+    for (let i = 0; i < value.length; i++) {
+      if (!(i in value) || !isJsonSafe(value[i], depth + 1)) return false;
+    }
+    return true;
+  }
   if (typeof value !== "object") return false;
   const proto = Object.getPrototypeOf(value);
   if (proto !== Object.prototype && proto !== null) return false;
-  return Object.values(value).every((item) => isJsonSafe(item, depth + 1));
+  // An `undefined` property is dropped by JSON, and reads back as `undefined` all the same.
+  return Object.values(value).every((item) => item === undefined || isJsonSafe(item, depth + 1));
 }
 
 /**
@@ -151,6 +164,12 @@ export function waitForSignal<Bag extends Record<string, any>>() {
     timeoutValue?: NoInfer<Bag[Field]>;
     maxPendingSignals?: number;
   }): SignalWait<Bag, Needs, Field, Name> => {
+    assertValidName("SignalWait", definition.name);
+    if (typeof definition.signal?.name !== "string") {
+      throw new Error(
+        `waitForSignal "${definition.name}": signal must be a definition from defineWorkflowSignal`,
+      );
+    }
     if (!Array.isArray(definition.provides) || definition.provides.length !== 1) {
       throw new Error(
         `waitForSignal "${definition.name}": provides must list exactly one field`,
@@ -198,6 +217,7 @@ export function waitForSignal<Bag extends Record<string, any>>() {
       },
       __signalWait: {
         signalName: definition.signal.name,
+        signal: definition.signal as WorkflowSignal<unknown>,
         ...(definition.timeout !== undefined && { timeout: definition.timeout }),
         ...(maxPending !== undefined && { maxPendingSignals: maxPending }),
         ...("timeoutValue" in definition && { timeoutValue: definition.timeoutValue }),

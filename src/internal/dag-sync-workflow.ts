@@ -114,7 +114,7 @@ import { assignOwn, setOwn } from "./own-properties.js";
 import { assertValidName } from "./validate-name.js";
 import { planWorkflowBatches } from "./workflow-planning.js";
 import {
-  assertSignalCapsAgree,
+  assertSignalWaitsAgree,
   assertSignalWaitsAlone,
   resolveStageBoundaries,
 } from "./workflow-stages.js";
@@ -707,7 +707,7 @@ function workflow<
   };
   // Fail where the workflow is defined, not when a worker first plans it.
   assertSignalWaitsAlone(wf);
-  assertSignalCapsAgree(wf);
+  assertSignalWaitsAgree(wf);
 
   // Create a builder function that returns a new WorkflowBuilder over the given workflow.
   // Checkpoints, stage boundaries and versioning all live on the workflow object, so every
@@ -783,9 +783,8 @@ function workflow<
         stageName: string,
         options: StageBoundaryOptions<S>,
       ): WorkflowBuilder<Bag, RequiredInitial, ConfiguredValues, Steps, CurrentCheckpointNames> {
-        if (typeof stageName !== "string" || stageName.length === 0) {
-          throw new Error("Stage name must be a non-empty string.");
-        }
+        assertValidName("Stage", stageName);
+        for (const alias of options.aliases ?? []) assertValidName("Stage", alias);
         if (currentBoundaries.some((b) => b.name === stageName)) {
           throw new Error(
             `Duplicate stage name "${stageName}". Stage names must be unique within a workflow.`,

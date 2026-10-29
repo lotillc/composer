@@ -25,7 +25,7 @@ import type {
 import { DEFAULT_CHECKPOINT_TIMEOUT_MS, type Workflow } from "../../dag-sync-workflow.js";
 import { planWorkflowBatches } from "../../workflow-planning.js";
 import {
-  assertSignalCapsAgree,
+  assertSignalWaitsAgree,
   assertSignalWaitsAlone,
   initialFieldsOf,
   resolveStageBoundaries,
@@ -79,7 +79,7 @@ function buildActivityConfig(step: Step<any, any, any>): StepActivityConfig | un
 export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>): WorkflowPlan {
   const initialFields = initialFieldsOf(workflow);
   assertSignalWaitsAlone(workflow);
-  assertSignalCapsAgree(workflow);
+  assertSignalWaitsAgree(workflow);
 
   // A node's name in the plan is its identity: what `completedSteps` records and what a
   // checkpoint or stage boundary refers to. Composition prefixes it so nodes from different
@@ -219,6 +219,14 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
       }
       for (const wait of batch.signalWaits ?? []) {
         stepToBatchIndex.set(wait.name, batchIndex);
+      }
+    });
+    // A checkpoint names its step as the builder resolved it, which for a composed fan-out
+    // is the namespaced name; the plan keeps fan-outs bare, so index that name too.
+    planResult.batches.forEach((batch, batchIndex) => {
+      for (const node of batch) {
+        const syntheticName = (node as { _syntheticName?: string })._syntheticName;
+        if (syntheticName) stepToBatchIndex.set(syntheticName, batchIndex);
       }
     });
 
