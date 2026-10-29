@@ -1,4 +1,5 @@
 import type { AssertSerializable, Step, StrictStepReturn } from "./dag-sync-step.js";
+import { assertValidName } from "./validate-name.js";
 import type {
   ExtractWorkflowBag,
   ExtractWorkflowRequiredInitial,
@@ -109,6 +110,7 @@ export function fanOut<ParentBag extends Record<string, any>>() {
     ) => AssertSerializable<StrictStepReturn<ParentBag, Provides[number]>>;
     concurrency?: number;
   }): FanOut<ParentBag, Needs, Provides, Name> => {
+    assertValidName("FanOut", definition.name);
     if (
       definition.concurrency != null &&
       (!Number.isFinite(definition.concurrency) || definition.concurrency < 1)
