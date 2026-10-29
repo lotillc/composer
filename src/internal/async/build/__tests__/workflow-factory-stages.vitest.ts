@@ -571,6 +571,23 @@ describe("signal waits", () => {
     );
   });
 
+  it("trims a carried queue to a cap this build lowered", async () => {
+    const plan = stagedPlanWithWait();
+    plan.batches[2]!.signalWaits![0]!.maxPendingSignals = 2;
+    const continued = await runUntilContinued(plan, {
+      initialData: { id: "1" },
+      continuation: continuation({
+        bag: { x: "X" },
+        completedSteps: ["a"],
+        signals: { approval: [1, 2, 3, 4, 5], retired: [1, 2, 3] },
+      }),
+    });
+    expect(continued.next.continuation?.signals).toEqual({
+      approval: [4, 5],
+      retired: [1, 2, 3],
+    });
+  });
+
   it("caps at 100 by default", async () => {
     mocks.activityFunctions.a = vi.fn(async () => {
       for (let i = 0; i < 105; i++) mocks.defaultSignalHandler!("approval", i);

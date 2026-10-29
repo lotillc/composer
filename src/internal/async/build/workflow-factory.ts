@@ -322,9 +322,14 @@ function createSignalInbox(plan: WorkflowPlan, continuation?: WorkflowContinuati
     }
   }
   const seenKeys = [...(continuation?.seenSignalKeys ?? [])];
+  // A build may lower a signal's cap while runs carry longer queues; the newest payloads
+  // within the current cap are kept. Undeclared queues are carried as they are.
   return {
     queues: new Map(
-      Object.entries(continuation?.signals ?? {}).map(([name, queue]) => [name, [...queue]]),
+      Object.entries(continuation?.signals ?? {}).map(([name, queue]) => {
+        const cap = caps.get(name);
+        return [name, cap === undefined ? [...queue] : queue.slice(-cap)];
+      }),
     ),
     caps,
     seenKeys,
@@ -361,7 +366,7 @@ function receiveSignal(
   const queue = inbox.queues.get(signalName) ?? [];
   queue.push(payload);
   if (queue.length > cap) {
-    queue.shift();
+    queue.splice(0, queue.length - cap);
     wf.log.warn("Signal inbox full; dropped the oldest pending payload", {
       signalName,
       limit: cap,

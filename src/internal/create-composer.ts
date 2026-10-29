@@ -172,10 +172,13 @@ export function createComposer<TContext>(
   // This pins new workflows to the same deployment version as the workers,
   // eliminating the TOCTOU gap that would require a separate setCurrentDeployment call.
   //
-  // A workflow that declares AUTO_UPGRADE starts unpinned. A start-time pin outranks the
-  // workflow's own declaration and is inherited by every continue-as-new run on the same
-  // task queue, so a pinned start would hold the workflow on this build for its whole life.
-  // The cost: its first task goes to the current version, not necessarily this build.
+  // A workflow that declares AUTO_UPGRADE, or that has stage boundaries, starts unpinned.
+  // A start-time pin outranks the workflow's own declaration and is inherited by every
+  // continue-as-new run on the same task queue, whatever the boundary asks for, so a pinned
+  // start would hold the workflow on this build for its whole life. Unpinned, a staged
+  // PINNED workflow still keeps each run on one build (the worker default) and moves on
+  // at each boundary. The cost: its first task goes to the current version, not
+  // necessarily this build.
   const pinnedOverride: VersioningOverride | undefined = temporalConfig.buildId
     ? {
         pinnedTo: {
@@ -187,7 +190,9 @@ export function createComposer<TContext>(
   const versioningOverrideFor = (
     workflow: Workflow<any, any, any, any, any>,
   ): VersioningOverride | undefined =>
-    workflow.versioningBehavior === "AUTO_UPGRADE" ? undefined : pinnedOverride;
+    workflow.versioningBehavior === "AUTO_UPGRADE" || (workflow.stageBoundaries?.length ?? 0) > 0
+      ? undefined
+      : pinnedOverride;
 
   const conflictPolicyFor = (ifRunning: IfRunning | undefined): "USE_EXISTING" | undefined =>
     ifRunning === "useExisting" ? "USE_EXISTING" : undefined;

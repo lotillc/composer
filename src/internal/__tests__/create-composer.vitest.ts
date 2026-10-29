@@ -263,10 +263,19 @@ describe("per-workflow start-time pinning", () => {
     mockExecuteWorkflowAndWait.mockReset().mockResolvedValue({ bag: {} });
   });
 
+  // A pin would be inherited by every continued run and override each boundary's routing.
+  const stagedPinnedWorkflow = {
+    name: "staged-pinned-wf",
+    steps: [],
+    versioningBehavior: "PINNED",
+    stageBoundaries: [{ name: "later", afterStep: "s" }],
+  } as unknown as Workflow<any, any, any>;
+
   it.each([
     ["no declaration", defaultWorkflow, pinned],
     ["PINNED", pinnedWorkflow, pinned],
     ["AUTO_UPGRADE", upgradingWorkflow, undefined],
+    ["PINNED with stage boundaries", stagedPinnedWorkflow, undefined],
   ])("startAsyncWorkflow with %s", async (_label, workflow, expected) => {
     await versioned.startAsyncWorkflow(workflow, {});
     expect(overrideOfLastStart()).toEqual(expected);
@@ -275,6 +284,7 @@ describe("per-workflow start-time pinning", () => {
   it.each([
     ["no declaration", defaultWorkflow, pinned],
     ["AUTO_UPGRADE", upgradingWorkflow, undefined],
+    ["PINNED with stage boundaries", stagedPinnedWorkflow, undefined],
   ])("runAsyncWorkflow (wait for result) with %s", async (_label, workflow, expected) => {
     await versioned.runAsyncWorkflow(workflow, {});
     expect(overrideOfLastStart()).toEqual(expected);
