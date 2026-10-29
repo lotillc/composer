@@ -48,6 +48,11 @@ export interface TemporalExecutionOptions {
   versioningOverride?: VersioningOverride;
 
   /**
+   * What to do when a workflow with this ID is already running.
+   */
+  workflowIdConflictPolicy?: "FAIL" | "USE_EXISTING";
+
+  /**
    * Optional checkpoint name to await.
    * If specified, returns partial bag state when checkpoint is reached
    * instead of waiting for full workflow completion.
@@ -140,6 +145,7 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
         taskQueue: "workflow-tasks",
         clientConfig,
         versioningOverride: options.versioningOverride,
+        workflowIdConflictPolicy: options.workflowIdConflictPolicy,
       });
 
       return { bag: mergedInitialData as Bag, error: undefined };
@@ -154,6 +160,7 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
         taskQueue: "workflow-tasks",
         clientConfig,
         versioningOverride: options.versioningOverride,
+        workflowIdConflictPolicy: options.workflowIdConflictPolicy,
       });
 
       // Use Temporal Update to wait for checkpoint (no polling!)
@@ -201,6 +208,7 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
       taskQueue: "workflow-tasks",
       clientConfig,
       versioningOverride: options.versioningOverride,
+      workflowIdConflictPolicy: options.workflowIdConflictPolicy,
     });
 
     return result as WorkflowResult<Bag>;
@@ -249,7 +257,10 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
 export async function startWorkflowTemporal<Bag extends Record<string, any>>(
   wf: Workflow<Bag, any, any>,
   initialData: Partial<Bag>,
-  options: Pick<TemporalExecutionOptions, "workflowId" | "clientConfig" | "versioningOverride">,
+  options: Pick<
+    TemporalExecutionOptions,
+    "workflowId" | "clientConfig" | "versioningOverride" | "workflowIdConflictPolicy"
+  >,
 ): Promise<{ workflowId: string }> {
   // Merge configured values with initial data (like sync path does)
   const mergedInitialData = {
@@ -271,6 +282,7 @@ export async function startWorkflowTemporal<Bag extends Record<string, any>>(
     taskQueue: "workflow-tasks",
     clientConfig: options.clientConfig,
     versioningOverride: options.versioningOverride,
+    workflowIdConflictPolicy: options.workflowIdConflictPolicy,
   });
 
   return { workflowId: options.workflowId };

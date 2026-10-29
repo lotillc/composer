@@ -93,6 +93,12 @@ export interface ExecuteWorkflowOptions {
   versioningOverride?: VersioningOverride;
 
   /**
+   * What to do when a workflow with this ID is already running. `FAIL` (Temporal's
+   * default) rejects the start; `USE_EXISTING` returns a handle to the running workflow.
+   */
+  workflowIdConflictPolicy?: "FAIL" | "USE_EXISTING";
+
+  /**
    * Override Temporal client config for this execution
    */
   clientConfig: TemporalClientConfig;
@@ -209,6 +215,9 @@ export async function executeWorkflow(
     workflowId: options.workflowId,
     args: [options.input],
     ...(options.versioningOverride ? { versioningOverride: options.versioningOverride } : {}),
+    ...(options.workflowIdConflictPolicy
+      ? { workflowIdConflictPolicy: options.workflowIdConflictPolicy }
+      : {}),
   });
 
   return handle;
@@ -328,7 +337,10 @@ export async function signalWorkflow(
   signalName: string,
   data: any,
   config: TemporalClientConfig,
+  meta?: Record<string, unknown>,
 ): Promise<void> {
   const handle = await getWorkflowHandle(workflowId, config);
-  await handle.signal(signalName, data);
+  // Metadata rides as a second argument so the payload itself is unchanged for any
+  // handler that reads only the first.
+  await (meta ? handle.signal(signalName, data, meta) : handle.signal(signalName, data));
 }

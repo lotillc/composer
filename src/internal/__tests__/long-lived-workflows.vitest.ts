@@ -61,6 +61,27 @@ describe("waitForSignal", () => {
     ).toThrow("exactly one field");
   });
 
+  it("rejects a maxPendingSignals that is not a positive integer", () => {
+    expect(() =>
+      waitForSignal<Bag>()({
+        name: "w",
+        signal: approvalSignal,
+        provides: ["approval"],
+        maxPendingSignals: 0,
+      }),
+    ).toThrow("maxPendingSignals must be a positive integer");
+  });
+
+  it("infers a signal's payload type from its parse function", () => {
+    const parsed = defineWorkflowSignal("approval", {
+      parse: (value: unknown) => ({ approved: Boolean((value as { approved?: unknown }).approved) }),
+    });
+    expectTypeOf(parsed).toEqualTypeOf<
+      ReturnType<typeof defineWorkflowSignal<{ approved: boolean }>>
+    >();
+    expect(parsed.parse?.({ approved: 1 })).toEqual({ approved: true });
+  });
+
   it("records a missing timeout value distinctly from an undefined one", () => {
     const noFallback = waitForSignal<Bag>()({
       name: "w",
@@ -289,6 +310,20 @@ describe("generateWorkflowPlan", () => {
         },
       ],
     });
+  });
+
+  it("threads a wait's maxPendingSignals into the plan", () => {
+    const capped = waitForSignal<Bag>()({
+      name: "awaitApproval",
+      signal: approvalSignal,
+      needs: ["sentAt"],
+      provides: ["approval"],
+      maxPendingSignals: 5,
+    });
+    const plan = generateWorkflowPlan(
+      createWorkflow<Bag>("capped").requires("requestId").build([sendRequest, capped, verify]),
+    );
+    expect(plan.batches[1]?.signalWaits?.[0]?.maxPendingSignals).toBe(5);
   });
 
   it("leaves the new plan fields out for a workflow that uses none of them", () => {

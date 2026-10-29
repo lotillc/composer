@@ -24,6 +24,8 @@ import type {
   AsyncWorkflowOptions,
   Composer,
   ComposerConfig,
+  IfRunning,
+  SignalAsyncWorkflowOptions,
   StartAsyncWorkflowOptions,
   StepContextProvider,
   SyncComposer,
@@ -186,6 +188,9 @@ export function createComposer<TContext>(
   ): VersioningOverride | undefined =>
     workflow.versioningBehavior === "AUTO_UPGRADE" ? undefined : pinnedOverride;
 
+  const conflictPolicyFor = (ifRunning: IfRunning | undefined): "USE_EXISTING" | undefined =>
+    ifRunning === "useExisting" ? "USE_EXISTING" : undefined;
+
   // Build async methods when temporal is available
   // Overload for workflows WITHOUT required initial fields
   function runAsyncWorkflowImpl<
@@ -233,6 +238,7 @@ export function createComposer<TContext>(
           dataConverter: temporalConfig.dataConverter,
         },
         versioningOverride: versioningOverrideFor(workflow),
+        workflowIdConflictPolicy: conflictPolicyFor(options?.ifRunning),
         awaitCheckpoint: options?.awaitCheckpoint,
         startOnly: options?.startOnly,
       },
@@ -286,6 +292,7 @@ export function createComposer<TContext>(
           dataConverter: temporalConfig.dataConverter,
         },
         versioningOverride: versioningOverrideFor(workflow),
+        workflowIdConflictPolicy: conflictPolicyFor(options?.ifRunning),
       },
     );
   }
@@ -300,8 +307,16 @@ export function createComposer<TContext>(
       workflowId: string,
       signal: WorkflowSignal<Payload>,
       payload: Payload,
+      options?: SignalAsyncWorkflowOptions,
     ): Promise<void> {
-      await signalWorkflow(workflowId as UUIDV7, signal.name, payload, clientConfig);
+      const value = signal.parse ? signal.parse(payload) : payload;
+      await signalWorkflow(
+        workflowId as UUIDV7,
+        signal.name,
+        value,
+        clientConfig,
+        options?.dedupeKey !== undefined ? { dedupeKey: options.dedupeKey } : undefined,
+      );
     },
 
         async describeWorkflow(workflowId: string) {

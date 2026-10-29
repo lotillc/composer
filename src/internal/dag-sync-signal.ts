@@ -14,18 +14,37 @@ import type { DurationString, Step } from "./dag-sync-step.js";
 export interface WorkflowSignal<Payload> {
   readonly name: string;
   /**
+   * Validates and normalizes a payload before `signalAsyncWorkflow` sends it. Throwing
+   * rejects the send, so a malformed payload never reaches the workflow.
+   */
+  readonly parse?: (payload: unknown) => Payload;
+  /**
    * @internal Type-level only; never set at runtime. A function type in both positions
    * makes the payload invariant, so a signal of one payload type cannot stand in for another.
    */
   readonly __payload?: (payload: Payload) => Payload;
 }
 
-/** Defines a typed workflow signal. See {@link WorkflowSignal}. */
-export function defineWorkflowSignal<Payload>(name: string): WorkflowSignal<Payload> {
+/**
+ * Defines a typed workflow signal. See {@link WorkflowSignal}.
+ *
+ * The payload type is otherwise only checked at compile time, and the signal may carry it
+ * for weeks before a step reads it. Pass `parse` -- a schema's parse function, say -- to
+ * validate it at the boundary instead; the payload type is then inferred from it.
+ *
+ * @example
+ * ```typescript
+ * const approvalSignal = defineWorkflowSignal("approval", { parse: ApprovalSchema.parse });
+ * ```
+ */
+export function defineWorkflowSignal<Payload>(
+  name: string,
+  options: { parse?: (payload: unknown) => Payload } = {},
+): WorkflowSignal<Payload> {
   if (typeof name !== "string" || name.length === 0) {
     throw new Error("defineWorkflowSignal: name must be a non-empty string");
   }
-  return { name };
+  return { name, ...(options.parse && { parse: options.parse }) };
 }
 
 /**
@@ -34,6 +53,7 @@ export function defineWorkflowSignal<Payload>(name: string): WorkflowSignal<Payl
 export interface SignalWaitMetadata {
   signalName: string;
   timeout?: DurationString;
+  maxPendingSignals?: number;
   timeoutValue?: unknown;
   /** Distinguishes an explicit `timeoutValue: undefined` from no fallback at all. */
   hasTimeoutValue: boolean;
@@ -79,6 +99,10 @@ export function isSignalWaitStep(
  *
  * `needs` only orders the wait after the steps that produce those fields.
  *
+ * Only signal names a wait declares are accepted; any other signal is dropped with a
+ * warning. Up to `maxPendingSignals` (default 100) unconsumed payloads of this signal are
+ * kept, the oldest dropped first.
+ *
  * Only Temporal (async) execution can wait; under `runSyncWorkflow` the node fails.
  *
  * @example
@@ -105,10 +129,17 @@ export function waitForSignal<Bag extends Record<string, any>>() {
     provides: readonly [Field];
     timeout?: DurationString;
     timeoutValue?: NoInfer<Bag[Field]>;
+    maxPendingSignals?: number;
   }): SignalWait<Bag, Needs, Field, Name> => {
     if (!Array.isArray(definition.provides) || definition.provides.length !== 1) {
       throw new Error(
         `waitForSignal "${definition.name}": provides must list exactly one field`,
+      );
+    }
+    const maxPending = definition.maxPendingSignals;
+    if (maxPending !== undefined && (!Number.isInteger(maxPending) || maxPending < 1)) {
+      throw new Error(
+        `waitForSignal "${definition.name}": maxPendingSignals must be a positive integer`,
       );
     }
 
@@ -125,6 +156,7 @@ export function waitForSignal<Bag extends Record<string, any>>() {
       __signalWait: {
         signalName: definition.signal.name,
         ...(definition.timeout !== undefined && { timeout: definition.timeout }),
+        ...(maxPending !== undefined && { maxPendingSignals: maxPending }),
         ...("timeoutValue" in definition && { timeoutValue: definition.timeoutValue }),
         hasTimeoutValue: "timeoutValue" in definition,
       },

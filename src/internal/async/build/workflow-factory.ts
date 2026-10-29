@@ -46,18 +46,34 @@ export interface WorkflowInput {
   continuation?: WorkflowContinuation;
 }
 
+/** Format version written into every continuation by this build. */
+export const CONTINUATION_VERSION = 1;
+
 /**
  * State a staged workflow carries across continue-as-new.
+ *
+ * This is a wire format between builds: the build that ends a run writes it and whichever
+ * build is current reads it, possibly an older one after a rollback. Change it additively
+ * only -- never remove, rename or repurpose a field -- and read every field tolerantly, as
+ * a continuation written by another build may lack fields this one knows or carry fields it
+ * does not. Bump `version` only for a change an older reader must be able to detect.
  */
 export interface WorkflowContinuation {
+  /** Format version of the build that wrote this continuation. Absent means 1. */
+  version?: number;
   /** Name of the stage boundary the previous run ended at. */
   stage: string;
-  /** Produced bag fields carried forward (initial data travels in `initialData`). */
-  bag: Record<string, unknown>;
+  /**
+   * Bag fields carried forward. Initial data travels in `initialData`; a field here that
+   * shares a name with initial data is a value the workflow changed, and wins.
+   */
+  bag?: Record<string, unknown>;
   /** Steps that already ran in earlier runs; never run again even if the plan moved them. */
-  completedSteps: string[];
+  completedSteps?: string[];
   /** Signals received but not yet consumed by a wait, oldest first, by signal name. */
-  signals: Record<string, unknown[]>;
+  signals?: Record<string, unknown[]>;
+  /** Dedupe keys of signals already received, oldest first, as `<signal>:<key>`. */
+  seenSignalKeys?: string[];
 }
 
 /**
@@ -286,26 +302,94 @@ async function runWithPolling<T>(
 // ============================================================================
 
 /**
- * Most unconsumed payloads kept per signal name. The inbox is carried across every
- * continue-as-new, so an unbounded queue of duplicate or unwanted signals would grow each
- * run's input without limit. The oldest payload is dropped first.
+ * Unconsumed payloads kept per signal name when no wait sets `maxPendingSignals`. The
+ * inbox is carried across every continue-as-new, so a queue of duplicate or unwanted
+ * signals would otherwise grow each run's input without limit.
  */
-const MAX_PENDING_SIGNALS_PER_NAME = 100;
+export const DEFAULT_MAX_PENDING_SIGNALS = 100;
 
-/** Received, unconsumed signal payloads, oldest first, by signal name. */
-type SignalInbox = Map<string, unknown[]>;
+/**
+ * Dedupe keys remembered across runs. A key older than this many later keys can be
+ * accepted again, so the window must outlast any plausible retry of the same delivery.
+ */
+const MAX_SEEN_SIGNAL_KEYS = 1000;
 
-function pushSignal(inbox: SignalInbox, signalName: string, payload: unknown): void {
-  const queue = inbox.get(signalName) ?? [];
+/** Delivery metadata `signalAsyncWorkflow` sends as the signal's second argument. */
+export interface SignalDeliveryMeta {
+  /** Caller-chosen key; a second signal with the same name and key is dropped. */
+  dedupeKey?: string;
+}
+
+/**
+ * Received, unconsumed signals, carried across continue-as-new.
+ *
+ * Accepts only the signal names some wait in this workflow declares (any stage, not just
+ * the current one), so a stray or hostile sender cannot grow the carried state. Queues a
+ * previous run carried in are kept even when this build no longer declares them, so a
+ * rollback to a build that still waits on them loses nothing.
+ */
+interface SignalInbox {
+  queues: Map<string, unknown[]>;
+  /** Maximum pending payloads per declared signal name. */
+  caps: Map<string, number>;
+  seenKeys: string[];
+  seenKeySet: Set<string>;
+}
+
+function createSignalInbox(plan: WorkflowPlan, continuation?: WorkflowContinuation): SignalInbox {
+  const caps = new Map<string, number>();
+  for (const batch of plan.batches) {
+    for (const wait of batch.signalWaits ?? []) {
+      const cap = wait.maxPendingSignals ?? DEFAULT_MAX_PENDING_SIGNALS;
+      caps.set(wait.signalName, Math.max(cap, caps.get(wait.signalName) ?? 0));
+    }
+  }
+  const seenKeys = [...(continuation?.seenSignalKeys ?? [])];
+  return {
+    queues: new Map(
+      Object.entries(continuation?.signals ?? {}).map(([name, queue]) => [name, [...queue]]),
+    ),
+    caps,
+    seenKeys,
+    seenKeySet: new Set(seenKeys),
+  };
+}
+
+function receiveSignal(
+  inbox: SignalInbox,
+  signalName: string,
+  payload: unknown,
+  meta: SignalDeliveryMeta | undefined,
+): void {
+  const cap = inbox.caps.get(signalName);
+  if (cap === undefined) {
+    wf.log.warn("Dropped a signal no wait in this workflow declares", { signalName });
+    return;
+  }
+
+  const dedupeKey = typeof meta?.dedupeKey === "string" ? `${signalName}:${meta.dedupeKey}` : undefined;
+  if (dedupeKey !== undefined) {
+    if (inbox.seenKeySet.has(dedupeKey)) {
+      wf.log.info("Dropped a duplicate signal", { signalName, dedupeKey: meta!.dedupeKey });
+      return;
+    }
+    inbox.seenKeys.push(dedupeKey);
+    inbox.seenKeySet.add(dedupeKey);
+    if (inbox.seenKeys.length > MAX_SEEN_SIGNAL_KEYS) {
+      inbox.seenKeySet.delete(inbox.seenKeys.shift()!);
+    }
+  }
+
+  const queue = inbox.queues.get(signalName) ?? [];
   queue.push(payload);
-  if (queue.length > MAX_PENDING_SIGNALS_PER_NAME) {
+  if (queue.length > cap) {
     queue.shift();
     wf.log.warn("Signal inbox full; dropped the oldest pending payload", {
       signalName,
-      limit: MAX_PENDING_SIGNALS_PER_NAME,
+      limit: cap,
     });
   }
-  inbox.set(signalName, queue);
+  inbox.queues.set(signalName, queue);
 }
 
 /**
@@ -319,7 +403,7 @@ async function runSignalWait(
   wait: SignalWaitBatchEntry,
   inbox: SignalInbox,
 ): Promise<Record<string, unknown>> {
-  const hasPending = () => (inbox.get(wait.signalName)?.length ?? 0) > 0;
+  const hasPending = () => (inbox.queues.get(wait.signalName)?.length ?? 0) > 0;
   const timeoutMs = wait.timeout === undefined ? undefined : durationToMs(wait.timeout);
   if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
     throw new Error(`Signal wait "${wait.name}": timeout must be a positive duration`);
@@ -328,7 +412,7 @@ async function runSignalWait(
 
   for (;;) {
     if (hasPending()) {
-      return { [wait.provides]: inbox.get(wait.signalName)!.shift() };
+      return { [wait.provides]: inbox.queues.get(wait.signalName)!.shift() };
     }
     if (deadlineMs === undefined) {
       await wf.condition(hasPending);
@@ -569,6 +653,8 @@ export interface SignalWaitBatchEntry {
   timeoutValue?: unknown;
   /** Without a timeout value, a timeout fails the node */
   hasTimeoutValue: boolean;
+  /** Pending payloads of this signal kept for later waits; defaults to 100 */
+  maxPendingSignals?: number;
 }
 
 /**
@@ -707,6 +793,14 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
     // into each step's own inputs, and repeating it would bloat every activity payload.
     const { continuation: _continuation, ...activityInput } = input;
 
+    if (continuation && (continuation.version ?? 1) > CONTINUATION_VERSION) {
+      // Fields are only ever added, so reading what this build knows is still sound.
+      wf.log.warn("Resuming from a continuation written by a newer build", {
+        version: continuation.version,
+        supported: CONTINUATION_VERSION,
+      });
+    }
+
     // Initialize bag with initial data, plus whatever an earlier run carried forward
     const bag: Record<string, any> = { ...input.initialData, ...continuation?.bag };
 
@@ -725,6 +819,11 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
         // Thrown as a plain Error, this fails the workflow task rather than the workflow,
         // so Temporal retries it until a build that knows the stage picks it up.
         const known = plan.stageBoundaries?.map((b) => b.name).join(", ") ?? "none";
+        wf.log.error("Cannot resume at unknown stage", {
+          workflowName: plan.name,
+          stage: continuation.stage,
+          knownStages: known,
+        });
         throw new Error(
           `Workflow "${plan.name}" cannot resume at unknown stage "${continuation.stage}". ` +
             `Known stages: [${known}]`,
@@ -738,18 +837,28 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
       }
     }
 
-    // Staged or waiting workflows take every signal into an inbox that outlives the run. A
-    // signal no wait in this build knows about would otherwise stay buffered in the SDK and
-    // be lost at continue-as-new, though a later build may wait on it.
+    // Staged or waiting workflows take signals into an inbox that outlives the run. The
+    // handler catches every name so an undeclared one is dropped visibly, not left buffered
+    // in the SDK to vanish at continue-as-new.
     const usesSignals =
       (plan.stageBoundaries?.length ?? 0) > 0 ||
       plan.batches.some((batch) => (batch.signalWaits?.length ?? 0) > 0);
-    const inbox: SignalInbox = new Map(
-      Object.entries(continuation?.signals ?? {}).map(([name, queue]) => [name, [...queue]]),
-    );
+    const inbox = createSignalInbox(plan, continuation);
+
+    // Shown by Temporal UI and describe, so an operator can see where a long-lived run is
+    // without decoding its input. A stage is named by the boundary that begins it.
+    const waitingOn = new Set<string>();
+    const showDetails = () => {
+      if (!usesSignals) return;
+      const stage = continuation?.stage ?? "(first stage)";
+      const waits = [...waitingOn].map((name) => `"${name}"`).join(", ");
+      wf.setCurrentDetails(`Stage: ${stage}${waits ? `\nWaiting for signal: ${waits}` : ""}`);
+    };
+    showDetails();
+
     if (usesSignals) {
       wf.setDefaultSignalHandler((signalName, ...args) => {
-        pushSignal(inbox, signalName, args[0]);
+        receiveSignal(inbox, signalName, args[0], args[1] as SignalDeliveryMeta | undefined);
       });
     }
 
@@ -911,10 +1020,16 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
         if (completedSteps.has(wait.name)) continue;
         allNames.push(wait.name);
         allPromises.push(
-          (async (): Promise<BatchResult> => ({
-            stepName: wait.name,
-            output: await runSignalWait(wait, inbox),
-          }))(),
+          (async (): Promise<BatchResult> => {
+            waitingOn.add(wait.signalName);
+            showDetails();
+            try {
+              return { stepName: wait.name, output: await runSignalWait(wait, inbox) };
+            } finally {
+              waitingOn.delete(wait.signalName);
+              showDetails();
+            }
+          })(),
         );
       }
 
@@ -1129,16 +1244,20 @@ async function continueAtStage(
 ): Promise<never> {
   await wf.condition(wf.allHandlersFinished);
 
-  // Initial data travels in `initialData`; the continuation holds only produced fields.
+  // Initial data travels in `initialData`; the continuation holds produced fields, plus any
+  // initial field the workflow changed (an error handler can), which would otherwise revert.
   const carried: Record<string, unknown> = {};
   for (const [field, value] of Object.entries(bag)) {
-    if (field in input.initialData) continue;
+    if (field in input.initialData) {
+      if (value !== input.initialData[field]) carried[field] = value;
+      continue;
+    }
     if (boundary.carry && !boundary.carry.includes(field)) continue;
     carried[field] = value;
   }
 
   const signals: Record<string, unknown[]> = {};
-  for (const [name, queue] of inbox) {
+  for (const [name, queue] of inbox.queues) {
     if (queue.length > 0) signals[name] = [...queue];
   }
 
@@ -1153,10 +1272,12 @@ async function continueAtStage(
   const next: WorkflowInput = {
     ...rest,
     continuation: {
+      version: CONTINUATION_VERSION,
       stage: boundary.name,
       bag: carried,
       completedSteps: [...completedSteps],
       signals,
+      ...(inbox.seenKeys.length > 0 && { seenSignalKeys: [...inbox.seenKeys] }),
     },
   };
   return wf.makeContinueAsNewFunc<(input: WorkflowInput) => Promise<TemporalWorkflowResult>>({

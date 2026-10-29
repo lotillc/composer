@@ -2,9 +2,10 @@ import { WorkflowNotFoundError } from "@temporalio/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UUIDV7 } from "../../../types.js";
 
-const { mockConnect, mockGetHandle, clientOptions } = vi.hoisted(() => ({
+const { mockConnect, mockGetHandle, mockStart, clientOptions } = vi.hoisted(() => ({
   mockConnect: vi.fn(),
   mockGetHandle: vi.fn(),
+  mockStart: vi.fn(),
   clientOptions: [] as Array<Record<string, unknown>>,
 }));
 
@@ -16,7 +17,7 @@ vi.mock("@temporalio/client", async (importOriginal) => {
       connect: mockConnect,
     },
     Client: class {
-      workflow = { getHandle: mockGetHandle };
+      workflow = { getHandle: mockGetHandle, start: mockStart };
       constructor(options: Record<string, unknown>) {
         clientOptions.push(options);
       }
@@ -161,5 +162,57 @@ describe("createTemporalClient dataConverter", () => {
     expect(withB).not.toBe(withA);
     expect(withAAgain).toBe(withA);
     expect(clientOptions).toHaveLength(2);
+  });
+});
+
+describe("executeWorkflow conflict policy", () => {
+  const clientConfig = { address: "start-test:7233", namespace: "default" };
+  const base = {
+    workflowName: "wf",
+    workflowId: "request-42" as UUIDV7,
+    input: { initialData: {} },
+    clientConfig,
+  };
+
+  beforeEach(() => {
+    mockConnect.mockResolvedValue({});
+    mockStart.mockReset().mockResolvedValue({});
+  });
+
+  it("passes USE_EXISTING through to Temporal", async () => {
+    const { executeWorkflow } = await import("../temporal-client.js");
+    await executeWorkflow({ ...base, workflowIdConflictPolicy: "USE_EXISTING" });
+    expect(mockStart.mock.calls[0]?.[1]).toMatchObject({ workflowIdConflictPolicy: "USE_EXISTING" });
+  });
+
+  it("omits the key so Temporal's default applies", async () => {
+    const { executeWorkflow } = await import("../temporal-client.js");
+    await executeWorkflow(base);
+    expect(mockStart.mock.calls[0]?.[1]).not.toHaveProperty("workflowIdConflictPolicy");
+  });
+});
+
+describe("signalWorkflow", () => {
+  const clientConfig = { address: "signal-test:7233", namespace: "default" };
+  const signal = vi.fn();
+
+  beforeEach(() => {
+    mockConnect.mockResolvedValue({});
+    signal.mockReset().mockResolvedValue(undefined);
+    mockGetHandle.mockReset().mockReturnValue({ signal });
+  });
+
+  it("sends the payload alone when there is no metadata", async () => {
+    const { signalWorkflow } = await import("../temporal-client.js");
+    await signalWorkflow("wf-1" as UUIDV7, "approval", { ok: true }, clientConfig);
+    expect(signal).toHaveBeenCalledWith("approval", { ok: true });
+  });
+
+  it("sends metadata as the second signal argument", async () => {
+    const { signalWorkflow } = await import("../temporal-client.js");
+    await signalWorkflow("wf-1" as UUIDV7, "approval", { ok: true }, clientConfig, {
+      dedupeKey: "evt-1",
+    });
+    expect(signal).toHaveBeenCalledWith("approval", { ok: true }, { dedupeKey: "evt-1" });
   });
 });

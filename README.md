@@ -301,7 +301,8 @@ By default an async workflow is pinned to the build that started it, which keeps
 ```typescript
 import { createWorkflow, defineWorkflowSignal, waitForSignal } from "@lotiai/composer";
 
-export const approvalSignal = defineWorkflowSignal<{ approved: boolean }>("approval");
+// `parse` validates a payload before it is sent; the payload type is inferred from it.
+export const approvalSignal = defineWorkflowSignal("approval", { parse: ApprovalSchema.parse });
 
 const awaitApproval = waitForSignal<ReviewBag>()({
   name: "awaitApproval",
@@ -319,14 +320,24 @@ export const review = createWorkflow<ReviewBag>("review")
   .continueAsNew("awaiting-approval", { afterStep: sendRequest })
   .continueAsNew("verifying", { afterStep: awaitApproval, carry: ["approval"] });
 
-// Start with an ID you can signal later, then deliver the response whenever it arrives.
-await composer.startAsyncWorkflow(review, { requestId }, { workflowId: requestId });
-await composer.signalAsyncWorkflow(requestId, approvalSignal, { approved: true });
+// Start with an ID you can signal later. `ifRunning: "useExisting"` makes a retried start
+// resolve against the running workflow instead of failing.
+await composer.startAsyncWorkflow(review, { requestId }, {
+  workflowId: requestId,
+  ifRunning: "useExisting",
+});
+
+// Deliver the response whenever it arrives. The dedupe key makes a retried delivery safe.
+await composer.signalAsyncWorkflow(requestId, approvalSignal, response, {
+  dedupeKey: response.eventId,
+});
 ```
 
-**Stage boundaries.** `.continueAsNew(name, { afterStep })` ends the run after the batch containing `afterStep` and starts a new run with the bag carried forward. By default the new run's first task goes to the current build (`initialVersioningBehavior: "AUTO_UPGRADE"`). Initial data always carries over. `carry` limits which produced fields carry; the builder rejects a list that leaves out a field a later step needs. The next run resumes by stage **name**. To rename a stage, list its old name in `aliases` (`{ afterStep, aliases: ["old-name"] }`). To remove one, add its name to the aliases of the boundary its in-flight runs should resume after. A name that no boundary or alias claims leaves those runs retrying until a build that knows it is deployed. A resumed run never repeats a step an earlier run ran. `runAsyncWorkflow` follows the whole chain and returns the final run's result. Sync execution ignores boundaries.
+**Stage boundaries.** `.continueAsNew(name, { afterStep })` ends the run after the batch containing `afterStep` and starts a new run with the bag carried forward. By default the new run's first task goes to the current build (`initialVersioningBehavior: "AUTO_UPGRADE"`). Initial data always carries over. `carry` limits which produced fields carry; the builder rejects a list that leaves out a field a later step needs. The next run resumes by stage **name**. To rename a stage, list its old name in `aliases` (`{ afterStep, aliases: ["old-name"] }`). To remove one, add its name to the aliases of the boundary its in-flight runs should resume after. A name that no boundary or alias claims leaves those runs retrying until a build that knows it is deployed. A resumed run never repeats a step an earlier run ran. `runAsyncWorkflow` follows the whole chain and returns the final run's result. Each run shows its stage, and any signal it is waiting for, as the workflow's current details in Temporal UI and `describe`. Sync execution ignores boundaries.
 
-**Durable waits.** `waitForSignal` blocks the workflow on a Temporal condition, plus a timer when a `timeout` is set. While it waits it holds no worker slot. A signal that arrives before its wait is reached, even in an earlier stage, is kept and consumed when the wait is reached. Unconsumed signals carry across continue-as-new, up to 100 per signal name with the oldest dropped first. A timeout without `timeoutValue` fails the node with `COMPOSER_SIGNAL_WAIT_TIMEOUT` (exported as `SIGNAL_WAIT_TIMEOUT_CODE`), which reaches `onError` like any step failure. Under `runSyncWorkflow`, a wait node fails.
+**Durable waits.** `waitForSignal` blocks the workflow on a Temporal condition, plus a timer when a `timeout` is set. While it waits it holds no worker slot. A signal that arrives before its wait is reached, even in an earlier stage, is kept and consumed when the wait is reached. A workflow accepts only signal names some wait in it declares, in any stage; any other signal is dropped with a warning. Unconsumed signals carry across continue-as-new, up to `maxPendingSignals` per signal name (default 100), with the oldest dropped first. A timeout without `timeoutValue` fails the node with `COMPOSER_SIGNAL_WAIT_TIMEOUT` (exported as `SIGNAL_WAIT_TIMEOUT_CODE`), which reaches `onError` like any step failure. Under `runSyncWorkflow`, a wait node fails.
+
+`signalAsyncWorkflow` runs the signal's `parse` first and sends nothing if it throws. With a `dedupeKey`, the workflow drops a later signal carrying the same name and key, across stages, for the most recent 1,000 keys. Take the key from the event being delivered, not from each attempt. A signal sent to a workflow that is no longer running rejects with `WorkflowNotFoundError`; that includes a workflow that has already finished because its wait timed out. A signal that arrives after its wait has timed out and taken its `timeoutValue` stays queued, and a later wait on the same signal consumes it.
 
 **Versioning.** `.versioning("AUTO_UPGRADE")` declares on the workflow itself that its runs move to the current build as it changes. Such a workflow is started **without** a build pin: a start-time pin would outrank the declaration and be inherited by every continue-as-new run. Workflows that declare nothing, or `"PINNED"`, are still pinned to the starting build. Keep these in mind:
 

@@ -41,6 +41,7 @@ const mocks = vi.hoisted(() => ({
   conditionTimeouts: [] as Array<number | undefined>,
   allHandlersFinished: vi.fn(() => true),
   continueAsNewOptions: [] as Array<Record<string, unknown>>,
+  details: [] as string[],
   nowMs: 0,
 }));
 
@@ -59,6 +60,9 @@ vi.mock("@temporalio/workflow", async (importOriginal) => {
     },
     setDefaultSignalHandler: (handler: (signalName: string, ...args: unknown[]) => void) => {
       mocks.defaultSignalHandler = handler;
+    },
+    setCurrentDetails: (details: string) => {
+      mocks.details.push(details);
     },
     get allHandlersFinished() {
       return mocks.allHandlersFinished;
@@ -110,6 +114,15 @@ function stagedPlan(overrides: Partial<WorkflowPlan> = {}): WorkflowPlan {
   };
 }
 
+/** stagedPlan with a later-stage wait on "approval", so that signal name is declared. */
+function stagedPlanWithWait(): WorkflowPlan {
+  const plan = stagedPlan();
+  plan.batches[2]!.signalWaits = [
+    { name: "awaitApproval", signalName: "approval", provides: "approval", hasTimeoutValue: false },
+  ];
+  return plan;
+}
+
 async function runUntilContinued(
   plan: WorkflowPlan,
   input: WorkflowInput,
@@ -137,6 +150,7 @@ beforeEach(() => {
   mocks.onBlock = undefined;
   mocks.conditionTimeouts = [];
   mocks.continueAsNewOptions = [];
+  mocks.details = [];
   mocks.allHandlersFinished.mockReturnValue(true);
   mocks.nowMs = 0;
   vi.spyOn(Date, "now").mockImplementation(() => mocks.nowMs);
@@ -165,7 +179,13 @@ describe("stage boundaries", () => {
     expect(continued.options).toEqual({ initialVersioningBehavior: "AUTO_UPGRADE" });
     expect(continued.next).toEqual({
       initialData: { id: "1" },
-      continuation: { stage: "second", bag: { x: "X" }, completedSteps: ["a"], signals: {} },
+      continuation: {
+        version: 1,
+        stage: "second",
+        bag: { x: "X" },
+        completedSteps: ["a"],
+        signals: {},
+      },
     });
   });
 
@@ -225,6 +245,7 @@ describe("resuming a continued run", () => {
     expect(mocks.activityFunctions.a).not.toHaveBeenCalled();
     expect(mocks.activityFunctions.b).toHaveBeenCalledWith({ initialData: { id: "1" } }, { x: "X" });
     expect(continued.next.continuation).toEqual({
+      version: 1,
       stage: "third",
       bag: { x: "X", y: "Y" },
       completedSteps: ["a", "b"],
@@ -410,17 +431,58 @@ describe("signal waits", () => {
     expect(mocks.defaultSignalHandler).toBeUndefined();
   });
 
-  it("carries unconsumed signals across continue-as-new, including unknown names", async () => {
+  it("carries unconsumed declared signals across continue-as-new", async () => {
     mocks.activityFunctions.a = vi.fn(async () => {
       mocks.defaultSignalHandler!("approval", "early");
-      mocks.defaultSignalHandler!("not-yet-known", 42);
       return { x: "X" };
     });
-    const continued = await runUntilContinued(stagedPlan(), { initialData: { id: "1" } });
-    expect(continued.next.continuation?.signals).toEqual({
-      approval: ["early"],
-      "not-yet-known": [42],
+    const continued = await runUntilContinued(stagedPlanWithWait(), { initialData: { id: "1" } });
+    expect(continued.next.continuation?.signals).toEqual({ approval: ["early"] });
+  });
+
+  it("drops, with a warning, a signal no wait declares", async () => {
+    mocks.activityFunctions.a = vi.fn(async () => {
+      mocks.defaultSignalHandler!("not-declared", 42);
+      return { x: "X" };
     });
+    const continued = await runUntilContinued(stagedPlanWithWait(), { initialData: { id: "1" } });
+    expect(continued.next.continuation?.signals).toEqual({});
+    expect(mocks.log.warn).toHaveBeenCalledWith(
+      "Dropped a signal no wait in this workflow declares",
+      { signalName: "not-declared" },
+    );
+  });
+
+  it("keeps a carried queue this build no longer declares", async () => {
+    const continued = await runUntilContinued(stagedPlanWithWait(), {
+      initialData: { id: "1" },
+      continuation: continuation({
+        bag: { x: "X" },
+        completedSteps: ["a"],
+        signals: { retired: ["kept"] },
+      }),
+    });
+    expect(continued.next.continuation?.signals).toEqual({ retired: ["kept"] });
+  });
+
+  it("drops a second signal with the same dedupe key, across stages", async () => {
+    mocks.activityFunctions.a = vi.fn(async () => {
+      mocks.defaultSignalHandler!("approval", "first", { dedupeKey: "evt-1" });
+      mocks.defaultSignalHandler!("approval", "retry", { dedupeKey: "evt-1" });
+      mocks.defaultSignalHandler!("approval", "other", { dedupeKey: "evt-2" });
+      return { x: "X" };
+    });
+    const first = await runUntilContinued(stagedPlanWithWait(), { initialData: { id: "1" } });
+    expect(first.next.continuation?.signals).toEqual({ approval: ["first", "other"] });
+    expect(first.next.continuation?.seenSignalKeys).toEqual(["approval:evt-1", "approval:evt-2"]);
+
+    // The next run still remembers the key.
+    mocks.activityFunctions.b = vi.fn(async () => {
+      mocks.defaultSignalHandler!("approval", "late retry", { dedupeKey: "evt-1" });
+      return { y: "Y" };
+    });
+    const second = await runUntilContinued(stagedPlanWithWait(), first.next);
+    expect(second.next.continuation?.signals).toEqual({ approval: ["first", "other"] });
   });
 
   it("resumes with carried signals available to a wait", async () => {
@@ -440,15 +502,106 @@ describe("signal waits", () => {
     expect(result.bag.approval).toBe("carried");
   });
 
-  it("caps each signal's pending queue, dropping the oldest", async () => {
+  it("caps each signal's pending queue at its wait's limit, dropping the oldest", async () => {
+    const plan = stagedPlanWithWait();
+    plan.batches[2]!.signalWaits![0]!.maxPendingSignals = 3;
     mocks.activityFunctions.a = vi.fn(async () => {
-      for (let i = 0; i < 105; i++) mocks.defaultSignalHandler!("noise", i);
+      for (let i = 0; i < 5; i++) mocks.defaultSignalHandler!("approval", i);
       return { x: "X" };
     });
-    const continued = await runUntilContinued(stagedPlan(), { initialData: { id: "1" } });
-    const queue = continued.next.continuation?.signals.noise ?? [];
+    const continued = await runUntilContinued(plan, { initialData: { id: "1" } });
+    expect(continued.next.continuation?.signals?.approval).toEqual([2, 3, 4]);
+    expect(mocks.log.warn).toHaveBeenCalledWith(
+      "Signal inbox full; dropped the oldest pending payload",
+      { signalName: "approval", limit: 3 },
+    );
+  });
+
+  it("caps at 100 by default", async () => {
+    mocks.activityFunctions.a = vi.fn(async () => {
+      for (let i = 0; i < 105; i++) mocks.defaultSignalHandler!("approval", i);
+      return { x: "X" };
+    });
+    const continued = await runUntilContinued(stagedPlanWithWait(), { initialData: { id: "1" } });
+    const queue = continued.next.continuation?.signals?.approval ?? [];
     expect(queue).toHaveLength(100);
     expect(queue[0]).toBe(5);
-    expect(mocks.log.warn).toHaveBeenCalled();
+  });
+});
+
+describe("continuation format", () => {
+  it("resumes from a minimal continuation, defaulting every optional field", async () => {
+    const continued = await runUntilContinued(stagedPlan(), {
+      initialData: { id: "1" },
+      continuation: { stage: "second" },
+    });
+    expect(mocks.activityFunctions.b).toHaveBeenCalledTimes(1);
+    expect(continued.next.continuation?.completedSteps).toEqual(["b"]);
+  });
+
+  it("resumes from a newer build's continuation, ignoring fields it does not know", async () => {
+    await runUntilContinued(stagedPlan(), {
+      initialData: { id: "1" },
+      continuation: { version: 2, stage: "second", bag: { x: "X" }, futureField: true } as never,
+    });
+    expect(mocks.activityFunctions.b).toHaveBeenCalledWith(expect.anything(), { x: "X" });
+    expect(mocks.log.warn).toHaveBeenCalledWith(
+      "Resuming from a continuation written by a newer build",
+      { version: 2, supported: 1 },
+    );
+  });
+
+  it("carries an initial field the workflow changed, so it does not revert", async () => {
+    mocks.activityFunctions["staged__errorHandler"] = vi.fn(async () => ({
+      handled: true,
+      bag: { id: "corrected" },
+    }));
+    mocks.activityFunctions.a = vi.fn(async () => {
+      throw new Error("boom");
+    });
+    const plan = stagedPlan({ errorHandlerActivityName: "staged__errorHandler" });
+    const continued = await runUntilContinued(plan, { initialData: { id: "1" } });
+    expect(continued.next.initialData).toEqual({ id: "1" });
+    expect(continued.next.continuation?.bag).toEqual({ id: "corrected" });
+  });
+});
+
+describe("current details", () => {
+  it("shows the stage and the signal being waited on", async () => {
+    const plan: WorkflowPlan = {
+      name: "waiting",
+      batches: [
+        { steps: [step("a", ["id"], ["x"])] },
+        {
+          steps: [],
+          signalWaits: [
+            { name: "awaitApproval", signalName: "approval", provides: "approval", hasTimeoutValue: false },
+          ],
+        },
+      ],
+      stageBoundaries: [{ name: "waiting", afterBatch: 0, initialVersioningBehavior: "AUTO_UPGRADE" }],
+    };
+    mocks.onBlock = () => mocks.defaultSignalHandler!("approval", { ok: true });
+    await createWorkflowFunction(plan)({
+      initialData: { id: "1" },
+      continuation: continuation({ stage: "waiting", bag: { x: "X" }, completedSteps: ["a"] }),
+    });
+    expect(mocks.details).toEqual([
+      "Stage: waiting",
+      'Stage: waiting\nWaiting for signal: "approval"',
+      "Stage: waiting",
+    ]);
+  });
+
+  it("logs an unknown stage as an error before failing the task", async () => {
+    await createWorkflowFunction(stagedPlan())({
+      initialData: { id: "1" },
+      continuation: continuation({ stage: "gone" }),
+    }).catch(() => undefined);
+    expect(mocks.log.error).toHaveBeenCalledWith("Cannot resume at unknown stage", {
+      workflowName: "staged",
+      stage: "gone",
+      knownStages: "second, third",
+    });
   });
 });

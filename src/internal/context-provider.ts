@@ -238,6 +238,19 @@ export interface AsyncWorkflowOptions<CheckpointNames extends string = never> {
     : NoInfer<CheckpointNames>;
 
   /**
+   * What to do when a workflow with `workflowId` is already running.
+   *
+   * - `"fail"` (default): the start rejects with Temporal's
+   *   `WorkflowExecutionAlreadyStartedError`.
+   * - `"useExisting"`: the start succeeds against the running workflow instead, so a
+   *   retried start (a timed-out request, a redelivered message) is idempotent. The
+   *   running workflow keeps the data it was started with; this call's data is ignored.
+   *
+   * Only a *running* workflow counts: once one finishes, its ID can start a new one.
+   */
+  ifRunning?: IfRunning;
+
+  /**
    * Start the Temporal workflow and return immediately after Temporal accepts it.
    *
    * This is intended for long-running fire-and-forget workflows where the caller
@@ -254,11 +267,33 @@ export interface StartAsyncWorkflowOptions {
    * Optional caller-supplied workflow ID.
    *
    * If omitted, Composer generates a UUIDv7. Supply a stable ID when other code will
-   * later signal the workflow (`signalAsyncWorkflow`) by an ID it already knows. Starting
-   * a second workflow with the ID of a running one fails.
+   * later signal the workflow (`signalAsyncWorkflow`) by an ID it already knows.
    */
   workflowId?: string;
+
+  /**
+   * What to do when a workflow with `workflowId` is already running: `"fail"` (default)
+   * rejects with `WorkflowExecutionAlreadyStartedError`; `"useExisting"` resolves with the
+   * running workflow's ID, so retrying a start is safe. The running workflow keeps the
+   * data it was started with.
+   */
+  ifRunning?: IfRunning;
 }
+
+/**
+ * Options for delivering a signal.
+ */
+export interface SignalAsyncWorkflowOptions {
+  /**
+   * Idempotency key for this delivery. The workflow remembers keys across stages and
+   * drops a later signal with the same name and key, so retrying a send is safe. Derive
+   * it from the event being delivered (a webhook's event ID, say), not per attempt.
+   */
+  dedupeKey?: string;
+}
+
+/** What a start does when a workflow with the same ID is already running. */
+export type IfRunning = "fail" | "useExisting";
 
 /**
  * Sync-only Composer instance.
@@ -433,6 +468,14 @@ export interface Composer<TContext> extends SyncComposer<TContext> {
    * before the wait is reached, even in an earlier stage, is kept until it is. Resolves
    * once Temporal has accepted the signal, not when the workflow consumes it.
    *
+   * The signal's `parse`, if it has one, runs first; a payload it rejects is never sent.
+   * Pass `dedupeKey` so a retried delivery is not consumed twice: the workflow drops a
+   * second signal with the same name and key.
+   *
+   * Rejects with Temporal's `WorkflowNotFoundError` when no workflow with this ID is
+   * running -- including one that already finished, for example because its wait timed
+   * out and took its `timeoutValue`.
+   *
    * @example
    * ```typescript
    * await composer.signalAsyncWorkflow(requestId, approvalSignal, { approved: true });
@@ -442,6 +485,7 @@ export interface Composer<TContext> extends SyncComposer<TContext> {
     workflowId: string,
     signal: WorkflowSignal<Payload>,
     payload: NoInfer<Payload>,
+    options?: SignalAsyncWorkflowOptions,
   ): Promise<void>;
 
   /**

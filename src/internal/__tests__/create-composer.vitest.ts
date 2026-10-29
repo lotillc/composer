@@ -301,6 +301,21 @@ describe("per-workflow start-time pinning", () => {
     expect(overrideOfLastStart()).toBeUndefined();
   });
 
+  it.each([
+    ["startAsyncWorkflow", () => versioned.startAsyncWorkflow(defaultWorkflow, {}, { ifRunning: "useExisting" })],
+    ["runAsyncWorkflow", () => versioned.runAsyncWorkflow(defaultWorkflow, {}, { startOnly: true, ifRunning: "useExisting" })],
+  ])("%s with ifRunning useExisting starts with USE_EXISTING", async (_label, start) => {
+    await start();
+    expect(mockExecuteWorkflow).toHaveBeenCalledWith(
+      expect.objectContaining({ workflowIdConflictPolicy: "USE_EXISTING" }),
+    );
+  });
+
+  it("leaves Temporal's fail-on-conflict default in place otherwise", async () => {
+    await versioned.startAsyncWorkflow(defaultWorkflow, {}, { workflowId: "request-42" });
+    expect(mockExecuteWorkflow.mock.calls[0]?.[0].workflowIdConflictPolicy).toBeUndefined();
+  });
+
   it("startAsyncWorkflow uses a caller-supplied workflowId", async () => {
     const { workflowId } = await versioned.startAsyncWorkflow(defaultWorkflow, {}, {
       workflowId: "request-42",
@@ -320,11 +335,45 @@ describe("signalAsyncWorkflow", () => {
 
     await composer.signalAsyncWorkflow("request-42", approval, { approved: true });
 
-    expect(mockSignalWorkflow).toHaveBeenCalledWith("request-42", "approval", { approved: true }, {
-      address: "localhost:7233",
-      namespace: "test",
-      dataConverter: undefined,
+    expect(mockSignalWorkflow).toHaveBeenCalledWith(
+      "request-42",
+      "approval",
+      { approved: true },
+      { address: "localhost:7233", namespace: "test", dataConverter: undefined },
+      undefined,
+    );
+  });
+
+  it("sends a dedupe key as delivery metadata", async () => {
+    const mockSignalWorkflow = vi.mocked(temporalClient.signalWorkflow);
+    mockSignalWorkflow.mockReset().mockResolvedValue(undefined);
+    const approval = defineWorkflowSignal<{ approved: boolean }>("approval");
+
+    await composer.signalAsyncWorkflow("request-42", approval, { approved: true }, {
+      dedupeKey: "evt-1",
     });
+
+    expect(mockSignalWorkflow.mock.calls[0]?.[4]).toEqual({ dedupeKey: "evt-1" });
+  });
+
+  it("validates the payload with the signal's parse before sending", async () => {
+    const mockSignalWorkflow = vi.mocked(temporalClient.signalWorkflow);
+    mockSignalWorkflow.mockReset().mockResolvedValue(undefined);
+    const approval = defineWorkflowSignal("approval", {
+      parse: (value: unknown) => {
+        const approved = (value as { approved?: unknown })?.approved;
+        if (typeof approved !== "boolean") throw new Error("approved must be a boolean");
+        return { approved };
+      },
+    });
+
+    await composer.signalAsyncWorkflow("request-42", approval, { approved: true });
+    expect(mockSignalWorkflow.mock.calls[0]?.[2]).toEqual({ approved: true });
+
+    await expect(
+      composer.signalAsyncWorkflow("request-42", approval, { approved: "yes" } as never),
+    ).rejects.toThrow("approved must be a boolean");
+    expect(mockSignalWorkflow).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a payload that does not match the signal's type", () => {

@@ -104,6 +104,9 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
             ...(wait.timeout !== undefined && { timeout: wait.timeout }),
             ...(wait.hasTimeoutValue && { timeoutValue: wait.timeoutValue }),
             hasTimeoutValue: wait.hasTimeoutValue,
+            ...(wait.maxPendingSignals !== undefined && {
+              maxPendingSignals: wait.maxPendingSignals,
+            }),
           });
           continue;
         }

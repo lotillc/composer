@@ -20,6 +20,8 @@ export type {
   Composer,
   ComposerConfig,
   ComposerWorkerInterceptors,
+  IfRunning,
+  SignalAsyncWorkflowOptions,
   StartAsyncWorkflowOptions,
   StepContextProvider,
   SyncComposer,

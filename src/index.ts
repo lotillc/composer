@@ -39,6 +39,8 @@ export {
   type StageBoundary,
   type StageBoundaryOptions,
   type StageInitialVersioningBehavior,
+  type IfRunning,
+  type SignalAsyncWorkflowOptions,
   type StartAsyncWorkflowOptions,
   type Step,
   type StepContextProvider,
