@@ -10,7 +10,11 @@
 
 import { v7 as uuidv7 } from "uuid";
 import { getWorkerDeploymentName } from "../temporal-naming.js";
-import { describeWorkflow as describeWorkflowTemporal } from "./async/execute/temporal-client.js";
+import type { VersioningOverride } from "@temporalio/common";
+import {
+  describeWorkflow as describeWorkflowTemporal,
+  signalWorkflow,
+} from "./async/execute/temporal-client.js";
 import { executeWorkflowTemporal, startWorkflowTemporal } from "./async/execute/workflow-execution.js";
 import { runActivityWorkers as runActivityWorkersInternal } from "./async/register/activity-worker.js";
 import { runWorkflowWorkers as runWorkflowWorkersInternal } from "./async/register/workflow-worker.js";
@@ -20,10 +24,12 @@ import type {
   AsyncWorkflowOptions,
   Composer,
   ComposerConfig,
+  StartAsyncWorkflowOptions,
   StepContextProvider,
   SyncComposer,
   TemporalConfig,
 } from "./context-provider.js";
+import type { WorkflowSignal } from "./dag-sync-signal.js";
 import type { Step } from "./dag-sync-step.js";
 import { runSyncWorkflow, type Workflow, type WorkflowResult } from "./dag-sync-workflow.js";
 import { defaultLogger } from "./defaults.js";
@@ -152,11 +158,22 @@ export function createComposer<TContext>(
   // Capture after guard so TypeScript narrows the type for closures
   const temporalConfig = temporal;
 
+  const deploymentName = getWorkerDeploymentName(temporalConfig.serviceName);
+  const clientConfig = {
+    address: temporalConfig.serverAddress,
+    namespace: temporalConfig.namespace,
+    dataConverter: temporalConfig.dataConverter,
+  };
+
   // Construct versioningOverride for workflow starts when buildId is set.
   // This pins new workflows to the same deployment version as the workers,
   // eliminating the TOCTOU gap that would require a separate setCurrentDeployment call.
-  const deploymentName = getWorkerDeploymentName(temporalConfig.serviceName);
-  const workflowVersioningOverride = temporalConfig.buildId
+  //
+  // A workflow that declares AUTO_UPGRADE starts unpinned. A start-time pin outranks the
+  // workflow's own declaration and is inherited by every continue-as-new run on the same
+  // task queue, so a pinned start would hold the workflow on this build for its whole life.
+  // The cost: its first task goes to the current version, not necessarily this build.
+  const pinnedOverride: VersioningOverride | undefined = temporalConfig.buildId
     ? {
         pinnedTo: {
           buildId: temporalConfig.buildId,
@@ -164,6 +181,10 @@ export function createComposer<TContext>(
         },
       }
     : undefined;
+  const versioningOverrideFor = (
+    workflow: Workflow<any, any, any, any, any>,
+  ): VersioningOverride | undefined =>
+    workflow.versioningBehavior === "AUTO_UPGRADE" ? undefined : pinnedOverride;
 
   // Build async methods when temporal is available
   // Overload for workflows WITHOUT required initial fields
@@ -211,7 +232,7 @@ export function createComposer<TContext>(
           namespace: temporalConfig.namespace,
           dataConverter: temporalConfig.dataConverter,
         },
-        versioningOverride: workflowVersioningOverride,
+        versioningOverride: versioningOverrideFor(workflow),
         awaitCheckpoint: options?.awaitCheckpoint,
         startOnly: options?.startOnly,
       },
@@ -227,6 +248,7 @@ export function createComposer<TContext>(
   >(
     workflow: Workflow<Bag, never, Config, Steps>,
     initialData?: Partial<Bag>,
+    options?: StartAsyncWorkflowOptions,
   ): Promise<{ workflowId: string }>;
 
   // Overload for workflows WITH required initial fields
@@ -238,6 +260,7 @@ export function createComposer<TContext>(
   >(
     workflow: Workflow<Bag, RequiredInitial, Config, Steps>,
     initialData: Partial<Bag> & Pick<Bag, RequiredInitial>,
+    options?: StartAsyncWorkflowOptions,
   ): Promise<{ workflowId: string }>;
 
   // Implementation
@@ -249,8 +272,9 @@ export function createComposer<TContext>(
   >(
     workflow: Workflow<Bag, RequiredInitial, Config, Steps>,
     initialData?: Partial<Bag> & Pick<Bag, RequiredInitial>,
+    options?: StartAsyncWorkflowOptions,
   ): Promise<{ workflowId: string }> {
-    const workflowId = uuidv7() as UUIDV7;
+    const workflowId = (options?.workflowId ?? uuidv7()) as UUIDV7;
     return startWorkflowTemporal(
       workflow as Workflow<Bag, RequiredInitial, Config, any>,
       initialData as Partial<Bag>,
@@ -261,7 +285,7 @@ export function createComposer<TContext>(
           namespace: temporalConfig.namespace,
           dataConverter: temporalConfig.dataConverter,
         },
-        versioningOverride: workflowVersioningOverride,
+        versioningOverride: versioningOverrideFor(workflow),
       },
     );
   }
@@ -272,7 +296,15 @@ export function createComposer<TContext>(
     runAsyncWorkflow: runAsyncWorkflowImpl,
     startAsyncWorkflow: startAsyncWorkflowImpl,
 
-    async describeWorkflow(workflowId: string) {
+    async signalAsyncWorkflow<Payload>(
+      workflowId: string,
+      signal: WorkflowSignal<Payload>,
+      payload: Payload,
+    ): Promise<void> {
+      await signalWorkflow(workflowId as UUIDV7, signal.name, payload, clientConfig);
+    },
+
+        async describeWorkflow(workflowId: string) {
       return describeWorkflowTemporal(workflowId as UUIDV7, {
         address: temporalConfig.serverAddress,
         namespace: temporalConfig.namespace,

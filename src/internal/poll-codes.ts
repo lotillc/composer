@@ -1,5 +1,5 @@
 /**
- * Classifier codes for the workflow-side poll loop.
+ * Classifier codes for the workflow-side poll loop and signal waits.
  *
  * Kept in a leaf module with no imports: the workflow factory runs in Temporal's
  * deterministic sandbox and cannot reach the Node-side error classes, while step
@@ -13,3 +13,6 @@ export const STEP_NOT_READY_CODE = "COMPOSER_STEP_NOT_READY";
 
 /** Thrown by the workflow when a step's `asyncPoll.timeout` is exhausted. */
 export const STEP_POLL_TIMEOUT_CODE = "COMPOSER_STEP_POLL_TIMEOUT";
+
+/** Thrown by the workflow when a `waitForSignal` timeout elapses with no signal and no fallback. */
+export const SIGNAL_WAIT_TIMEOUT_CODE = "COMPOSER_SIGNAL_WAIT_TIMEOUT";

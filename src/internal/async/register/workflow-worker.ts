@@ -173,7 +173,10 @@ export async function createWorkflowWorkers(
     workflowCount,
   });
 
-  const workflowsPath = await writeWorkflowSourceFile(config.workflows);
+  // Worker Versioning is on exactly when a buildId is set (see workerDeploymentOptions below).
+  const workflowsPath = await writeWorkflowSourceFile(config.workflows, {
+    workerVersioning: Boolean(config.buildId),
+  });
 
   logger.info("Workflow source file generated", { workflowsPath });
 

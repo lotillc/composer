@@ -41,6 +41,26 @@ const parentWorkflow = createWorkflow<ParentBag>("test-parent-workflow")
   .build([parentFanOut]);
 
 describe("writeWorkflowSourceFile", () => {
+  const upgrading = createWorkflow<ChildBag>("test-upgrading-workflow")
+    .requires("input")
+    .build([childStep])
+    .versioning("AUTO_UPGRADE");
+
+  it("emits a workflow's versioning behavior for a versioned worker", async () => {
+    const code = await readFile(
+      await writeWorkflowSourceFile([upgrading], { workerVersioning: true }),
+      "utf-8",
+    );
+    expect(code).toContain('"versioningBehavior":"AUTO_UPGRADE"');
+  });
+
+  // Temporal's core SDK rejects every completion that carries a versioning behavior from
+  // an unversioned worker, which would leave the workflow retrying its first task forever.
+  it("drops a workflow's versioning behavior for an unversioned worker", async () => {
+    const code = await readFile(await writeWorkflowSourceFile([upgrading]), "utf-8");
+    expect(code).not.toContain("versioningBehavior");
+  });
+
   it("should include child workflows referenced by fanOut steps", async () => {
     const outputPath = await writeWorkflowSourceFile([parentWorkflow]);
     const code = await readFile(outputPath, "utf-8");

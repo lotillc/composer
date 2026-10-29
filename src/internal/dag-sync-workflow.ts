@@ -111,6 +111,7 @@ import {
 } from "./observability.js";
 import type { ComposerLogger, TraceErrorMessage, UUIDV7 } from "./types.js";
 import { planWorkflowBatches } from "./workflow-planning.js";
+import { resolveStageBoundaries } from "./workflow-stages.js";
 
 // ============================================================================
 // Checkpoint Types
@@ -199,6 +200,64 @@ export interface CheckpointOptions<S extends Step<any, any, any, any, any>> {
    * Defaults to DEFAULT_CHECKPOINT_TIMEOUT_MS if not specified.
    */
   timeout?: number;
+}
+
+/**
+ * Worker Versioning behavior a workflow declares for itself.
+ *
+ * - `PINNED` (the worker default): a run stays on the build that started it.
+ * - `AUTO_UPGRADE`: a run moves to the current build when it changes, so every build that
+ *   can become current must be able to replay any in-flight run of this workflow.
+ *
+ * Declared on the definition rather than at the call site because replay compatibility
+ * is a property of the workflow's code, not of who starts it.
+ */
+export type WorkflowVersioningBehavior = "PINNED" | "AUTO_UPGRADE";
+
+/**
+ * Versioning behavior of the first task of the run that follows a stage boundary.
+ * Mirrors Temporal's `InitialVersioningBehavior`.
+ */
+export type StageInitialVersioningBehavior = "AUTO_UPGRADE" | "USE_RAMPING_VERSION";
+
+/**
+ * A stage boundary: after the batch containing `afterStep` completes, the async workflow
+ * ends its run and continues as new, carrying the bag forward. The next run resumes after
+ * this boundary, located by `name`, so the name is the compatibility contract between the
+ * build that ended the run and the build that resumes it.
+ *
+ * In sync mode, stage boundaries are ignored.
+ */
+export interface StageBoundary {
+  /** Unique stage name; the next run resumes at the boundary with this name. */
+  name: string;
+  /** Step whose batch ends the stage (namespaced name, resolved by the builder). */
+  afterStep: string;
+  /**
+   * Produced fields to carry into the next run. Initial data always carries. When unset,
+   * every produced field carries.
+   */
+  carry?: string[];
+  /** Defaults to `AUTO_UPGRADE`, so the next run starts on the current build. */
+  initialVersioningBehavior?: StageInitialVersioningBehavior;
+}
+
+/**
+ * Options for declaring a stage boundary on a workflow.
+ */
+export interface StageBoundaryOptions<
+  Bag extends Record<string, any>,
+  S extends Step<any, any, any, any, any>,
+> {
+  /** Step reference whose batch ends the stage. */
+  afterStep: S;
+  /**
+   * Produced fields to carry into the next run. Every produced field a later step needs
+   * must be listed; the builder rejects a list that would starve one.
+   */
+  carry?: readonly (keyof Bag & string)[];
+  /** Defaults to `AUTO_UPGRADE`. */
+  initialVersioningBehavior?: StageInitialVersioningBehavior;
 }
 
 /**
@@ -373,6 +432,16 @@ export type Workflow<
    */
   checkpoints?: Checkpoint[];
   /**
+   * Stage boundaries at which an async (Temporal) run continues as new.
+   * In sync mode, stage boundaries are ignored.
+   */
+  stageBoundaries?: StageBoundary[];
+  /**
+   * Worker Versioning behavior declared by the workflow. When unset, the worker default
+   * (`PINNED`) applies. Async (Temporal) only.
+   */
+  versioningBehavior?: WorkflowVersioningBehavior;
+  /**
    * @internal Type-level tracking of checkpoint names for compile-time validation.
    * This field is never set at runtime - it's purely for TypeScript's type system.
    */
@@ -422,6 +491,38 @@ export type WorkflowBuilder<
     name: Name extends CheckpointNames ? `ERROR: Duplicate checkpoint name '${Name}'` : Name,
     options: CheckpointOptions<S>,
   ): WorkflowBuilder<Bag, RequiredInitial, ConfiguredValues, Steps, CheckpointNames | Name>;
+
+  /**
+   * Declare a stage boundary for async (Temporal) workflows.
+   *
+   * After the batch containing `afterStep` completes, the run ends and the workflow
+   * continues as new, carrying the bag forward; by default the next run starts on the
+   * current build. Staging keeps each run short, so a workflow that lives for weeks needs
+   * only one stage's worth of replay compatibility and never holds an old build alive.
+   *
+   * Checkpoints must come no later than the first boundary. Ignored in sync mode.
+   *
+   * @example
+   * ```typescript
+   * .continueAsNew("awaiting-approval", { afterStep: sendRequestStep })
+   * .continueAsNew("verifying", { afterStep: awaitApproval, carry: ["approval"] })
+   * ```
+   */
+  continueAsNew<S extends Steps[number]>(
+    name: string,
+    options: StageBoundaryOptions<Bag, S>,
+  ): WorkflowBuilder<Bag, RequiredInitial, ConfiguredValues, Steps, CheckpointNames>;
+
+  /**
+   * Declare the workflow's Worker Versioning behavior (async only).
+   *
+   * `AUTO_UPGRADE` workflows are started without a build pin and move to the current
+   * build as it changes. Pair it with stage boundaries so the replay compatibility each
+   * build must provide spans a single stage.
+   */
+  versioning(
+    behavior: WorkflowVersioningBehavior,
+  ): WorkflowBuilder<Bag, RequiredInitial, ConfiguredValues, Steps, CheckpointNames>;
 
   /**
    * Attach an error handler to the workflow.
@@ -600,12 +701,15 @@ function workflow<
     ...(checkpoints && checkpoints.length > 0 ? { checkpoints } : {}),
   };
 
-  // Create a builder function that returns a new WorkflowBuilder with updated checkpoints
-  // The CheckpointNames type parameter is tracked at compile-time only; runtime uses currentCheckpoints
+  // Create a builder function that returns a new WorkflowBuilder over the given workflow.
+  // Checkpoints, stage boundaries and versioning all live on the workflow object, so every
+  // method carries all of them forward. CheckpointNames is tracked at compile time only.
   function createBuilder<CurrentCheckpointNames extends string = never>(
     currentWf: Workflow<Bag, RequiredInitial, ConfiguredValues, Steps, CurrentCheckpointNames>,
-    currentCheckpoints: Checkpoint[],
   ): WorkflowBuilder<Bag, RequiredInitial, ConfiguredValues, Steps, CurrentCheckpointNames> {
+    const currentCheckpoints = currentWf.checkpoints ?? [];
+    const currentBoundaries = currentWf.stageBoundaries ?? [];
+
     // Implementation uses 'any' for internal assignment since TypeScript can't track
     // the conditional types through Object.assign. The public interface types are correct.
     const builder = {
@@ -648,11 +752,12 @@ function workflow<
           timeout: options.timeout,
         };
 
-        const newCheckpoints = [...currentCheckpoints, newCheckpoint];
         const newWf = {
           ...currentWf,
-          checkpoints: newCheckpoints,
+          checkpoints: [...currentCheckpoints, newCheckpoint],
         };
+        // A checkpoint added after a stage boundary must still land in the first stage.
+        resolveStageBoundaries(newWf);
 
         return createBuilder<CurrentCheckpointNames | Name>(
           newWf as Workflow<
@@ -662,8 +767,58 @@ function workflow<
             Steps,
             CurrentCheckpointNames | Name
           >,
-          newCheckpoints,
         );
+      },
+
+      continueAsNew<S extends Steps[number]>(
+        stageName: string,
+        options: StageBoundaryOptions<Bag, S>,
+      ): WorkflowBuilder<Bag, RequiredInitial, ConfiguredValues, Steps, CurrentCheckpointNames> {
+        if (typeof stageName !== "string" || stageName.length === 0) {
+          throw new Error("Stage name must be a non-empty string.");
+        }
+        if (currentBoundaries.some((b) => b.name === stageName)) {
+          throw new Error(
+            `Duplicate stage name "${stageName}". Stage names must be unique within a workflow.`,
+          );
+        }
+
+        const stepName = options.afterStep.name;
+        const resolvedStepName = resolveStepName(steps, stepName);
+        if (!resolvedStepName) {
+          const availableSteps = steps.map((s) => s.name).join(", ");
+          throw new Error(
+            `Stage "${stageName}" references unknown step "${stepName}". ` +
+              `Available steps: [${availableSteps}]`,
+          );
+        }
+
+        const boundary: StageBoundary = {
+          name: stageName,
+          afterStep: resolvedStepName,
+          ...(options.carry && { carry: [...options.carry] }),
+          ...(options.initialVersioningBehavior && {
+            initialVersioningBehavior: options.initialVersioningBehavior,
+          }),
+        };
+        const newWf = { ...currentWf, stageBoundaries: [...currentBoundaries, boundary] };
+        // Fail where the workflow is defined, not when a worker first plans it.
+        resolveStageBoundaries(newWf);
+        return createBuilder<CurrentCheckpointNames>(newWf);
+      },
+
+      versioning(
+        behavior: WorkflowVersioningBehavior,
+      ): WorkflowBuilder<Bag, RequiredInitial, ConfiguredValues, Steps, CurrentCheckpointNames> {
+        if (behavior !== "PINNED" && behavior !== "AUTO_UPGRADE") {
+          throw new Error(
+            `Unknown versioning behavior "${String(behavior)}". Use "PINNED" or "AUTO_UPGRADE".`,
+          );
+        }
+        return createBuilder<CurrentCheckpointNames>({
+          ...currentWf,
+          versioningBehavior: behavior,
+        });
       },
 
       onError<TContext = unknown>(
@@ -686,7 +841,7 @@ function workflow<
   }
 
   // Explicitly pass 'never' as the type parameter since no checkpoints are defined yet
-  return createBuilder<never>(wf, checkpoints ?? []);
+  return createBuilder<never>(wf);
 }
 
 /**

@@ -24,15 +24,22 @@ export {
   createWorkflow,
   type DurationString,
   defineSchedule,
+  defineWorkflowSignal,
   type ErrorHandler,
   type FanOut,
   fanOut,
   type InferWorkflowResultFromWorkflow,
   isFanOutStep,
+  isSignalWaitStep,
   type ScheduleDefinition,
   type ScheduleDefinitionOptions,
   ScheduleOverlapPolicy,
   type ScheduleSpec,
+  type SignalWait,
+  type StageBoundary,
+  type StageBoundaryOptions,
+  type StageInitialVersioningBehavior,
+  type StartAsyncWorkflowOptions,
   type Step,
   type StepContextProvider,
   type StepPollPolicy,
@@ -45,9 +52,12 @@ export {
   syncSchedules,
   type TemporalConfig,
   use,
+  waitForSignal,
   type Workflow,
   type WorkflowBuilder,
   type WorkflowResult,
+  type WorkflowSignal,
+  type WorkflowVersioningBehavior,
 } from "./internal/index.js";
 export {
   isScheduleDefinition,
@@ -115,7 +125,11 @@ export {
   WorkflowErrorHandlerFailure,
   WorkflowStepError,
 } from "./internal/errors.js";
-export { STEP_NOT_READY_CODE, STEP_POLL_TIMEOUT_CODE } from "./internal/poll-codes.js";
+export {
+  SIGNAL_WAIT_TIMEOUT_CODE,
+  STEP_NOT_READY_CODE,
+  STEP_POLL_TIMEOUT_CODE,
+} from "./internal/poll-codes.js";
 export type { ComposerLogger, TraceErrorMessage } from "./internal/types.js";
 export type { WorkflowExecutionStatusName } from "@temporalio/client";
 // Re-exported so a consumer can type a converter or an interceptor without taking a direct

@@ -20,6 +20,7 @@ export type {
   Composer,
   ComposerConfig,
   ComposerWorkerInterceptors,
+  StartAsyncWorkflowOptions,
   StepContextProvider,
   SyncComposer,
   TemporalConfig,
@@ -32,6 +33,13 @@ export {
   isFanOutStep,
 } from "./dag-sync-fanout.js";
 export {
+  defineWorkflowSignal,
+  isSignalWaitStep,
+  type SignalWait,
+  waitForSignal,
+  type WorkflowSignal,
+} from "./dag-sync-signal.js";
+export {
   type AsyncStepRuntime,
   type DurationString,
   type Step,
@@ -42,8 +50,12 @@ export {
 export {
   createWorkflow,
   type ErrorHandler,
+  type StageBoundary,
+  type StageBoundaryOptions,
+  type StageInitialVersioningBehavior,
   use,
   type Workflow,
   type WorkflowBuilder,
   type WorkflowResult,
+  type WorkflowVersioningBehavior,
 } from "./dag-sync-workflow.js";

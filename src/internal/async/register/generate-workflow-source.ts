@@ -24,9 +24,14 @@ import type {
 } from "../../dag-sync-step.js";
 import { DEFAULT_CHECKPOINT_TIMEOUT_MS, type Workflow } from "../../dag-sync-workflow.js";
 import { planWorkflowBatches } from "../../workflow-planning.js";
-import type { StepActivityConfig, WorkflowPlan } from "../build/workflow-factory.js";
+import { initialFieldsOf, resolveStageBoundaries } from "../../workflow-stages.js";
+import type {
+  SignalWaitBatchEntry,
+  StepActivityConfig,
+  WorkflowPlan,
+} from "../build/workflow-factory.js";
 import { denamespaceSyntheticSteps } from "../build-scripts/utils/common.js";
-import { isFanOut } from "../build-scripts/utils/type-guards.js";
+import { isFanOut, isSignalWait } from "../build-scripts/utils/type-guards.js";
 import {
   DEFAULT_WORKER_PROFILE,
   getTaskQueueForProfile,
@@ -67,11 +72,7 @@ function buildActivityConfig(step: Step<any, any, any>): StepActivityConfig | un
  * and workflow names are always unversioned).
  */
 export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>): WorkflowPlan {
-  const initialFields = new Set<string>(
-    (workflow.requiredInitial ?? [])
-      .concat(Object.keys(workflow.configuredValues || {}))
-      .map(String),
-  );
+  const initialFields = initialFieldsOf(workflow);
 
   const flattenedSteps = denamespaceSyntheticSteps(workflow.steps);
   const planResult = planWorkflowBatches([...flattenedSteps], initialFields);
@@ -80,6 +81,7 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
     name: workflow.name,
     batches: planResult.batches.map((batch) => {
       const steps: WorkflowPlan["batches"][number]["steps"] = [];
+      const signalWaits: SignalWaitBatchEntry[] = [];
       const fanOuts: Array<{
         name: string;
         childWorkflowName: string;
@@ -92,6 +94,20 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
       }> = [];
 
       for (const step of batch) {
+        // A wait runs no activity, so it has no worker profile to route.
+        if (isSignalWait(step)) {
+          const wait = step.__signalWait;
+          signalWaits.push({
+            name: step.name,
+            signalName: wait.signalName,
+            provides: String(step.provides[0]),
+            ...(wait.timeout !== undefined && { timeout: wait.timeout }),
+            ...(wait.hasTimeoutValue && { timeoutValue: wait.timeoutValue }),
+            hasTimeoutValue: wait.hasTimeoutValue,
+          });
+          continue;
+        }
+
         const rawProfile =
           (step as Step<any, any, any> & { workerProfile?: string }).workerProfile ??
           DEFAULT_WORKER_PROFILE;
@@ -132,7 +148,11 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
         }
       }
 
-      return { steps, ...(fanOuts.length > 0 ? { fanOuts } : {}) };
+      return {
+        steps,
+        ...(fanOuts.length > 0 ? { fanOuts } : {}),
+        ...(signalWaits.length > 0 ? { signalWaits } : {}),
+      };
     }),
   };
 
@@ -149,6 +169,9 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
       }
       for (const fanOut of batch.fanOuts ?? []) {
         stepToBatchIndex.set(fanOut.name, batchIndex);
+      }
+      for (const wait of batch.signalWaits ?? []) {
+        stepToBatchIndex.set(wait.name, batchIndex);
       }
     });
 
@@ -167,6 +190,15 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
         timeout: checkpoint.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT_MS,
       };
     });
+  }
+
+  const stageBoundaries = resolveStageBoundaries(workflow);
+  if (stageBoundaries.length > 0) {
+    plan.stageBoundaries = stageBoundaries;
+  }
+
+  if (workflow.versioningBehavior) {
+    plan.versioningBehavior = workflow.versioningBehavior;
   }
 
   return plan;
@@ -240,6 +272,14 @@ export function collectAllWorkflows(
 
 export async function writeWorkflowSourceFile(
   workflows: Workflow<any, any, any, any, any>[],
+  options: {
+    /**
+     * Whether the worker that bundles this source runs with Worker Versioning. Temporal's
+     * core SDK rejects every task completion that carries a versioning behavior when the
+     * worker is unversioned, so declarations are dropped unless this is set.
+     */
+    workerVersioning?: boolean;
+  } = {},
 ): Promise<string> {
   const factoryPath = resolveWorkflowFactoryPath().replaceAll("\\", "/");
   // realpathSync resolves OS-level symlinks (e.g. macOS /tmp -> /private/tmp).
@@ -255,6 +295,7 @@ export async function writeWorkflowSourceFile(
 
   for (const workflow of allWorkflows) {
     const plan = generateWorkflowPlan(workflow);
+    if (!options.workerVersioning) delete plan.versioningBehavior;
     const safeName = workflow.name.replace(/-/g, "_").replace(/\./g, "_");
 
     code += `const ${safeName}Plan = ${JSON.stringify(plan)};\n`;

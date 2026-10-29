@@ -99,13 +99,25 @@ describe("Workflow Workers", () => {
     it("should write workflow source file with provided workflows", async () => {
       await createWorkflowWorkers(createTestConfig());
 
-      expect(mockWriteWorkflowSourceFile).toHaveBeenCalledWith(mockWorkflows);
+      expect(mockWriteWorkflowSourceFile).toHaveBeenCalledWith(mockWorkflows, {
+        workerVersioning: false,
+      });
 
       expect(mockWorkerCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           workflowsPath: "/tmp/__workflow-source.js",
         }),
       );
+    });
+
+    // Temporal's core SDK rejects a task completion carrying a versioning behavior from an
+    // unversioned worker, so workflow-declared behaviors are emitted only when versioned.
+    it("tells the source writer the worker is versioned when a buildId is set", async () => {
+      await createWorkflowWorkers(createTestConfig({ buildId: "build-1" }));
+
+      expect(mockWriteWorkflowSourceFile).toHaveBeenCalledWith(mockWorkflows, {
+        workerVersioning: true,
+      });
     });
 
     it("should use default configuration", async () => {

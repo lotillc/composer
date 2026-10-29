@@ -40,7 +40,7 @@ import { errorForLog } from "../../error-for-log.js";
 import { STEP_NOT_READY_CODE } from "../../poll-codes.js";
 import type { ComposerLogger } from "../../types.js";
 import { denamespaceSyntheticSteps } from "../build-scripts/utils/common.js";
-import { isFanOut } from "../build-scripts/utils/type-guards.js";
+import { isFanOut, isSignalWait } from "../build-scripts/utils/type-guards.js";
 import { startTaskQueueMetrics, type TaskQueueMetricsHandle } from "../metrics/task-queue-metrics.js";
 import {
   isComposerError,
@@ -355,7 +355,8 @@ function createActivitiesFromWorkflows<TContext>(
   for (const workflow of allWorkflows) {
     const flattenedSteps = denamespaceSyntheticSteps(workflow.steps);
     for (const step of flattenedSteps) {
-      if (!isFanOut(step)) {
+      // FanOuts get their own wrapper activities below; signal waits run none.
+      if (!isFanOut(step) && !isSignalWait(step)) {
         allSteps.push(step);
       }
     }

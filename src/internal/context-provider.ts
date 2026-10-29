@@ -13,6 +13,7 @@ import type { DataConverter } from "@temporalio/common";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
 import type { ScheduleDefinition } from "./async/schedule/define-schedule.js";
 import type { SyncSchedulesResult } from "./async/schedule/sync-schedules.js";
+import type { WorkflowSignal } from "./dag-sync-signal.js";
 import type {
   ExtractWorkflowBag,
   ExtractWorkflowCheckpointNames,
@@ -246,6 +247,20 @@ export interface AsyncWorkflowOptions<CheckpointNames extends string = never> {
 }
 
 /**
+ * Options for starting an async workflow without waiting for it.
+ */
+export interface StartAsyncWorkflowOptions {
+  /**
+   * Optional caller-supplied workflow ID.
+   *
+   * If omitted, Composer generates a UUIDv7. Supply a stable ID when other code will
+   * later signal the workflow (`signalAsyncWorkflow`) by an ID it already knows. Starting
+   * a second workflow with the ID of a running one fails.
+   */
+  workflowId?: string;
+}
+
+/**
  * Sync-only Composer instance.
  *
  * Returned by `createComposer()` when no `temporal` config is provided.
@@ -400,6 +415,7 @@ export interface Composer<TContext> extends SyncComposer<TContext> {
   startAsyncWorkflow<W extends Workflow<any, never, any, any, any>>(
     workflow: W,
     initialData?: Partial<ExtractWorkflowBag<W>>,
+    options?: StartAsyncWorkflowOptions,
   ): Promise<{ workflowId: string }>;
 
   // Overload for workflows WITH required initial fields
@@ -407,7 +423,26 @@ export interface Composer<TContext> extends SyncComposer<TContext> {
     workflow: W,
     initialData: Partial<ExtractWorkflowBag<W>> &
       Pick<ExtractWorkflowBag<W>, ExtractWorkflowRequiredInitial<W>>,
+    options?: StartAsyncWorkflowOptions,
   ): Promise<{ workflowId: string }>;
+
+  /**
+   * Deliver a signal to a running async workflow.
+   *
+   * A `waitForSignal` node waiting on this signal receives the payload; a signal sent
+   * before the wait is reached, even in an earlier stage, is kept until it is. Resolves
+   * once Temporal has accepted the signal, not when the workflow consumes it.
+   *
+   * @example
+   * ```typescript
+   * await composer.signalAsyncWorkflow(requestId, approvalSignal, { approved: true });
+   * ```
+   */
+  signalAsyncWorkflow<Payload>(
+    workflowId: string,
+    signal: WorkflowSignal<Payload>,
+    payload: NoInfer<Payload>,
+  ): Promise<void>;
 
   /**
    * The Temporal connection configuration.

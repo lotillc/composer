@@ -6,6 +6,7 @@ import * as activityWorker from "../async/register/activity-worker.js";
 import * as scheduleSync from "../async/schedule/sync-schedules.js";
 import * as workflowWorker from "../async/register/workflow-worker.js";
 import { createComposer } from "../create-composer.js";
+import { defineWorkflowSignal } from "../dag-sync-signal.js";
 import type { Workflow } from "../dag-sync-workflow.js";
 
 vi.mock("../async/execute/temporal-client.js");
@@ -213,5 +214,122 @@ describe("worker deployment identity", () => {
         },
       }),
     );
+  });
+});
+
+// A start-time pin outranks the workflow's own versioning declaration and survives every
+// continue-as-new on the same task queue (Temporal server, mutable_state_impl.go), so an
+// AUTO_UPGRADE workflow started pinned could never leave the build that started it.
+describe("per-workflow start-time pinning", () => {
+  const versioned = createComposer({
+    contextProvider: noOpContextProvider,
+    temporal: {
+      serverAddress: "localhost:7233",
+      namespace: "test",
+      serviceName: "test-service",
+      buildId: "build-1",
+    },
+  });
+  const pinned = {
+    pinnedTo: { buildId: "build-1", deploymentName: "test-service-workers" },
+  };
+  const defaultWorkflow = { name: "default-wf", steps: [] } as unknown as Workflow<any, any, any>;
+  const pinnedWorkflow = {
+    name: "pinned-wf",
+    steps: [],
+    versioningBehavior: "PINNED",
+  } as unknown as Workflow<any, any, any>;
+  const upgradingWorkflow = {
+    name: "upgrading-wf",
+    steps: [],
+    versioningBehavior: "AUTO_UPGRADE",
+    checkpoints: [{ name: "early", afterStep: "s" }],
+  } as unknown as Workflow<any, any, any>;
+  const mockExecuteWorkflowAndWait = vi.mocked(temporalClient.executeWorkflowAndWait);
+
+  function overrideOfLastStart(): unknown {
+    const calls = [
+      ...mockExecuteWorkflow.mock.calls.map((c) => c[0]),
+      ...mockExecuteWorkflowAndWait.mock.calls.map((c) => c[0]),
+    ];
+    expect(calls).toHaveLength(1);
+    return calls[0]?.versioningOverride;
+  }
+
+  beforeEach(() => {
+    mockExecuteWorkflow.mockReset().mockResolvedValue(
+      undefined as unknown as Awaited<ReturnType<typeof temporalClient.executeWorkflow>>,
+    );
+    mockExecuteWorkflowAndWait.mockReset().mockResolvedValue({ bag: {} });
+  });
+
+  it.each([
+    ["no declaration", defaultWorkflow, pinned],
+    ["PINNED", pinnedWorkflow, pinned],
+    ["AUTO_UPGRADE", upgradingWorkflow, undefined],
+  ])("startAsyncWorkflow with %s", async (_label, workflow, expected) => {
+    await versioned.startAsyncWorkflow(workflow, {});
+    expect(overrideOfLastStart()).toEqual(expected);
+  });
+
+  it.each([
+    ["no declaration", defaultWorkflow, pinned],
+    ["AUTO_UPGRADE", upgradingWorkflow, undefined],
+  ])("runAsyncWorkflow (wait for result) with %s", async (_label, workflow, expected) => {
+    await versioned.runAsyncWorkflow(workflow, {});
+    expect(overrideOfLastStart()).toEqual(expected);
+  });
+
+  it.each([
+    ["no declaration", defaultWorkflow, pinned],
+    ["AUTO_UPGRADE", upgradingWorkflow, undefined],
+  ])("runAsyncWorkflow (startOnly) with %s", async (_label, workflow, expected) => {
+    await versioned.runAsyncWorkflow(workflow, {}, { startOnly: true });
+    expect(overrideOfLastStart()).toEqual(expected);
+  });
+
+  it("runAsyncWorkflow (awaitCheckpoint) starts an AUTO_UPGRADE workflow unpinned", async () => {
+    // The checkpoint update itself is not under test; the client mock makes it fail.
+    await versioned.runAsyncWorkflow(upgradingWorkflow, {}, {
+      awaitCheckpoint: "early",
+    } as never);
+    expect(overrideOfLastStart()).toBeUndefined();
+  });
+
+  it("starts unpinned when no buildId is configured, whatever the workflow declares", async () => {
+    await composer.startAsyncWorkflow(pinnedWorkflow, {});
+    expect(overrideOfLastStart()).toBeUndefined();
+  });
+
+  it("startAsyncWorkflow uses a caller-supplied workflowId", async () => {
+    const { workflowId } = await versioned.startAsyncWorkflow(defaultWorkflow, {}, {
+      workflowId: "request-42",
+    });
+    expect(workflowId).toBe("request-42");
+    expect(mockExecuteWorkflow).toHaveBeenCalledWith(
+      expect.objectContaining({ workflowId: "request-42" }),
+    );
+  });
+});
+
+describe("signalAsyncWorkflow", () => {
+  it("sends the signal by name with the composer's client config", async () => {
+    const mockSignalWorkflow = vi.mocked(temporalClient.signalWorkflow);
+    mockSignalWorkflow.mockReset().mockResolvedValue(undefined);
+    const approval = defineWorkflowSignal<{ approved: boolean }>("approval");
+
+    await composer.signalAsyncWorkflow("request-42", approval, { approved: true });
+
+    expect(mockSignalWorkflow).toHaveBeenCalledWith("request-42", "approval", { approved: true }, {
+      address: "localhost:7233",
+      namespace: "test",
+      dataConverter: undefined,
+    });
+  });
+
+  it("rejects a payload that does not match the signal's type", () => {
+    const approval = defineWorkflowSignal<{ approved: boolean }>("approval");
+    // @ts-expect-error -- payload must match the signal's declared type
+    void composer.signalAsyncWorkflow("request-42", approval, { approved: "yes" });
   });
 });

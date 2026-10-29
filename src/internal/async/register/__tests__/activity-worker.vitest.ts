@@ -218,6 +218,28 @@ describe("Activity Worker", () => {
       expect(activityNames).toContain("anotherStep");
     });
 
+    it("does not register an activity for a signal wait", async () => {
+      const workflows = [
+        {
+          name: "waiting-workflow",
+          steps: [
+            {
+              name: "awaitApproval",
+              needs: [],
+              provides: ["approval"],
+              run: vi.fn(),
+              __signalWait: { signalName: "approval", hasTimeoutValue: false },
+            },
+          ],
+        },
+      ] as unknown as ActivityWorkerConfig<MockStepContext>["workflows"];
+
+      await createActivityWorkers(createTestConfig({ workflows }));
+
+      const activityNames = Object.keys(mockWorkerCreate.mock.calls[0]![0].activities);
+      expect(activityNames).not.toContain("awaitApproval");
+    });
+
     it("should register error handler activities from workflows", async () => {
       await createActivityWorkers(createTestConfig());
 

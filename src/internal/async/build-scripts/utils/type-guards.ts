@@ -51,6 +51,7 @@
  */
 
 import type { FanOutMetadata } from "../../../dag-sync-fanout.js";
+import type { SignalWaitMetadata } from "../../../dag-sync-signal.js";
 import type { Step } from "../../../dag-sync-step.js";
 import type { Workflow } from "../../../dag-sync-workflow.js";
 import type { ScheduleDefinition } from "../../schedule/define-schedule.js";
@@ -120,6 +121,16 @@ export function isStep(value: any): value is Step<any, any, any> {
  */
 export function isFanOut(value: any): value is Step<any, any, any> & { __fanOut: FanOutMetadata } {
   return isStep(value) && "__fanOut" in value && value.__fanOut != null;
+}
+
+/**
+ * Type guard to check if a step is a durable signal wait.
+ * A SignalWait is a Step with a `__signalWait` metadata object; it runs no activity.
+ */
+export function isSignalWait(
+  value: any,
+): value is Step<any, any, any> & { __signalWait: SignalWaitMetadata } {
+  return isStep(value) && "__signalWait" in value && value.__signalWait != null;
 }
 
 export function isWorkflow(value: any): value is Workflow<any, any, any> {
