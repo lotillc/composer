@@ -583,6 +583,8 @@ export interface StageBoundaryPlanEntry {
   carry?: string[];
   /** Versioning behavior of the next run's first task */
   initialVersioningBehavior: "AUTO_UPGRADE" | "USE_RAMPING_VERSION";
+  /** Earlier names of this stage; a continuation carrying one resumes here */
+  aliases?: string[];
 }
 
 /**
@@ -716,7 +718,9 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
     let firstBatchIndex = 0;
     const completedSteps = new Set<string>(continuation?.completedSteps ?? []);
     if (continuation) {
-      const stage = plan.stageBoundaries?.find((b) => b.name === continuation.stage);
+      const stage = plan.stageBoundaries?.find(
+        (b) => b.name === continuation.stage || (b.aliases?.includes(continuation.stage) ?? false),
+      );
       if (!stage) {
         // Thrown as a plain Error, this fails the workflow task rather than the workflow,
         // so Temporal retries it until a build that knows the stage picks it up.

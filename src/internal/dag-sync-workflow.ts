@@ -240,6 +240,12 @@ export interface StageBoundary {
   carry?: string[];
   /** Defaults to `AUTO_UPGRADE`, so the next run starts on the current build. */
   initialVersioningBehavior?: StageInitialVersioningBehavior;
+  /**
+   * Earlier names of this stage. A run that ended at a stage under an old name resumes
+   * here, so renaming a stage, or folding a removed one into this one, does not strand
+   * runs waiting to resume at it.
+   */
+  aliases?: string[];
 }
 
 /**
@@ -258,6 +264,12 @@ export interface StageBoundaryOptions<
   carry?: readonly (keyof Bag & string)[];
   /** Defaults to `AUTO_UPGRADE`. */
   initialVersioningBehavior?: StageInitialVersioningBehavior;
+  /**
+   * Names this stage was previously known by. Runs that ended at a stage under any of
+   * them resume after this boundary. List the old name when renaming a stage, or when
+   * removing one whose in-flight runs should continue from here instead.
+   */
+  aliases?: readonly string[];
 }
 
 /**
@@ -800,6 +812,7 @@ function workflow<
           ...(options.initialVersioningBehavior && {
             initialVersioningBehavior: options.initialVersioningBehavior,
           }),
+          ...(options.aliases && options.aliases.length > 0 && { aliases: [...options.aliases] }),
         };
         const newWf = { ...currentWf, stageBoundaries: [...currentBoundaries, boundary] };
         // Fail where the workflow is defined, not when a worker first plans it.

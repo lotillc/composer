@@ -254,6 +254,20 @@ describe("resuming a continued run", () => {
     expect(continued.next.continuation?.completedSteps).toEqual(["a", "b"]);
   });
 
+  it("resumes a run that ended at a stage under an earlier name", async () => {
+    const plan = stagedPlan();
+    plan.stageBoundaries![0] = { ...plan.stageBoundaries![0]!, name: "renamed", aliases: ["second"] };
+
+    const continued = await runUntilContinued(plan, {
+      initialData: { id: "1" },
+      continuation: continuation({ stage: "second", bag: { x: "X" }, completedSteps: ["a"] }),
+    });
+
+    expect(mocks.activityFunctions.a).not.toHaveBeenCalled();
+    expect(mocks.activityFunctions.b).toHaveBeenCalledTimes(1);
+    expect(continued.next.continuation?.stage).toBe("third");
+  });
+
   it("fails the workflow task, not the workflow, on an unknown stage", async () => {
     const outcome = await createWorkflowFunction(stagedPlan())({
       initialData: { id: "1" },

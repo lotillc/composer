@@ -26,6 +26,8 @@ export interface ResolvedStageBoundary {
   afterBatch: number;
   carry?: string[];
   initialVersioningBehavior: StageInitialVersioningBehavior;
+  /** Earlier names a resuming run may carry instead of `name`. */
+  aliases?: string[];
 }
 
 /** Fields a workflow starts with: what the caller must pass plus configured values. */
@@ -79,8 +81,29 @@ export function resolveStageBoundaries(
       afterBatch,
       ...(boundary.carry && { carry: [...boundary.carry] }),
       initialVersioningBehavior: boundary.initialVersioningBehavior ?? "AUTO_UPGRADE",
+      ...(boundary.aliases && boundary.aliases.length > 0 && { aliases: [...boundary.aliases] }),
     };
   });
+
+  // A resuming run names the stage it ended at; every name and alias must pick out exactly
+  // one boundary, or a run could resume at the wrong place.
+  const stageOfName = new Map<string, string>();
+  for (const boundary of resolved) {
+    for (const name of [boundary.name, ...(boundary.aliases ?? [])]) {
+      if (typeof name !== "string" || name.length === 0) {
+        throw new Error(`${prefix}: stage "${boundary.name}" has an empty alias`);
+      }
+      const owner = stageOfName.get(name);
+      if (owner !== undefined) {
+        throw new Error(
+          owner === boundary.name
+            ? `${prefix}: stage "${boundary.name}" lists "${name}" more than once`
+            : `${prefix}: "${name}" names both stage "${owner}" and stage "${boundary.name}"`,
+        );
+      }
+      stageOfName.set(name, boundary.name);
+    }
+  }
 
   resolved.sort((a, b) => a.afterBatch - b.afterBatch);
 

@@ -125,6 +125,40 @@ describe("builder", () => {
     expect(wf.stageBoundaries).toHaveLength(1);
   });
 
+  it("records a stage's earlier names", () => {
+    const wf = baseWorkflow().continueAsNew("awaiting-approval", {
+      afterStep: sendRequest,
+      aliases: ["awaiting-response"],
+    });
+    expect(wf.stageBoundaries?.[0]).toEqual({
+      name: "awaiting-approval",
+      afterStep: "sendRequest",
+      aliases: ["awaiting-response"],
+    });
+  });
+
+  it("rejects an alias that names another stage", () => {
+    expect(() =>
+      baseWorkflow()
+        .continueAsNew("a", { afterStep: sendRequest })
+        .continueAsNew("b", { afterStep: awaitApproval, aliases: ["a"] }),
+    ).toThrow('"a" names both stage "a" and stage "b"');
+  });
+
+  it("rejects an alias shared by two stages", () => {
+    expect(() =>
+      baseWorkflow()
+        .continueAsNew("a", { afterStep: sendRequest, aliases: ["old"] })
+        .continueAsNew("b", { afterStep: awaitApproval, aliases: ["old"] }),
+    ).toThrow('"old" names both stage "a" and stage "b"');
+  });
+
+  it("rejects an alias repeated or equal to the stage's own name", () => {
+    expect(() =>
+      baseWorkflow().continueAsNew("a", { afterStep: sendRequest, aliases: ["a"] }),
+    ).toThrow('stage "a" lists "a" more than once');
+  });
+
   it("rejects a duplicate stage name", () => {
     expect(() =>
       baseWorkflow()
@@ -223,13 +257,18 @@ describe("generateWorkflowPlan", () => {
     const plan = generateWorkflowPlan(
       baseWorkflow()
         .versioning("AUTO_UPGRADE")
-        .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+        .continueAsNew("awaiting-approval", { afterStep: sendRequest, aliases: ["requested"] })
         .continueAsNew("verifying", { afterStep: awaitApproval, carry: ["approval"] }),
     );
 
     expect(plan.versioningBehavior).toBe("AUTO_UPGRADE");
     expect(plan.stageBoundaries).toEqual([
-      { name: "awaiting-approval", afterBatch: 0, initialVersioningBehavior: "AUTO_UPGRADE" },
+      {
+        name: "awaiting-approval",
+        afterBatch: 0,
+        initialVersioningBehavior: "AUTO_UPGRADE",
+        aliases: ["requested"],
+      },
       {
         name: "verifying",
         afterBatch: 1,
