@@ -685,6 +685,10 @@ describe("carried state limits", () => {
     );
     expect(outcome).toBeInstanceOf(ApplicationFailure);
     expect((outcome as ApplicationFailure).type).toBe(CONTINUATION_TOO_LARGE_CODE);
+    // Same layout as a failed batch, so the client reports the code.
+    expect((outcome as ApplicationFailure).details?.[0]).toMatchObject({
+      error: { code: CONTINUATION_TOO_LARGE_CODE, type: CONTINUATION_TOO_LARGE_CODE },
+    });
     // The oversized state stays out of the failure, which has the same size cap.
     expect(JSON.stringify((outcome as ApplicationFailure).details).length).toBeLessThan(1_000);
     expect(mocks.continueAsNewOptions).toHaveLength(0);
@@ -721,6 +725,26 @@ describe("carried state limits", () => {
     const continuationJson = JSON.parse(JSON.stringify(continued.next.continuation));
     expect(Object.hasOwn(continuationJson.signals, "__proto__")).toBe(true);
     expect(continuationJson.signals.__proto__).toEqual(["early"]);
+  });
+
+  it("keeps a step output named __proto__ in the bag, for later steps and the next run", async () => {
+    mocks.activityFunctions.a = vi.fn(async () =>
+      JSON.parse('{"x": "X", "__proto__": "kept"}') as Record<string, unknown>,
+    );
+    const plan = stagedPlan();
+    plan.batches[0]!.steps[0]!.provides = ["x", "__proto__"];
+    plan.batches[1]!.steps[0]!.needs = ["x", "__proto__"];
+    plan.stageBoundaries = [];
+    mocks.activityFunctions.b = vi.fn(async (_input, stepInput) => ({ y: stepInput }));
+
+    const result = (await createWorkflowFunction(plan)({
+      initialData: { id: "1" },
+    })) as TemporalWorkflowResult;
+
+    const stepInput = JSON.parse(JSON.stringify(result.bag.y));
+    expect(Object.hasOwn(stepInput, "__proto__")).toBe(true);
+    expect(stepInput.__proto__).toBe("kept");
+    expect(Object.hasOwn(result.bag, "__proto__")).toBe(true);
   });
 
   it("ignores an over-long dedupe key and accepts the signal without it", async () => {

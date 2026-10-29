@@ -228,7 +228,7 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
               batchNumber: errorInfo.batchNumber,
               errors: errorInfo.errors,
             })
-          : new Error(err.message);
+          : withFailureCode(new Error(err.message), err);
         // The bag is its own details entry. `details[0].bag` is the pre-split layout: a
         // workflow started by an older bundle can still be completing against this client.
         const bagDetail = err.cause.details?.[1] as { bag?: Record<string, unknown> } | undefined;
@@ -237,8 +237,32 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
       }
     }
     const error = err instanceof Error ? err : new Error(String(err));
-    return { bag: mergedInitialData as Bag, error };
+    return { bag: mergedInitialData as Bag, error: withFailureCode(error, err) };
   }
+}
+
+/** Shape of a classifier code a workflow puts on an ApplicationFailure's `type`. */
+const FAILURE_CODE = /^[A-Z0-9_]{2,50}$/;
+
+/** The first ApplicationFailure in a Temporal error's cause chain. */
+function applicationFailureIn(err: unknown, depth = 0): ApplicationFailure | undefined {
+  if (err instanceof ApplicationFailure) return err;
+  if (depth < 5 && err instanceof Error) return applicationFailureIn(err.cause, depth + 1);
+  return undefined;
+}
+
+/**
+ * Carries a coded ApplicationFailure's code onto the error a caller receives, whatever
+ * wrapper it arrived in -- a failed workflow, a failed checkpoint update -- so every
+ * documented failure code reaches `result.error.code`. An error that already has a code
+ * keeps it.
+ */
+function withFailureCode(error: Error, err: unknown): Error {
+  const code = applicationFailureIn(err)?.type;
+  if (code && FAILURE_CODE.test(code) && (error as { code?: unknown }).code === undefined) {
+    Object.assign(error, { code });
+  }
+  return error;
 }
 
 /**

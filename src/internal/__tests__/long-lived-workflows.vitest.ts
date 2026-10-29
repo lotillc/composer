@@ -394,6 +394,30 @@ describe("generateWorkflowPlan", () => {
 });
 
 describe("sync execution", () => {
+  it("keeps a step output named __proto__ in the bag and the next step's input", async () => {
+    interface ProtoBag {
+      __proto__: string;
+      seen: string;
+    }
+    const writer = step<ProtoBag>()({
+      name: "writer",
+      needs: [],
+      provides: ["__proto__"],
+      run: async () => JSON.parse('{"__proto__": "kept"}') as { __proto__: string },
+    });
+    const reader = step<ProtoBag>()({
+      name: "reader",
+      needs: ["__proto__"],
+      provides: ["seen"],
+      run: async (_ctx, bag) => ({ seen: String(Object.getOwnPropertyDescriptor(bag, "__proto__")?.value) }),
+    });
+    const result = await testComposer.runSyncWorkflow(
+      createWorkflow<ProtoBag>("proto").build([writer, reader]),
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.bag.seen).toBe("kept");
+  });
+
   it("ignores stage boundaries", async () => {
     // Needs sendRequest's output, so it runs in the batch after the boundary.
     const confirm = step<Bag>()({

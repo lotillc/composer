@@ -110,6 +110,7 @@ import {
   startWorkflowObservability,
 } from "./observability.js";
 import type { ComposerLogger, TraceErrorMessage, UUIDV7 } from "./types.js";
+import { assignOwn, setOwn } from "./own-properties.js";
 import { planWorkflowBatches } from "./workflow-planning.js";
 import { assertSignalWaitsAlone, resolveStageBoundaries } from "./workflow-stages.js";
 
@@ -1546,7 +1547,7 @@ export async function runSyncWorkflow<
               // Build input object with only the fields this step needs
               const stepInput = step.needs.reduce(
                 (inputAcc: Partial<Bag>, neededField: keyof Bag) => {
-                  inputAcc[neededField] = bag[neededField];
+                  setOwn(inputAcc, String(neededField), bag[neededField]);
                   return inputAcc;
                 },
                 {} as Partial<Bag>,
@@ -1639,10 +1640,10 @@ export async function runSyncWorkflow<
         const { output } = result.value;
         if (deepFreeze_) {
           for (const [key, value] of Object.entries(output)) {
-            (bag as any)[key] = deepFreeze(value);
+            setOwn(bag, key, deepFreeze(value));
           }
         } else {
-          Object.assign(bag, output);
+          assignOwn(bag, output);
         }
       }
 

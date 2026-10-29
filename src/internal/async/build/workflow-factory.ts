@@ -26,6 +26,7 @@ import type {
 } from "../../dag-sync-workflow.js";
 import { durationToMs } from "../../duration.js";
 import { safeErrorName } from "../../error-for-log.js";
+import { assignOwn, setOwn } from "../../own-properties.js";
 import {
   CONTINUATION_TOO_LARGE_CODE,
   SIGNAL_WAIT_TIMEOUT_CODE,
@@ -476,6 +477,20 @@ async function runSignalWait(
   }
 }
 
+/**
+ * Fails the whole workflow with a classified error, in the same details layout a failed
+ * batch uses (`[{ error }]`), so the client reports its code like any other failure. Carries
+ * no bag: these failures come before the bag matters, or because it is too big to send.
+ */
+function workflowFailure(code: string, message: string, data: Record<string, unknown>): Error {
+  return wf.ApplicationFailure.create({
+    type: code,
+    message,
+    details: [{ error: { message, code, type: code, data } }],
+    nonRetryable: true,
+  });
+}
+
 const WORKFLOW_ERROR_CODE = /^[A-Z0-9_]{2,50}$/;
 
 function workflowErrorCode(value: unknown): string | undefined {
@@ -827,11 +842,11 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
     for (const [index, batch] of plan.batches.entries()) {
       const waits = batch.signalWaits?.length ?? 0;
       if (waits > 0 && waits + batch.steps.length + (batch.fanOuts?.length ?? 0) > 1) {
-        throw wf.ApplicationFailure.create({
-          type: "COMPOSER_INVALID_SIGNAL_WAIT",
-          message: `Workflow "${plan.name}": batch ${index + 1} has a signal wait that is not alone`,
-          nonRetryable: true,
-        });
+        throw workflowFailure(
+          "COMPOSER_INVALID_SIGNAL_WAIT",
+          `Workflow "${plan.name}": batch ${index + 1} has a signal wait that is not alone`,
+          { batchNumber: index + 1 },
+        );
       }
     }
 
@@ -848,7 +863,7 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
     }
 
     // Initialize bag with initial data, plus whatever an earlier run carried forward
-    const bag: Record<string, any> = { ...input.initialData, ...continuation?.bag };
+    const bag: Record<string, any> = assignOwn(assignOwn({}, input.initialData), continuation?.bag);
 
     // Track which checkpoints have been reached
     const reachedCheckpoints = new Set<string>();
@@ -1023,7 +1038,7 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
           (async (): Promise<BatchResult> => {
             const stepInput: Record<string, any> = {};
             for (const neededField of step.needs) {
-              stepInput[neededField] = bag[neededField];
+              setOwn(stepInput, neededField, bag[neededField]);
             }
 
             wf.log.debug(`Executing step activity`, {
@@ -1113,7 +1128,7 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
       // First, merge successful step outputs into the bag
       // This ensures the bag has all available data even if some steps failed
       for (const { output } of fulfilled) {
-        Object.assign(bag, output);
+        assignOwn(bag, output);
       }
 
       // Everything that ran, failed or not, is done: a resumed run must not repeat it.
@@ -1208,7 +1223,7 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
               const handlerResult = await errorHandlerFn(activityInput, bag, batchErrorInfo);
 
               if (handlerResult.bag) {
-                Object.assign(bag, handlerResult.bag);
+                assignOwn(bag, handlerResult.bag);
               }
 
               wf.log.info("Error handler activity completed", {
@@ -1312,12 +1327,12 @@ async function continueAtStage(
   const carried: Record<string, unknown> = Object.create(null);
   for (const [field, value] of Object.entries(bag)) {
     if (Object.hasOwn(input.initialData, field) && value === input.initialData[field]) continue;
-    carried[field] = value;
+    setOwn(carried, field, value);
   }
 
   const signals: Record<string, unknown[]> = Object.create(null);
   for (const [name, queue] of inbox.queues) {
-    if (queue.length > 0) signals[name] = [...queue];
+    if (queue.length > 0) setOwn(signals, name, [...queue]);
   }
 
   wf.log.info("Stage complete; continuing as new", {
@@ -1351,20 +1366,13 @@ async function continueAtStage(
   if (bytes !== undefined && bytes > CONTINUATION_BUDGET_BYTES) {
     // Fail rather than issue a command Temporal would reject on every retry. The state
     // itself stays out of the failure, which goes to event history and has the same cap.
-    throw wf.ApplicationFailure.create({
-      type: CONTINUATION_TOO_LARGE_CODE,
-      message:
-        `Stage "${boundary.name}" of workflow "${wf.workflowInfo().workflowType}" would carry ` +
+    throw workflowFailure(
+      CONTINUATION_TOO_LARGE_CODE,
+      `Stage "${boundary.name}" of workflow "${wf.workflowInfo().workflowType}" would carry ` +
         `${bytes} bytes into its next run, over the ${CONTINUATION_BUDGET_BYTES}-byte budget. ` +
         `Keep large data out of the bag and carry a reference to it instead.`,
-      details: [
-        {
-          code: CONTINUATION_TOO_LARGE_CODE,
-          data: { stage: boundary.name, bytes, budget: CONTINUATION_BUDGET_BYTES },
-        },
-      ],
-      nonRetryable: true,
-    });
+      { stage: boundary.name, bytes, budget: CONTINUATION_BUDGET_BYTES },
+    );
   }
   if (bytes !== undefined && bytes > CONTINUATION_WARN_BYTES) {
     wf.log.warn("Carried state is large; keep big data out of the bag", {
@@ -1405,7 +1413,7 @@ async function executeFanOutInWorkflow(
   // Build bag slice with only the fields mapInput needs
   const bagSlice: Record<string, any> = {};
   for (const field of fanOut.needs) {
-    bagSlice[field] = bag[field];
+    setOwn(bagSlice, field, bag[field]);
   }
 
   wf.log.info("FanOut: calling mapInput", {

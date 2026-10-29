@@ -341,6 +341,92 @@ describe("executeWorkflowTemporal", () => {
       expect(result.bag).toEqual({ inputField: "value" });
     });
 
+    // Every documented failure code reaches result.error.code, whatever shape the failure
+    // arrived in.
+    describe("failure codes", () => {
+      const workflow = { name: "test-workflow", steps: [] } as unknown as Workflow<any, any, any>;
+      const run = () =>
+        executeWorkflowTemporal(workflow, { inputField: "value" }, {
+          workflowId: mockWorkflowId,
+          clientConfig: mockClientConfig,
+        });
+
+      it("reads the code from the structured layout, falling back to the initial data", async () => {
+        const failure = ApplicationFailure.create({
+          message: "too large",
+          type: "COMPOSER_CONTINUATION_TOO_LARGE",
+          nonRetryable: true,
+          details: [{ error: { message: "too large", code: "COMPOSER_CONTINUATION_TOO_LARGE", type: "COMPOSER_CONTINUATION_TOO_LARGE" } }],
+        });
+        mockExecuteWorkflowAndWait.mockRejectedValue(
+          new WorkflowFailedError("failed", failure, "NON_RETRYABLE_FAILURE"),
+        );
+        const result = await run();
+        expect((result.error as unknown as { code?: string }).code).toBe(
+          "COMPOSER_CONTINUATION_TOO_LARGE",
+        );
+        expect(result.bag).toEqual({ inputField: "value" });
+      });
+
+      it("takes the failure's type as the code when details carry no error entry", async () => {
+        const failure = ApplicationFailure.create({
+          message: "coded",
+          type: "SOME_CODE",
+          nonRetryable: true,
+          details: [{ code: "SOME_CODE" }],
+        });
+        mockExecuteWorkflowAndWait.mockRejectedValue(
+          new WorkflowFailedError("failed", failure, "NON_RETRYABLE_FAILURE"),
+        );
+        expect(((await run()).error as unknown as { code?: string }).code).toBe("SOME_CODE");
+      });
+
+      it("finds the code deeper in the cause chain, as with a failed update", async () => {
+        const failure = ApplicationFailure.create({
+          message: "passed",
+          type: "COMPOSER_CHECKPOINT_PASSED",
+          nonRetryable: true,
+        });
+        mockExecuteWorkflowAndWait.mockRejectedValue(
+          Object.assign(new Error("update failed"), { cause: failure }),
+        );
+        expect(((await run()).error as unknown as { code?: string }).code).toBe(
+          "COMPOSER_CHECKPOINT_PASSED",
+        );
+      });
+
+      it("ignores a type that is not a code, such as an error class name", async () => {
+        const failure = ApplicationFailure.create({ message: "x", type: "TypeError" });
+        mockExecuteWorkflowAndWait.mockRejectedValue(
+          new WorkflowFailedError("failed", failure, "NON_RETRYABLE_FAILURE"),
+        );
+        expect(((await run()).error as unknown as { code?: string }).code).toBeUndefined();
+      });
+
+      it("returns a duplicate start in result.error rather than throwing", async () => {
+        const { WorkflowExecutionAlreadyStartedError } = await import("@temporalio/client");
+        mockExecuteWorkflow.mockRejectedValue(
+          new WorkflowExecutionAlreadyStartedError("already started", mockWorkflowId, "test-workflow"),
+        );
+        const result = await executeWorkflowTemporal(workflow, {}, {
+          workflowId: mockWorkflowId,
+          clientConfig: mockClientConfig,
+          startOnly: true,
+        });
+        expect(result.error).toBeInstanceOf(WorkflowExecutionAlreadyStartedError);
+      });
+
+      it("lets startWorkflowTemporal reject on a duplicate start", async () => {
+        const { WorkflowExecutionAlreadyStartedError } = await import("@temporalio/client");
+        mockExecuteWorkflow.mockRejectedValue(
+          new WorkflowExecutionAlreadyStartedError("already started", mockWorkflowId, "test-workflow"),
+        );
+        await expect(
+          startWorkflowTemporal(workflow, {}, { workflowId: mockWorkflowId, clientConfig: mockClientConfig }),
+        ).rejects.toBeInstanceOf(WorkflowExecutionAlreadyStartedError);
+      });
+    });
+
     it("should extract the bag from its own details entry", async () => {
       const workflow = {
         name: "test-workflow",

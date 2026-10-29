@@ -244,8 +244,9 @@ export interface AsyncWorkflowOptions<CheckpointNames extends string = never> {
   /**
    * What to do when a workflow with `workflowId` is already running.
    *
-   * - `"fail"` (default): the start rejects with Temporal's
-   *   `WorkflowExecutionAlreadyStartedError`.
+   * - `"fail"` (default): the workflow is not started. Like every `runAsyncWorkflow`
+   *   failure, this does not throw: the result's `error` is Temporal's
+   *   `WorkflowExecutionAlreadyStartedError`. (`startAsyncWorkflow` rejects with it.)
    * - `"useExisting"`: the start succeeds against the running workflow instead, so a
    *   retried start (a timed-out request, a redelivered message) is idempotent. The
    *   running workflow keeps the data it was started with; this call's data is ignored.
