@@ -250,6 +250,23 @@ describe("Activity Worker", () => {
       expect(activityNames).toContain("test-workflow__errorHandler");
     });
 
+    it("registers an activity named __proto__ as an own property", async () => {
+      // step() rejects this name; the worker still must not lose it to the prototype setter.
+      const workflows = [
+        {
+          name: "test-workflow",
+          steps: [{ name: "__proto__", needs: [], provides: [], run: mockStepRun }],
+        },
+      ] as unknown as ActivityWorkerConfig<MockStepContext>["workflows"];
+
+      await createActivityWorkers(createTestConfig({ workflows }));
+
+      const activities = mockWorkerCreate.mock.calls[0]?.[0]?.activities;
+      expect(activities).toBeDefined();
+      expect(Object.hasOwn(activities!, "__proto__")).toBe(true);
+      expect(Object.getPrototypeOf(activities)).toBe(Object.prototype);
+    });
+
     it("should create workers for all specified task queues", async () => {
       const taskQueues = ["queue-1", "queue-2", "queue-3"];
       await createActivityWorkers(createTestConfig({ taskQueues }));

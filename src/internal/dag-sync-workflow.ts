@@ -111,6 +111,7 @@ import {
 } from "./observability.js";
 import type { ComposerLogger, TraceErrorMessage, UUIDV7 } from "./types.js";
 import { assignOwn, setOwn } from "./own-properties.js";
+import { assertValidName } from "./validate-name.js";
 import { planWorkflowBatches } from "./workflow-planning.js";
 import {
   assertSignalCapsAgree,
@@ -731,6 +732,7 @@ function workflow<
         Steps,
         CurrentCheckpointNames | Name
       > {
+        assertValidName("Checkpoint", checkpointName);
         // Validate checkpoint name is unique (runtime validation as safety net)
         if (currentCheckpoints.some((cp) => cp.name === checkpointName)) {
           throw new Error(
@@ -990,6 +992,7 @@ function flattenSteps<Bag extends Record<string, any>>(
  *     .build([stepA, stepB]);
  */
 export function createWorkflow<Bag extends Record<string, any>>(name: string) {
+  assertValidName("Workflow", name);
   return {
     // Build workflow without required initial fields
     build<

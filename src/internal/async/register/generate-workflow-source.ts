@@ -346,16 +346,19 @@ export async function writeWorkflowSourceFile(
   code += `// AUTO-GENERATED at runtime - DO NOT EDIT\n`;
   code += `const { createWorkflowFunction } = require("${factoryPath}");\n\n`;
 
-  for (const workflow of allWorkflows) {
+  // Workflow names are never interpolated raw: plans get indexed identifiers and
+  // export keys are JSON string literals, defined as own properties so a name
+  // like "__proto__" cannot reach the prototype setter.
+  for (const [index, workflow] of allWorkflows.entries()) {
     const plan = generateWorkflowPlan(workflow);
     if (!options.workerVersioning) {
       delete plan.versioningBehavior;
       for (const boundary of plan.stageBoundaries ?? []) delete boundary.initialVersioningBehavior;
     }
-    const safeName = workflow.name.replace(/-/g, "_").replace(/\./g, "_");
+    const planId = `plan${index}`;
 
-    code += `const ${safeName}Plan = ${JSON.stringify(plan)};\n`;
-    code += `exports["${workflow.name}"] = createWorkflowFunction(${safeName}Plan);\n\n`;
+    code += `const ${planId} = ${JSON.stringify(plan)};\n`;
+    code += `Object.defineProperty(exports, ${JSON.stringify(workflow.name)}, { value: createWorkflowFunction(${planId}), enumerable: true });\n\n`;
   }
 
   await writeFile(outputPath, code, "utf-8");

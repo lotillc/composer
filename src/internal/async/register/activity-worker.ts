@@ -326,6 +326,25 @@ export interface ActivityWorkerConfig<TContext = unknown> {
   interceptors?: ComposerWorkerInterceptors;
 }
 
+type ActivityFunction = (...args: unknown[]) => Promise<unknown>;
+
+/**
+ * Registers an activity as an own property, so a name like "__proto__" cannot
+ * hit the prototype setter and silently drop the activity.
+ */
+function defineActivity(
+  activities: Record<string, ActivityFunction>,
+  name: string,
+  fn: (...args: any[]) => Promise<unknown>,
+): void {
+  Object.defineProperty(activities, name, {
+    value: fn,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+}
+
 /**
  * Creates activity functions from workflow definitions.
  *
@@ -367,7 +386,7 @@ function createActivitiesFromWorkflows<TContext>(
     const stepName = step.name;
 
     // Signature: (workflowInput, stepInput) to match workflow-factory.ts
-    activities[activityName] = async (_workflowInput: unknown, stepInput: unknown) => {
+    defineActivity(activities, activityName, async (_workflowInput: unknown, stepInput: unknown) => {
       const input = stepInput as Record<string, unknown>;
       // Get workflowId from Temporal's activity execution context for logging
       const activityInfo = ActivityContext.current().info;
@@ -468,7 +487,7 @@ function createActivitiesFromWorkflows<TContext>(
         }
         activeActivityTracker.finish(activeActivityKey);
       }
-    };
+    });
   }
 
   for (const workflow of allWorkflows) {
@@ -477,7 +496,7 @@ function createActivitiesFromWorkflows<TContext>(
       const handler = workflow.errorHandler;
       logger.debug("Registering error handler activity", { activityName: errorHandlerName });
 
-      activities[errorHandlerName] = async (
+      defineActivity(activities, errorHandlerName, async (
         _workflowInput: unknown,
         bag: unknown,
         errorInfo: unknown,
@@ -546,7 +565,7 @@ function createActivitiesFromWorkflows<TContext>(
           error: { message: err.message, code: err.code },
           bag: typedBag,
         };
-      };
+      });
     }
 
     for (const step of workflow.steps) {
@@ -561,13 +580,13 @@ function createActivitiesFromWorkflows<TContext>(
         aggregateResultsName: aggName,
       });
 
-      activities[mapInputName] = async (_workflowInput: unknown, bagSlice: unknown) => {
+      defineActivity(activities, mapInputName, async (_workflowInput: unknown, bagSlice: unknown) => {
         return fanOut.mapInput(bagSlice as Record<string, unknown>);
-      };
+      });
 
-      activities[aggName] = async (_workflowInput: unknown, results: unknown) => {
+      defineActivity(activities, aggName, async (_workflowInput: unknown, results: unknown) => {
         return fanOut.aggregateResults(results as Record<string, unknown>[]);
-      };
+      });
     }
   }
 

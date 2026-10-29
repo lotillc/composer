@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { createWorkflow, fanOut, step } from "../../../../index.js";
+import type { Workflow } from "../../../dag-sync-workflow.js";
 import { generateWorkflowPlan, writeWorkflowSourceFile } from "../generate-workflow-source.js";
 
 interface ChildBag {
@@ -39,6 +40,17 @@ const parentFanOut = fanOut<ParentBag>()({
 const parentWorkflow = createWorkflow<ParentBag>("test-parent-workflow")
   .requires("items")
   .build([parentFanOut]);
+
+/**
+ * Evaluates generated workflow source with a stub `require`, returning its
+ * exports. The stubbed `createWorkflowFunction` returns the plan it is given.
+ */
+function evaluateWorkflowSource(code: string): Record<string, { name: string }> {
+  const exports: Record<string, { name: string }> = {};
+  const stubRequire = () => ({ createWorkflowFunction: (plan: { name: string }) => plan });
+  new Function("exports", "require", code)(exports, stubRequire);
+  return exports;
+}
 
 describe("writeWorkflowSourceFile", () => {
   const upgrading = createWorkflow<ChildBag>("test-upgrading-workflow")
@@ -96,18 +108,37 @@ describe("writeWorkflowSourceFile", () => {
     const outputPath = await writeWorkflowSourceFile([parentWorkflow]);
     const code = await readFile(outputPath, "utf-8");
 
-    expect(code).toContain('exports["test-parent-workflow"]');
-    expect(code).toContain('exports["test-child-workflow"]');
+    const exported = evaluateWorkflowSource(code);
+    expect(Object.keys(exported).sort()).toEqual(["test-child-workflow", "test-parent-workflow"]);
   });
 
   it("should not duplicate workflows when child is also explicitly provided", async () => {
     const outputPath = await writeWorkflowSourceFile([parentWorkflow, childWorkflow]);
     const code = await readFile(outputPath, "utf-8");
 
-    const parentMatches = code.match(/exports\["test-parent-workflow"\]/g);
-    const childMatches = code.match(/exports\["test-child-workflow"\]/g);
+    const parentMatches = code.match(/"test-parent-workflow", \{ value:/g);
+    const childMatches = code.match(/"test-child-workflow", \{ value:/g);
     expect(parentMatches).toHaveLength(1);
     expect(childMatches).toHaveLength(1);
+  });
+
+  it.each([
+    "has spaces",
+    'has "double" quotes',
+    "has 'single' quotes",
+    "1-leading-digit",
+    "__proto__",
+  ])("emits parseable source for a workflow named %j", async (name) => {
+    // createWorkflow() rejects these names; the generator must stay safe regardless.
+    const workflow = { ...childWorkflow, name } as Workflow<any, any, any, any, any>;
+
+    const outputPath = await writeWorkflowSourceFile([workflow]);
+    const code = await readFile(outputPath, "utf-8");
+
+    const exported = evaluateWorkflowSource(code);
+    expect(Object.hasOwn(exported, name)).toBe(true);
+    expect(exported[name]?.name).toBe(name);
+    expect(Object.getPrototypeOf(exported)).toBe(Object.prototype);
   });
 
   it("should serialize Infinity concurrency as null (not omit it)", async () => {
