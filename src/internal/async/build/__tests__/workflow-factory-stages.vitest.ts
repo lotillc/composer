@@ -824,6 +824,24 @@ describe("checkpoint requests the workflow cannot answer", () => {
   });
 });
 
+describe("checkpoint snapshots", () => {
+  it("answers a late request with the bag as it was at the checkpoint", async () => {
+    let handler: ((args: { checkpointName: string }) => Promise<unknown>) | undefined;
+    mocks.setHandler.mockImplementation((_def: unknown, fn: typeof handler) => {
+      handler = fn;
+    });
+    const plan = stagedPlan({
+      checkpoints: [{ name: "after-a", afterBatch: 0, timeout: 30_000 }],
+      stageBoundaries: [],
+    });
+
+    await createWorkflowFunction(plan)({ initialData: { id: "1" } });
+
+    // Arrives after batches 1 and 2 produced y and z; the snapshot predates them.
+    await expect(handler!({ checkpointName: "after-a" })).resolves.toEqual({ id: "1", x: "X" });
+  });
+});
+
 describe("current details", () => {
   it("shows the stage and the signal being waited on", async () => {
     const plan: WorkflowPlan = {

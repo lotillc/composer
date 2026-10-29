@@ -874,6 +874,9 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
 
     // Track which checkpoints have been reached
     const reachedCheckpoints = new Set<string>();
+    // The bag as it stood when each checkpoint was reached. A request that arrives later --
+    // a retried start with `ifRunning: "useExisting"`, say -- gets that, not the live bag.
+    const checkpointSnapshots = new Map<string, Record<string, unknown>>();
     // Checkpoints an earlier run of this workflow reached; their snapshots are gone.
     const checkpointsPassedEarlier = new Set<string>();
 
@@ -980,7 +983,7 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
         });
 
         // Return a snapshot of the bag at this checkpoint
-        return { ...bag };
+        return checkpointSnapshots.get(checkpointName) ?? assignOwn({}, bag);
       });
     }
 
@@ -1158,6 +1161,7 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
             batchIndex,
             batchNumber,
           });
+          checkpointSnapshots.set(checkpoint.name, assignOwn({}, bag));
           reachedCheckpoints.add(checkpoint.name);
         }
       }
