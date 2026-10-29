@@ -48,6 +48,9 @@ export function defineWorkflowSignal<Payload>(
   return { name, ...(options.parse && { parse: options.parse }) };
 }
 
+/** Unconsumed payloads kept per signal name when a wait sets no `maxPendingSignals`. */
+export const DEFAULT_MAX_PENDING_SIGNALS = 100;
+
 /**
  * Runtime metadata for a signal wait node.
  */

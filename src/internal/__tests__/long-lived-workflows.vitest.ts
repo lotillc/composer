@@ -99,6 +99,39 @@ describe("waitForSignal", () => {
     },
   );
 
+  it("rejects two waits on one signal that declare different caps", () => {
+    interface CapBag {
+      requestId: string;
+      sentAt: string;
+      a: { approved: boolean };
+      b: { approved: boolean };
+    }
+    const sent = step<CapBag>()({
+      name: "sent",
+      needs: ["requestId"],
+      provides: ["sentAt"],
+      run: async () => ({ sentAt: "t" }),
+    });
+    const waitA = waitForSignal<CapBag>()({
+      name: "waitA",
+      signal: approvalSignal,
+      needs: ["sentAt"],
+      provides: ["a"],
+    });
+    const waitB = waitForSignal<CapBag>()({
+      name: "waitB",
+      signal: approvalSignal,
+      needs: ["a"],
+      provides: ["b"],
+      maxPendingSignals: 1,
+    });
+    expect(() =>
+      createWorkflow<CapBag>("caps").requires("requestId").build([sent, waitA, waitB]),
+    ).toThrow(
+      'waits "waitA" and "waitB" both wait on signal "approval" but declare maxPendingSignals 100 and 1',
+    );
+  });
+
   it("rejects a maxPendingSignals that is not a positive integer", () => {
     expect(() =>
       waitForSignal<Bag>()({
@@ -411,7 +444,7 @@ describe("generateWorkflowPlan", () => {
     expect(names).toEqual(["await", "inner.await"]);
   });
 
-  it("rejects composed steps that share a bare name, instead of dropping one", () => {
+  it("rejects two different composed steps that share a bare name", () => {
     const inner = createWorkflow<Bag>("inner").requires("requestId").build([sendRequest]);
     const again = step<Bag>()({
       name: "sendRequest",
@@ -421,8 +454,40 @@ describe("generateWorkflowPlan", () => {
     });
     const outer = createWorkflow<Bag>("outer").requires("requestId").build([again, use(inner)]);
     expect(() => generateWorkflowPlan(outer)).toThrow(
-      'two steps are both named "sendRequest" once composition prefixes are removed',
+      'two different steps are both named "sendRequest". Activities are registered by that name',
     );
+  });
+
+  it("plans the same step reused in two children as two nodes sharing one activity", () => {
+    // A side-effect-only step, reused: composition namespaces each use.
+    const notify = step<Bag>()({
+      name: "notify",
+      needs: ["requestId"],
+      provides: [],
+      run: async () => ({}),
+    });
+    const first = createWorkflow<Bag>("first").requires("requestId").build([notify]);
+    const second = createWorkflow<Bag>("second").requires("requestId").build([notify]);
+    const outer = createWorkflow<Bag>("outer")
+      .requires("requestId")
+      .build([use(first), use(second)]);
+
+    const steps = generateWorkflowPlan(outer).batches.flatMap((b) => b.steps);
+    expect(steps.map((s) => [s.name, s.activityName])).toEqual([
+      ["first.notify", "notify"],
+      ["second.notify", "notify"],
+    ]);
+  });
+
+  it("places a checkpoint on a composed step", () => {
+    const inner = createWorkflow<Bag>("inner").requires("requestId").build([sendRequest]);
+    const outer = createWorkflow<Bag>("outer")
+      .requires("requestId")
+      .build([use(inner), awaitApproval, verify])
+      .checkpoint("sent", { afterStep: sendRequest });
+    expect(generateWorkflowPlan(outer).checkpoints).toEqual([
+      { name: "sent", afterBatch: 0, timeout: 30_000 },
+    ]);
   });
 
   it("leaves the new plan fields out for a workflow that uses none of them", () => {

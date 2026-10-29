@@ -416,6 +416,17 @@ describe("executeWorkflowTemporal", () => {
         expect(result.error).toBeInstanceOf(WorkflowExecutionAlreadyStartedError);
       });
 
+      it("returns an empty bag from startOnly with USE_EXISTING, not this call's input", async () => {
+        mockExecuteWorkflow.mockResolvedValue({} as never);
+        const result = await executeWorkflowTemporal(workflow, { retried: "input" }, {
+          workflowId: mockWorkflowId,
+          clientConfig: mockClientConfig,
+          startOnly: true,
+          workflowIdConflictPolicy: "USE_EXISTING",
+        });
+        expect(result).toEqual({ bag: {}, error: undefined });
+      });
+
       it("lets startWorkflowTemporal reject on a duplicate start", async () => {
         const { WorkflowExecutionAlreadyStartedError } = await import("@temporalio/client");
         mockExecuteWorkflow.mockRejectedValue(

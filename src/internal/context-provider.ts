@@ -250,6 +250,8 @@ export interface AsyncWorkflowOptions<CheckpointNames extends string = never> {
    * - `"useExisting"`: the start succeeds against the running workflow instead, so a
    *   retried start (a timed-out request, a redelivered message) is idempotent. The
    *   running workflow keeps the data it was started with; this call's data is ignored.
+   *   With `startOnly`, the result's `bag` is therefore empty rather than this call's
+   *   input, which may not be the running workflow's data.
    *
    * Only a *running* workflow counts: once one finishes, its ID can start a new one.
    */

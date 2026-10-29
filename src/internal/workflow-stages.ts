@@ -17,7 +17,7 @@ import type {
   StageInitialVersioningBehavior,
   Workflow,
 } from "./dag-sync-workflow.js";
-import { isSignalWaitStep } from "./dag-sync-signal.js";
+import { DEFAULT_MAX_PENDING_SIGNALS, isSignalWaitStep } from "./dag-sync-signal.js";
 import type { Step } from "./dag-sync-step.js";
 import { planWorkflowBatches } from "./workflow-planning.js";
 
@@ -156,5 +156,32 @@ export function assertSignalWaitsAlone(workflow: Workflow<any, any, any, any, an
         `[${others.join(", ")}]. A wait must be alone in its batch. Give it a \`needs\` on a ` +
         `field one of them provides, so it runs after them, or have them need its field.`,
     );
+  }
+}
+
+/**
+ * Checks that every wait on one signal declares the same `maxPendingSignals`.
+ *
+ * Signals queue per name for the whole workflow, before any particular wait is reached, so
+ * a queue has one cap. Waits declaring different caps for one name would each expect
+ * their own, and a later wait could find a queue its cap says should not exist.
+ *
+ * @throws Error naming the signal and the waits that disagree
+ */
+export function assertSignalCapsAgree(workflow: Workflow<any, any, any, any, any>): void {
+  const caps = new Map<string, { cap: number; wait: string }>();
+  for (const step of workflow.steps as Step<any, any, any, any, any>[]) {
+    if (!isSignalWaitStep(step)) continue;
+    const { signalName, maxPendingSignals } = step.__signalWait;
+    const cap = maxPendingSignals ?? DEFAULT_MAX_PENDING_SIGNALS;
+    const earlier = caps.get(signalName);
+    if (earlier && earlier.cap !== cap) {
+      throw new Error(
+        `Workflow "${workflow.name}": waits "${earlier.wait}" and "${step.name}" both wait on ` +
+          `signal "${signalName}" but declare maxPendingSignals ${earlier.cap} and ${cap}. ` +
+          `A signal has one queue, so give them the same cap.`,
+      );
+    }
+    caps.set(signalName, { cap, wait: step.name });
   }
 }

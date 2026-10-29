@@ -149,6 +149,12 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
         workflowIdConflictPolicy: options.workflowIdConflictPolicy,
       });
 
+      // With USE_EXISTING the start may have attached to a run begun earlier with other
+      // data, which Temporal kept and this call's data did not reach. Returning this call's
+      // input would present it as that run's state, so the bag is left empty.
+      if (options.workflowIdConflictPolicy === "USE_EXISTING") {
+        return { bag: {} as Bag, error: undefined };
+      }
       return { bag: mergedInitialData as Bag, error: undefined };
     }
 

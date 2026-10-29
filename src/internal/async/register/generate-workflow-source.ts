@@ -25,6 +25,7 @@ import type {
 import { DEFAULT_CHECKPOINT_TIMEOUT_MS, type Workflow } from "../../dag-sync-workflow.js";
 import { planWorkflowBatches } from "../../workflow-planning.js";
 import {
+  assertSignalCapsAgree,
   assertSignalWaitsAlone,
   initialFieldsOf,
   resolveStageBoundaries,
@@ -78,25 +79,45 @@ function buildActivityConfig(step: Step<any, any, any>): StepActivityConfig | un
 export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>): WorkflowPlan {
   const initialFields = initialFieldsOf(workflow);
   assertSignalWaitsAlone(workflow);
+  assertSignalCapsAgree(workflow);
 
-  // Steps and fan-outs lose their composition prefix, since activities are registered by
-  // their bare names. A wait runs no activity, so it keeps the namespaced name: that is its
-  // identity in `completedSteps`, and composed waits may share a local name.
-  const flattenedSteps = denamespaceSyntheticSteps(workflow.steps).map((step) => {
-    const syntheticName = (step as { _syntheticName?: string })._syntheticName;
-    return isSignalWait(step) && syntheticName ? { ...step, name: syntheticName } : step;
-  });
-  // Two nodes with one name would collapse into one in the plan, and the other would
-  // silently never run; say so instead.
+  // A node's name in the plan is its identity: what `completedSteps` records and what a
+  // checkpoint or stage boundary refers to. Composition prefixes it so nodes from different
+  // children stay distinct, so steps and waits keep that namespaced name. A step's activity
+  // is registered under its bare name, kept beside it as `activityName`. Fan-outs keep their
+  // bare name: their child workflow IDs and helper activities are built from it, and
+  // in-flight runs depend on those staying the same.
+  const bareSteps = denamespaceSyntheticSteps(workflow.steps);
+  const flattenedSteps = bareSteps.map((bare, index) =>
+    isFanOut(bare)
+      ? bare
+      : { ...bare, name: workflow.steps[index]!.name, activityName: bare.name },
+  );
+
+  // Two nodes with one identity would collapse into one in the plan, and the other would
+  // silently never run. Two different steps sharing an activity name would run whichever
+  // registered last. Both are refused here; the same step reused in two children is fine.
   const seenNames = new Set<string>();
+  const runByActivityName = new Map<string, unknown>();
   for (const step of flattenedSteps) {
     if (seenNames.has(step.name)) {
       throw new Error(
-        `Workflow "${workflow.name}": two steps are both named "${step.name}" once composition ` +
-          `prefixes are removed. Activities are registered by that name, so rename one.`,
+        `Workflow "${workflow.name}": two nodes are both named "${step.name}". Fan-outs are ` +
+          `identified by their name without composition prefixes, so rename one.`,
       );
     }
     seenNames.add(step.name);
+
+    const activityName = (step as { activityName?: string }).activityName;
+    if (activityName === undefined || isSignalWait(step)) continue;
+    const run = runByActivityName.get(activityName);
+    if (run !== undefined && run !== step.run) {
+      throw new Error(
+        `Workflow "${workflow.name}": two different steps are both named "${activityName}". ` +
+          `Activities are registered by that name, so rename one.`,
+      );
+    }
+    runByActivityName.set(activityName, step.run);
   }
   const planResult = planWorkflowBatches([...flattenedSteps], initialFields);
 
@@ -165,7 +186,7 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
         } else {
           steps.push({
             name: step.name,
-            activityName: step.name,
+            activityName: (step as { activityName?: string }).activityName ?? step.name,
             needs: [...step.needs].map(String),
             provides: [...step.provides].map(String),
             taskQueue: getTaskQueueForProfile(workerProfile),

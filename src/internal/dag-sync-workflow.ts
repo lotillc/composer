@@ -112,7 +112,11 @@ import {
 import type { ComposerLogger, TraceErrorMessage, UUIDV7 } from "./types.js";
 import { assignOwn, setOwn } from "./own-properties.js";
 import { planWorkflowBatches } from "./workflow-planning.js";
-import { assertSignalWaitsAlone, resolveStageBoundaries } from "./workflow-stages.js";
+import {
+  assertSignalCapsAgree,
+  assertSignalWaitsAlone,
+  resolveStageBoundaries,
+} from "./workflow-stages.js";
 
 // ============================================================================
 // Checkpoint Types
@@ -702,6 +706,7 @@ function workflow<
   };
   // Fail where the workflow is defined, not when a worker first plans it.
   assertSignalWaitsAlone(wf);
+  assertSignalCapsAgree(wf);
 
   // Create a builder function that returns a new WorkflowBuilder over the given workflow.
   // Checkpoints, stage boundaries and versioning all live on the workflow object, so every

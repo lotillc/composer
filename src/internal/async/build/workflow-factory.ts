@@ -24,6 +24,8 @@ import type {
   StageInitialVersioningBehavior,
   WorkflowVersioningBehavior,
 } from "../../dag-sync-workflow.js";
+// Pure, with no imports beyond types and the leaf duration module, so safe in the sandbox.
+import { DEFAULT_MAX_PENDING_SIGNALS } from "../../dag-sync-signal.js";
 import { durationToMs } from "../../duration.js";
 import { jsonStringBytes, utf8Length } from "../../json-size.js";
 import { safeErrorName } from "../../error-for-log.js";
@@ -285,12 +287,6 @@ async function runWithPolling<T>(
 // Durable signal waits
 // ============================================================================
 
-/**
- * Unconsumed payloads kept per signal name when no wait sets `maxPendingSignals`. The
- * inbox is carried across every continue-as-new, so a queue of duplicate or unwanted
- * signals would otherwise grow each run's input without limit.
- */
-export const DEFAULT_MAX_PENDING_SIGNALS = 100;
 
 /**
  * Dedupe keys remembered across runs. A key older than this many later keys can be
