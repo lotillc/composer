@@ -1,5 +1,62 @@
 # @lotiai/composer
 
+## 0.10.0
+
+### Minor Changes
+
+- [#39](https://github.com/lotillc/composer/pull/39) [`f2d2fad`](https://github.com/lotillc/composer/commit/f2d2fad1667a2e0bc485ca1d73fa7f720e06d4c7) Thanks [@john-goloti](https://github.com/john-goloti)! - Async workflows can now run for days or weeks without pinning the build that started them.
+
+  - `.continueAsNew(name, { afterStep })` splits a workflow into stages. After that step's batch, the run continues as new with the bag carried forward, and the next run starts on the current build (`initialVersioningBehavior: "AUTO_UPGRADE"` by default). A resumed run finds its stage by name, or by one of the stage's `aliases` after a rename, and never repeats a step an earlier run ran. Boundaries belong to the workflow whose runs they end: `use()` refuses a workflow that declares any, since composition takes only its steps, and the composing workflow's `.continueAsNew()` accepts a composed step instead.
+  - `waitForSignal` adds a durable wait that holds no worker slot, with an optional `timeout` and `timeoutValue`. Each wait must be alone in its batch; the builder rejects one that would run alongside other nodes. You deliver the signal with `composer.signalAsyncWorkflow(workflowId, signal, payload)`, typed through `defineWorkflowSignal`. Signals that arrive early are kept, including across stages.
+  - `.versioning("AUTO_UPGRADE" | "PINNED")` declares a workflow's Worker Versioning behavior on the definition. Workflows that declare `AUTO_UPGRADE`, or that have stage boundaries, are now started without a build pin, because a start-time pin outranks both the declaration and each boundary's routing and is inherited across continue-as-new. Other workflows are pinned as before.
+  - `startAsyncWorkflow` accepts an optional `{ workflowId, ifRunning }`. With `ifRunning: "useExisting"`, a retried start resolves against the running workflow instead of failing; `runAsyncWorkflow` accepts it too.
+  - Signals are bounded and safe to retry. A workflow accepts only signal names its waits declare, keeps up to `maxPendingSignals` (default 100) per name, and drops a repeat of a `dedupeKey` passed to `signalAsyncWorkflow`. `defineWorkflowSignal(name, { parse })` validates a payload before it is sent. Everything a run carries forward is measured: above 1.5 MB the workflow fails with `COMPOSER_CONTINUATION_TOO_LARGE` instead of retrying forever against Temporal's 2 MB payload limit. Lower `temporal.continuationBudgetBytes` if your data converter grows payloads.
+  - `replayWorkflowHistories` (standalone, and on the composer) replays saved histories against a build offline, so a change that would break in-flight runs, or the rollback to them, is caught in CI before it ships.
+
+  Within a stage, an `AUTO_UPGRADE` workflow must replay across builds; the README's "Long-Lived Workflows" section covers the rules.
+
+  Under Temporal, a step inside a workflow composed with `use()` is now identified by its namespaced name (`child.step`), as it already was in sync execution. That name is what an error handler sees in `errors[].stepName`, what a checkpoint or stage boundary refers to, and what is recorded as already run. Its activity is still registered under the bare name. A fan-out keeps its bare name everywhere, since its child workflow IDs are built from it.
+
+  The activity worker now refuses to start when two different steps, in any of the workflows it serves, would register the same activity name. Activities are registered by a step's name without composition prefixes, so a collision used to leave whichever registered last running for both, silently.
+
+### Patch Changes
+
+- [#40](https://github.com/lotillc/composer/pull/40) [`0cb3b84`](https://github.com/lotillc/composer/commit/0cb3b84f0ff2a8c6d98f53e0bec39c29fced97d5) Thanks [@john-goloti](https://github.com/john-goloti)! - Remediate open security advisories in dependencies.
+
+  **`zod` (runtime).** Raises the floor to `^4.6.6`, the first release patched for
+  GHSA-mrhx-c7xc-m3w5. Because `zod` is a direct dependency, consumers get the fix
+  from the published range.
+
+  **`@grpc/grpc-js`, `source-map-js` and `fast-uri` (runtime, transitive).**
+  Refreshes the lockfile to `@grpc/grpc-js@1.14.7` and `source-map-js@1.2.2`, and
+  advances the existing `fast-uri` override to 3.1.9. The ranges declared by the
+  packages that pull these in (`@temporalio/*`, `source-map-loader`, `postcss`,
+  `ajv`) already admit the patched releases, so a fresh consumer install resolves
+  them without any change here.
+
+  **`vite` and `vitest` (development).** Bumps `vite` to 8.3.5 and `vitest` /
+  `@vitest/coverage-v8` to 5.0.5. These affect only this repository's own tooling
+  and nothing package consumers install.
+
+- [#42](https://github.com/lotillc/composer/pull/42) [`ba73dcd`](https://github.com/lotillc/composer/commit/ba73dcd34e54f7718913b8f1fc3d59a7327b485e) Thanks [@john-goloti](https://github.com/john-goloti)! - Validate developer-chosen names and stop interpolating them raw into generated code.
+
+  **Definition-time validation.** `createWorkflow`, `step`, `fanOut` and
+  `.checkpoint` now reject `__proto__`, `constructor` and `prototype`, and any name
+  that does not start with a letter or `_` or that contains characters other than
+  letters, digits, `_`, `.` and `-`. The error names the kind of name and the rule
+  it broke.
+
+  **Generated workflow source.** The workflow worker's generated module now names
+  each plan with an indexed identifier (`plan0`, `plan1`, ...) and writes each
+  export key as a JSON string literal through `Object.defineProperty`. Previously a
+  workflow name containing a space, a quote or a leading digit produced a module
+  that would not parse, failing the worker at startup, and a workflow named
+  `__proto__` replaced the prototype of `exports` instead of being exported.
+
+  **Activity registration.** The activity worker registers step, error-handler,
+  `mapInput` and `aggregateResults` activities as own properties, so a reserved
+  name cannot be swallowed by the `__proto__` setter.
+
 ## 0.9.0
 
 ### Minor Changes
