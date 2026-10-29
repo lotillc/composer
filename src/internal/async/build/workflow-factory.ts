@@ -60,6 +60,11 @@ export interface WorkflowInput {
   continuation?: WorkflowContinuation;
 }
 
+/** A signal payload as a continuation carries it; see `WorkflowContinuation.signals`. */
+export interface CarriedSignal {
+  payload?: unknown;
+}
+
 /** Format version written into every continuation by this build. */
 export const CONTINUATION_VERSION = 1;
 
@@ -85,8 +90,12 @@ export interface WorkflowContinuation {
   bag?: Record<string, unknown>;
   /** Steps that already ran in earlier runs; never run again even if the plan moved them. */
   completedSteps?: string[];
-  /** Signals received but not yet consumed by a wait, oldest first, by signal name. */
-  signals?: Record<string, unknown[]>;
+  /**
+   * Signals received but not yet consumed by a wait, oldest first, by signal name. Each
+   * payload is wrapped as `{ payload }`: JSON writes an `undefined` array element as `null`,
+   * while a missing `payload` key reads back as `undefined`, as the signal was sent.
+   */
+  signals?: Record<string, CarriedSignal[]>;
   /**
    * Signals already received with a dedupe key, oldest first. Each entry is the JSON
    * encoding of `[signalName, dedupeKey]`, so no name or key can collide with another pair.
@@ -358,9 +367,18 @@ function createSignalInbox(plan: WorkflowPlan, continuation?: WorkflowContinuati
   // within the current cap are kept. Undeclared queues are carried as they are.
   return {
     queues: new Map(
-      Object.entries(continuation?.signals ?? {}).map(([name, queue]) => {
+      Object.entries(continuation?.signals ?? {}).map(([name, carried]) => {
+        const queue = carried.map((entry) => {
+          // Every entry is written as an object. Anything else is not this format, so fail
+          // the workflow task, retried until a build that reads it runs it, rather than
+          // resume with payloads silently lost.
+          if (entry === null || typeof entry !== "object") {
+            throw new Error(`Workflow "${plan.name}": carried signal "${name}" is malformed`);
+          }
+          return entry.payload;
+        });
         const cap = caps.get(name);
-        return [name, cap === undefined ? [...queue] : queue.slice(-cap)];
+        return [name, cap === undefined ? queue : queue.slice(-cap)];
       }),
     ),
     caps,
@@ -1357,9 +1375,9 @@ async function continueAtStage(
     setOwn(carried, field, value);
   }
 
-  const signals: Record<string, unknown[]> = Object.create(null);
+  const signals: Record<string, CarriedSignal[]> = Object.create(null);
   for (const [name, queue] of inbox.queues) {
-    if (queue.length > 0) setOwn(signals, name, [...queue]);
+    if (queue.length > 0) setOwn(signals, name, queue.map((payload) => ({ payload })));
   }
 
   wf.log.info("Stage complete; continuing as new", {

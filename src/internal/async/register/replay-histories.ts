@@ -65,8 +65,11 @@ let replayCounter = 0;
  * Replays recorded workflow histories against the given workflow definitions and reports
  * every history the definitions cannot reproduce.
  *
- * Bundles exactly what a workflow worker would run, with the workflow-declared versioning
- * behavior left out: it changes no command, and an unversioned replay worker would reject it.
+ * Bundles exactly what a versioned workflow worker runs, versioning declarations included:
+ * the workflow's behavior and each stage boundary's next-run behavior. Replay matches a
+ * continue-as-new command to its event by type and never compares these attributes; the
+ * recorded fixtures, which an unversioned worker wrote without them, replay against this
+ * bundle.
  *
  * Run it in CI before deploying a build, against histories captured from the build
  * currently serving long-lived workflows, so a change that would break in-flight runs, or
@@ -86,7 +89,7 @@ export async function replayWorkflowHistories(
 ): Promise<ReplayWorkflowHistoriesResult> {
   // A file of its own, so a replay never rewrites the source a worker in this process loads.
   const workflowsPath = await writeWorkflowSourceFile(options.workflows, {
-    workerVersioning: false,
+    workerVersioning: true,
     fileName: `__workflow-source-replay-${process.pid}-${++replayCounter}.js`,
     continuationBudgetBytes: options.continuationBudgetBytes,
   });

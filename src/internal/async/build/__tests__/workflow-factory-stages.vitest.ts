@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, type MockedFunction, vi } from "vites
 
 import { CONTINUATION_TOO_LARGE_CODE, SIGNAL_WAIT_TIMEOUT_CODE } from "../../../workflow-codes.js";
 import type {
+  CarriedSignal,
   StepBatch,
   TemporalWorkflowResult,
   WorkflowContinuation,
@@ -142,6 +143,11 @@ async function runUntilContinued(
   );
   expect(result).toBeInstanceOf(ContinuedAsNew);
   return result as ContinuedAsNew;
+}
+
+/** Signals as a continuation carries them: each payload wrapped as `{ payload }`. */
+function wrapped(...payloads: unknown[]): CarriedSignal[] {
+  return payloads.map((payload) => ({ payload }));
 }
 
 function continuation(overrides: Partial<WorkflowContinuation> = {}): WorkflowContinuation {
@@ -471,7 +477,7 @@ describe("signal waits", () => {
       return { x: "X" };
     });
     const continued = await runUntilContinued(stagedPlanWithWait(), { initialData: { id: "1" } });
-    expect(continued.next.continuation?.signals).toEqual({ approval: ["early"] });
+    expect(continued.next.continuation?.signals).toEqual({ approval: wrapped("early") });
   });
 
   it("drops, with a warning, a signal no wait declares", async () => {
@@ -493,10 +499,10 @@ describe("signal waits", () => {
       continuation: continuation({
         bag: { x: "X" },
         completedSteps: ["a"],
-        signals: { retired: ["kept"] },
+        signals: { retired: wrapped("kept") },
       }),
     });
-    expect(continued.next.continuation?.signals).toEqual({ retired: ["kept"] });
+    expect(continued.next.continuation?.signals).toEqual({ retired: wrapped("kept") });
   });
 
   it("never confuses two different name and key pairs that join to the same text", async () => {
@@ -509,8 +515,8 @@ describe("signal waits", () => {
     });
     const continued = await runUntilContinued(plan, { initialData: { id: "1" } });
     expect(continued.next.continuation?.signals).toEqual({
-      approval: ["first"],
-      "approval:b": ["second"],
+      approval: wrapped("first"),
+      "approval:b": wrapped("second"),
     });
   });
 
@@ -522,7 +528,7 @@ describe("signal waits", () => {
       return { x: "X" };
     });
     const first = await runUntilContinued(stagedPlanWithWait(), { initialData: { id: "1" } });
-    expect(first.next.continuation?.signals).toEqual({ approval: ["first", "other"] });
+    expect(first.next.continuation?.signals).toEqual({ approval: wrapped("first", "other") });
     expect(first.next.continuation?.seenSignalKeys).toEqual([
       '["approval","evt-1"]',
       '["approval","evt-2"]',
@@ -534,7 +540,38 @@ describe("signal waits", () => {
       return { y: "Y" };
     });
     const second = await runUntilContinued(stagedPlanWithWait(), first.next);
-    expect(second.next.continuation?.signals).toEqual({ approval: ["first", "other"] });
+    expect(second.next.continuation?.signals).toEqual({ approval: wrapped("first", "other") });
+  });
+
+  it("carries an undefined payload as undefined, not null, through JSON", async () => {
+    mocks.activityFunctions.a = vi.fn(async () => {
+      mocks.defaultSignalHandler!("approval", undefined);
+      return { x: "X" };
+    });
+    const continued = await runUntilContinued(stagedPlanWithWait(), { initialData: { id: "1" } });
+    // What the default payload converter does to the continuation between runs.
+    const next = JSON.parse(JSON.stringify(continued.next)) as WorkflowInput;
+
+    mocks.onBlock = undefined;
+    const result = (await createWorkflowFunction(stagedPlanWithWait())({
+      ...next,
+      continuation: { ...next.continuation!, stage: "third", bag: { x: "X", y: "Y" } },
+    })) as TemporalWorkflowResult;
+    expect(Object.hasOwn(result.bag, "approval")).toBe(true);
+    expect(result.bag.approval).toBeUndefined();
+  });
+
+  it("fails the workflow task on a carried signal in another format", async () => {
+    const outcome = await createWorkflowFunction(stagedPlanWithWait())({
+      initialData: { id: "1" },
+      continuation: continuation({ signals: { approval: ["unwrapped"] as never } }),
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(outcome).toBeInstanceOf(Error);
+    expect(outcome).not.toBeInstanceOf(ApplicationFailure);
+    expect((outcome as Error).message).toContain('carried signal "approval" is malformed');
   });
 
   it("resumes with carried signals available to a wait", async () => {
@@ -548,7 +585,7 @@ describe("signal waits", () => {
         stage: "waiting",
         bag: { x: "X" },
         completedSteps: ["a"],
-        signals: { approval: ["carried"] },
+        signals: { approval: wrapped("carried") },
       }),
     })) as TemporalWorkflowResult;
     expect(result.bag.approval).toBe("carried");
@@ -562,7 +599,7 @@ describe("signal waits", () => {
       return { x: "X" };
     });
     const continued = await runUntilContinued(plan, { initialData: { id: "1" } });
-    expect(continued.next.continuation?.signals?.approval).toEqual([2, 3, 4]);
+    expect(continued.next.continuation?.signals?.approval).toEqual(wrapped(2, 3, 4));
     expect(mocks.log.warn).toHaveBeenCalledWith(
       "Signal inbox full; dropped the oldest pending payload",
       { signalName: "approval", limit: 3 },
@@ -577,12 +614,12 @@ describe("signal waits", () => {
       continuation: continuation({
         bag: { x: "X" },
         completedSteps: ["a"],
-        signals: { approval: [1, 2, 3, 4, 5], retired: [1, 2, 3] },
+        signals: { approval: wrapped(1, 2, 3, 4, 5), retired: wrapped(1, 2, 3) },
       }),
     });
     expect(continued.next.continuation?.signals).toEqual({
-      approval: [4, 5],
-      retired: [1, 2, 3],
+      approval: wrapped(4, 5),
+      retired: wrapped(1, 2, 3),
     });
   });
 
@@ -594,7 +631,7 @@ describe("signal waits", () => {
     const continued = await runUntilContinued(stagedPlanWithWait(), { initialData: { id: "1" } });
     const queue = continued.next.continuation?.signals?.approval ?? [];
     expect(queue).toHaveLength(100);
-    expect(queue[0]).toBe(5);
+    expect(queue[0]).toEqual({ payload: 5 });
   });
 });
 
@@ -769,7 +806,7 @@ describe("carried state limits", () => {
     const continued = await runUntilContinued(plan, { initialData: { id: "1" } });
     const continuationJson = JSON.parse(JSON.stringify(continued.next.continuation));
     expect(Object.hasOwn(continuationJson.signals, "__proto__")).toBe(true);
-    expect(continuationJson.signals.__proto__).toEqual(["early"]);
+    expect(continuationJson.signals.__proto__).toEqual(wrapped("early"));
   });
 
   it("keeps a step output named __proto__ in the bag, for later steps and the next run", async () => {
@@ -801,7 +838,7 @@ describe("carried state limits", () => {
     });
     const continued = await runUntilContinued(stagedPlanWithWait(), { initialData: { id: "1" } });
     expect(continued.next.continuation).not.toHaveProperty("seenSignalKeys");
-    expect(continued.next.continuation?.signals?.approval).toEqual(["first"]);
+    expect(continued.next.continuation?.signals?.approval).toEqual(wrapped("first"));
   });
 
   it("ignores an over-long dedupe key and accepts the signal without it", async () => {
@@ -811,7 +848,7 @@ describe("carried state limits", () => {
       return { x: "X" };
     });
     const continued = await runUntilContinued(stagedPlanWithWait(), { initialData: { id: "1" } });
-    expect(continued.next.continuation?.signals?.approval).toEqual(["first", "second"]);
+    expect(continued.next.continuation?.signals?.approval).toEqual(wrapped("first", "second"));
     expect(continued.next.continuation).not.toHaveProperty("seenSignalKeys");
   });
 });
