@@ -97,28 +97,28 @@
     "typescript": "^5.9.2",
     "uuid": "^14.0.2",
     "yargs": "^17.7.2",
-    "zod": "^4.1.13"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^0.7.0",
     "@changesets/cli": "^2.31.1",
     "@types/node": "^24.13.5",
     "@types/yargs": "^17.0.24",
-    "@vitest/coverage-v8": "^5.0.1",
+    "@vitest/coverage-v8": "^5.0.5",
     "semver": "^7.8.5",
-    "vite": "^8.0.16",
-    "vitest": "^5.0.1"
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
   },
   "pnpm": {
     "overrides": {
       "brace-expansion": "5.0.9",
       "browserslist": "4.28.7",
-      "fast-uri": "3.1.8",
+      "fast-uri": "3.1.9",
       "js-yaml@^3.0.0": "3.15.2",
       "js-yaml@^4.0.0": "4.3.2",
       "postcss": "8.5.23",
       "protobufjs": "7.6.5",
-      "vite": "8.0.16"
+      "vite": "8.3.5"
     }
   },
   "engines": {
