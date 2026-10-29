@@ -13,7 +13,7 @@ vi.mock("../temporal-client.js");
 
 const mockExecuteWorkflowAndWait = vi.mocked(temporalClient.executeWorkflowAndWait);
 const mockExecuteWorkflow = vi.mocked(temporalClient.executeWorkflow);
-const mockCreateTemporalClient = vi.mocked(temporalClient.createTemporalClient);
+const mockStartWorkflowWithUpdate = vi.mocked(temporalClient.startWorkflowWithUpdate);
 
 describe("executeWorkflowTemporal", () => {
   const mockWorkflowId = "01234567-89ab-cdef-0123-456789abcdef" as UUIDV7;
@@ -635,15 +635,8 @@ describe("executeWorkflowTemporal", () => {
       expect(result.error?.message).toMatch('Unknown checkpoint "myCheckpoint"');
     });
 
-    it("should use executeWorkflow (not executeWorkflowAndWait) when awaitCheckpoint is specified", async () => {
-      const mockExecuteUpdate = vi.fn().mockResolvedValue({ partialData: "value" });
-      const mockGetHandle = vi.fn().mockReturnValue({
-        executeUpdate: mockExecuteUpdate,
-      });
-      mockCreateTemporalClient.mockResolvedValue({
-        workflow: { getHandle: mockGetHandle },
-      } as any);
-      mockExecuteWorkflow.mockResolvedValue({} as any);
+    it("starts with Update-With-Start (not a separate start) when awaitCheckpoint is specified", async () => {
+      mockStartWorkflowWithUpdate.mockResolvedValue({ partialData: "value" });
 
       const workflow = {
         name: "test-workflow",
@@ -661,20 +654,15 @@ describe("executeWorkflowTemporal", () => {
         },
       );
 
-      // Should use executeWorkflow (fire and forget), not executeWorkflowAndWait
-      expect(mockExecuteWorkflow).toHaveBeenCalled();
+      // The start and the checkpoint Update travel together, so the handler is in place
+      // before any batch runs; there is no separate start for the Update to race.
+      expect(mockStartWorkflowWithUpdate).toHaveBeenCalled();
+      expect(mockExecuteWorkflow).not.toHaveBeenCalled();
       expect(mockExecuteWorkflowAndWait).not.toHaveBeenCalled();
     });
 
-    it("should call executeUpdate with checkpoint name", async () => {
-      const mockExecuteUpdate = vi.fn().mockResolvedValue({ data: "partial" });
-      const mockGetHandle = vi.fn().mockReturnValue({
-        executeUpdate: mockExecuteUpdate,
-      });
-      mockCreateTemporalClient.mockResolvedValue({
-        workflow: { getHandle: mockGetHandle },
-      } as any);
-      mockExecuteWorkflow.mockResolvedValue({} as any);
+    it("should send the checkpoint name as the Update's argument", async () => {
+      mockStartWorkflowWithUpdate.mockResolvedValue({ data: "partial" });
 
       const workflow = {
         name: "test-workflow",
@@ -692,24 +680,17 @@ describe("executeWorkflowTemporal", () => {
         },
       );
 
-      expect(mockExecuteUpdate).toHaveBeenCalledWith(
-        expect.anything(), // The update definition
+      expect(mockStartWorkflowWithUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
-          args: [{ checkpointName: "myCheckpoint" }],
+          workflowName: "test-workflow",
+          updateArgs: [{ checkpointName: "myCheckpoint" }],
         }),
       );
     });
 
     it("should return error when checkpoint times out", async () => {
       const neverResolves = new Promise(() => {});
-      const mockExecuteUpdate = vi.fn().mockReturnValue(neverResolves);
-      const mockGetHandle = vi.fn().mockReturnValue({
-        executeUpdate: mockExecuteUpdate,
-      });
-      mockCreateTemporalClient.mockResolvedValue({
-        workflow: { getHandle: mockGetHandle },
-      } as any);
-      mockExecuteWorkflow.mockResolvedValue({} as any);
+      mockStartWorkflowWithUpdate.mockReturnValue(neverResolves as never);
 
       // Use a tiny timeout so the test doesn't wait for the real 30s default
       const workflow = {
@@ -737,14 +718,7 @@ describe("executeWorkflowTemporal", () => {
 
     it("should use DEFAULT_CHECKPOINT_TIMEOUT_MS when checkpoint has no custom timeout", async () => {
       const neverResolves = new Promise(() => {});
-      const mockExecuteUpdate = vi.fn().mockReturnValue(neverResolves);
-      const mockGetHandle = vi.fn().mockReturnValue({
-        executeUpdate: mockExecuteUpdate,
-      });
-      mockCreateTemporalClient.mockResolvedValue({
-        workflow: { getHandle: mockGetHandle },
-      } as any);
-      mockExecuteWorkflow.mockResolvedValue({} as any);
+      mockStartWorkflowWithUpdate.mockReturnValue(neverResolves as never);
 
       // Use a tiny custom timeout to test the mechanism without waiting 30s;
       // separately verify the default timeout is applied correctly below
@@ -773,14 +747,7 @@ describe("executeWorkflowTemporal", () => {
 
     it("should return partial bag from checkpoint", async () => {
       const partialBag = { step1Result: "done", step2Result: "pending" };
-      const mockExecuteUpdate = vi.fn().mockResolvedValue(partialBag);
-      const mockGetHandle = vi.fn().mockReturnValue({
-        executeUpdate: mockExecuteUpdate,
-      });
-      mockCreateTemporalClient.mockResolvedValue({
-        workflow: { getHandle: mockGetHandle },
-      } as any);
-      mockExecuteWorkflow.mockResolvedValue({} as any);
+      mockStartWorkflowWithUpdate.mockResolvedValue(partialBag);
 
       const workflow = {
         name: "test-workflow",
@@ -858,12 +825,7 @@ describe("executeWorkflowTemporal", () => {
         steps: [],
         checkpoints: [{ name: "ready", afterStep: "someStep" }],
       } as unknown as Workflow<any, any, any>;
-      mockExecuteWorkflow.mockResolvedValue({
-        workflowId: mockWorkflowId,
-      } as unknown as Awaited<ReturnType<typeof temporalClient.executeWorkflow>>);
-      mockCreateTemporalClient.mockResolvedValue({
-        workflow: { getHandle: () => ({ executeUpdate: async () => ({}) }) },
-      } as unknown as Awaited<ReturnType<typeof temporalClient.createTemporalClient>>);
+      mockStartWorkflowWithUpdate.mockResolvedValue({});
 
       await executeWorkflowTemporal(
         workflow,
@@ -876,7 +838,7 @@ describe("executeWorkflowTemporal", () => {
         },
       );
 
-      expect(mockExecuteWorkflow).toHaveBeenCalledWith(
+      expect(mockStartWorkflowWithUpdate).toHaveBeenCalledWith(
         expect.objectContaining({ versioningOverride }),
       );
     });

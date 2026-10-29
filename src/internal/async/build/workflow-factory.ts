@@ -64,7 +64,8 @@ export const CONTINUATION_VERSION = 1;
  * build is current reads it, possibly an older one after a rollback. Change it additively
  * only -- never remove, rename or repurpose a field -- and read every field tolerantly, as
  * a continuation written by another build may lack fields this one knows or carry fields it
- * does not. Bump `version` only for a change an older reader must be able to detect.
+ * does not. Bump `version` only for a change an older reader must not misread: a build
+ * refuses a newer version, failing the workflow task until a build that reads it runs it.
  */
 export interface WorkflowContinuation {
   /** Format version of the build that wrote this continuation. Absent means 1. */
@@ -310,6 +311,14 @@ export const CONTINUATION_BUDGET_BYTES = 1_500_000;
 
 /** Carried state above which a continue-as-new logs a warning (Temporal warns at 512 KB). */
 const CONTINUATION_WARN_BYTES = 512 * 1024;
+
+/** JSON replacer giving non-JSON values a size close to what a converter would write. */
+function measurableValue(_key: string, value: unknown): unknown {
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Map) return [...value.entries()];
+  if (value instanceof Set) return [...value.values()];
+  return value;
+}
 
 /** UTF-8 byte length of a string, without TextEncoder or Buffer. */
 function utf8Length(text: string): number {
@@ -855,11 +864,17 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
     const { continuation: _continuation, ...activityInput } = input;
 
     if (continuation && (continuation.version ?? 1) > CONTINUATION_VERSION) {
-      // Fields are only ever added, so reading what this build knows is still sound.
-      wf.log.warn("Resuming from a continuation written by a newer build", {
+      // A version is bumped only for a change an older reader must not misread, so this
+      // build must not resume it. Thrown as a plain Error, this fails the workflow task,
+      // and Temporal retries it until a build that reads this version picks it up.
+      wf.log.error("Cannot resume a continuation written by a newer format", {
         version: continuation.version,
         supported: CONTINUATION_VERSION,
       });
+      throw new Error(
+        `Workflow "${plan.name}" cannot resume a continuation of format version ` +
+          `${continuation.version}; this build reads up to ${CONTINUATION_VERSION}`,
+      );
     }
 
     // Initialize bag with initial data, plus whatever an earlier run carried forward
@@ -1355,15 +1370,23 @@ async function continueAtStage(
     },
   };
   // Every limit on its parts still leaves the whole unbounded, so the whole is measured. The
-  // measure is the JSON the default payload converter writes; a custom converter or codec
-  // changes the real size, which the budget's margin under 2 MB allows for.
-  let bytes: number | undefined;
+  // measure is the JSON the default payload converter writes, with the values a custom
+  // converter commonly adds (bigint, Map, Set) written out the way such converters write
+  // them. A codec changes the real size, which the budget's margin under 2 MB allows for.
+  let bytes: number;
   try {
-    bytes = utf8Length(JSON.stringify(next));
+    bytes = utf8Length(JSON.stringify(next, measurableValue));
   } catch {
-    // Not JSON-serializable, so a custom converter is in use; leave the size to Temporal.
+    // Cannot be measured (a cycle, say), so it cannot be shown to fit. Fail here rather
+    // than issue a command Temporal might reject on every retry.
+    throw workflowFailure(
+      CONTINUATION_TOO_LARGE_CODE,
+      `Stage "${boundary.name}" of workflow "${wf.workflowInfo().workflowType}" carries ` +
+        `state that cannot be measured, so it cannot be shown to fit the payload limit.`,
+      { stage: boundary.name, measurable: false },
+    );
   }
-  if (bytes !== undefined && bytes > CONTINUATION_BUDGET_BYTES) {
+  if (bytes > CONTINUATION_BUDGET_BYTES) {
     // Fail rather than issue a command Temporal would reject on every retry. The state
     // itself stays out of the failure, which goes to event history and has the same cap.
     throw workflowFailure(
@@ -1374,7 +1397,7 @@ async function continueAtStage(
       { stage: boundary.name, bytes, budget: CONTINUATION_BUDGET_BYTES },
     );
   }
-  if (bytes !== undefined && bytes > CONTINUATION_WARN_BYTES) {
+  if (bytes > CONTINUATION_WARN_BYTES) {
     wf.log.warn("Carried state is large; keep big data out of the bag", {
       stage: boundary.name,
       bytes,

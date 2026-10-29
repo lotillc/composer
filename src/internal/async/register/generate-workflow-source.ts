@@ -79,7 +79,25 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
   const initialFields = initialFieldsOf(workflow);
   assertSignalWaitsAlone(workflow);
 
-  const flattenedSteps = denamespaceSyntheticSteps(workflow.steps);
+  // Steps and fan-outs lose their composition prefix, since activities are registered by
+  // their bare names. A wait runs no activity, so it keeps the namespaced name: that is its
+  // identity in `completedSteps`, and composed waits may share a local name.
+  const flattenedSteps = denamespaceSyntheticSteps(workflow.steps).map((step) => {
+    const syntheticName = (step as { _syntheticName?: string })._syntheticName;
+    return isSignalWait(step) && syntheticName ? { ...step, name: syntheticName } : step;
+  });
+  // Two nodes with one name would collapse into one in the plan, and the other would
+  // silently never run; say so instead.
+  const seenNames = new Set<string>();
+  for (const step of flattenedSteps) {
+    if (seenNames.has(step.name)) {
+      throw new Error(
+        `Workflow "${workflow.name}": two steps are both named "${step.name}" once composition ` +
+          `prefixes are removed. Activities are registered by that name, so rename one.`,
+      );
+    }
+    seenNames.add(step.name);
+  }
   const planResult = planWorkflowBatches([...flattenedSteps], initialFields);
 
   const plan: WorkflowPlan = {

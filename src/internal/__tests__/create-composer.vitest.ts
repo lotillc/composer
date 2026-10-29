@@ -246,11 +246,13 @@ describe("per-workflow start-time pinning", () => {
     checkpoints: [{ name: "early", afterStep: "s" }],
   } as unknown as Workflow<any, any, any>;
   const mockExecuteWorkflowAndWait = vi.mocked(temporalClient.executeWorkflowAndWait);
+  const mockStartWorkflowWithUpdate = vi.mocked(temporalClient.startWorkflowWithUpdate);
 
   function overrideOfLastStart(): unknown {
     const calls = [
       ...mockExecuteWorkflow.mock.calls.map((c) => c[0]),
       ...mockExecuteWorkflowAndWait.mock.calls.map((c) => c[0]),
+      ...mockStartWorkflowWithUpdate.mock.calls.map((c) => c[0]),
     ];
     expect(calls).toHaveLength(1);
     return calls[0]?.versioningOverride;
@@ -261,6 +263,7 @@ describe("per-workflow start-time pinning", () => {
       undefined as unknown as Awaited<ReturnType<typeof temporalClient.executeWorkflow>>,
     );
     mockExecuteWorkflowAndWait.mockReset().mockResolvedValue({ bag: {} });
+    mockStartWorkflowWithUpdate.mockReset().mockResolvedValue({});
   });
 
   // A pin would be inherited by every continued run and override each boundary's routing.
@@ -299,7 +302,6 @@ describe("per-workflow start-time pinning", () => {
   });
 
   it("runAsyncWorkflow (awaitCheckpoint) starts an AUTO_UPGRADE workflow unpinned", async () => {
-    // The checkpoint update itself is not under test; the client mock makes it fail.
     await versioned.runAsyncWorkflow(upgradingWorkflow, {}, {
       awaitCheckpoint: "early",
     } as never);

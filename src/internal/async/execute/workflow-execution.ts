@@ -25,9 +25,9 @@ import type { UUIDV7 } from "../../types.js";
 import type { TemporalWorkflowResult } from "../build/workflow-factory.js";
 import { awaitCheckpointUpdate } from "../build/workflow-factory.js";
 import {
-  createTemporalClient,
   executeWorkflow,
   executeWorkflowAndWait,
+  startWorkflowWithUpdate,
   type TemporalClientConfig,
 } from "./temporal-client.js";
 
@@ -152,8 +152,14 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
     }
 
     if (options.awaitCheckpoint) {
-      // Start the workflow (don't wait for completion)
-      await executeWorkflow({
+      // Start the workflow and send the checkpoint Update in one request (no polling!).
+      // The Update arrives with the first workflow task, so its handler is in place before
+      // any batch runs: a separate Update could arrive after the run had already passed the
+      // checkpoint, or continued as new past it.
+      // Race the update against the configured checkpoint timeout so callers
+      // get a timely error instead of blocking indefinitely when the workflow
+      // never reaches the checkpoint (e.g. a step hangs or fails earlier).
+      const updatePromise = startWorkflowWithUpdate({
         workflowName: wf.name,
         workflowId: options.workflowId,
         input: workflowInput,
@@ -161,18 +167,8 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
         clientConfig,
         versioningOverride: options.versioningOverride,
         workflowIdConflictPolicy: options.workflowIdConflictPolicy,
-      });
-
-      // Use Temporal Update to wait for checkpoint (no polling!)
-      // The workflow's update handler blocks until the checkpoint is reached
-      const client = await createTemporalClient(clientConfig);
-      const typedHandle = client.workflow.getHandle(options.workflowId);
-
-      // Race the update against the configured checkpoint timeout so callers
-      // get a timely error instead of blocking indefinitely when the workflow
-      // never reaches the checkpoint (e.g. a step hangs or fails earlier).
-      const updatePromise = typedHandle.executeUpdate(awaitCheckpointUpdate, {
-        args: [{ checkpointName: options.awaitCheckpoint }],
+        update: awaitCheckpointUpdate,
+        updateArgs: [{ checkpointName: options.awaitCheckpoint }],
       });
 
       const partialBag = await new Promise<Record<string, unknown>>((resolve, reject) => {

@@ -608,16 +608,25 @@ describe("continuation format", () => {
     expect(continued.next.continuation?.completedSteps).toEqual(["b"]);
   });
 
-  it("resumes from a newer build's continuation, ignoring fields it does not know", async () => {
+  it("ignores fields it does not know in a continuation of its own version", async () => {
     await runUntilContinued(stagedPlan(), {
       initialData: { id: "1" },
-      continuation: { version: 2, stage: "second", bag: { x: "X" }, futureField: true } as never,
+      continuation: { version: 1, stage: "second", bag: { x: "X" }, futureField: true } as never,
     });
     expect(mocks.activityFunctions.b).toHaveBeenCalledWith(expect.anything(), { x: "X" });
-    expect(mocks.log.warn).toHaveBeenCalledWith(
-      "Resuming from a continuation written by a newer build",
-      { version: 2, supported: 1 },
+  });
+
+  it("fails the workflow task, not the workflow, on a newer format version", async () => {
+    const outcome = await createWorkflowFunction(stagedPlan())({
+      initialData: { id: "1" },
+      continuation: { version: 2, stage: "second", bag: { x: "X" } },
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
     );
+    expect(outcome).toBeInstanceOf(Error);
+    expect(outcome).not.toBeInstanceOf(ApplicationFailure);
+    expect(mocks.activityFunctions.b).not.toHaveBeenCalled();
   });
 
   it("carries an optional input field a step later provides, so it does not revert", async () => {
@@ -703,6 +712,31 @@ describe("carried state limits", () => {
       (err: unknown) => err,
     );
     expect((outcome as ApplicationFailure).type).toBe(CONTINUATION_TOO_LARGE_CODE);
+  });
+
+  it("measures bigint, Map and Set values instead of skipping the budget", async () => {
+    // A custom converter can carry these; JSON.stringify alone would throw on the bigint.
+    mocks.activityFunctions.a = activity({
+      x: { big: 10n ** 30n, map: new Map([["k", "a".repeat(800_000)]]), set: new Set(["b".repeat(800_000)]) },
+    });
+    const outcome = await createWorkflowFunction(stagedPlan())({ initialData: { id: "1" } }).catch(
+      (err: unknown) => err,
+    );
+    expect((outcome as ApplicationFailure).type).toBe(CONTINUATION_TOO_LARGE_CODE);
+  });
+
+  it("fails clearly when the carried state cannot be measured at all", async () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    mocks.activityFunctions.a = activity({ x: cyclic });
+    const outcome = await createWorkflowFunction(stagedPlan())({ initialData: { id: "1" } }).catch(
+      (err: unknown) => err,
+    );
+    expect((outcome as ApplicationFailure).type).toBe(CONTINUATION_TOO_LARGE_CODE);
+    expect((outcome as ApplicationFailure).details?.[0]).toMatchObject({
+      error: { data: { measurable: false } },
+    });
+    expect(mocks.continueAsNewOptions).toHaveLength(0);
   });
 
   it("warns when the carried state is large but within budget", async () => {

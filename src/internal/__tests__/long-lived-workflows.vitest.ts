@@ -375,6 +375,56 @@ describe("generateWorkflowPlan", () => {
     expect(plan.batches[1]?.signalWaits?.[0]?.maxPendingSignals).toBe(5);
   });
 
+  it("keeps composed waits that share a local name distinct in the plan", () => {
+    interface TwoBag {
+      requestId: string;
+      sentAt: string;
+      first: { approved: boolean };
+      second: { approved: boolean };
+    }
+    const sent = step<TwoBag>()({
+      name: "sent",
+      needs: ["requestId"],
+      provides: ["sentAt"],
+      run: async () => ({ sentAt: "t" }),
+    });
+    const outerWait = waitForSignal<TwoBag>()({
+      name: "await",
+      signal: approvalSignal,
+      needs: ["sentAt"],
+      provides: ["first"],
+    });
+    const innerWait = waitForSignal<TwoBag>()({
+      name: "await",
+      signal: approvalSignal,
+      needs: ["first"],
+      provides: ["second"],
+    });
+    const inner = createWorkflow<TwoBag>("inner").requires("first").build([innerWait]);
+    const outer = createWorkflow<TwoBag>("outer")
+      .requires("requestId")
+      .build([sent, outerWait, use(inner)]);
+
+    const names = generateWorkflowPlan(outer).batches.flatMap((b) =>
+      (b.signalWaits ?? []).map((w) => w.name),
+    );
+    expect(names).toEqual(["await", "inner.await"]);
+  });
+
+  it("rejects composed steps that share a bare name, instead of dropping one", () => {
+    const inner = createWorkflow<Bag>("inner").requires("requestId").build([sendRequest]);
+    const again = step<Bag>()({
+      name: "sendRequest",
+      needs: ["requestId"],
+      provides: ["scratch"],
+      run: async () => ({ scratch: "s" }),
+    });
+    const outer = createWorkflow<Bag>("outer").requires("requestId").build([again, use(inner)]);
+    expect(() => generateWorkflowPlan(outer)).toThrow(
+      'two steps are both named "sendRequest" once composition prefixes are removed',
+    );
+  });
+
   it("leaves the new plan fields out for a workflow that uses none of them", () => {
     const plan = generateWorkflowPlan(
       createWorkflow<Bag>("plain").requires("requestId").build([sendRequest]),
