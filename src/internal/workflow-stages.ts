@@ -29,6 +29,12 @@ export interface ResolvedStageBoundary {
   initialVersioningBehavior: StageInitialVersioningBehavior;
   /** Earlier names a resuming run may carry instead of `name`. */
   aliases?: string[];
+  /** For a loop boundary: the earlier stage the next run resumes after. */
+  resumeAt?: string;
+  /** For a loop boundary: the bag field that must be `true` for the loop to be taken. */
+  when?: string;
+  /** For a loop boundary: next-iteration fields, each from a field of this iteration. */
+  carry?: Record<string, string>;
 }
 
 /** Fields a workflow starts with: what the caller must pass plus configured values. */
@@ -71,7 +77,8 @@ export function resolveStageBoundaries(
           `which is not in the workflow`,
       );
     }
-    if (afterBatch === batches.length - 1) {
+    // A loop boundary may end the workflow's last batch: not taken, the run just finishes.
+    if (afterBatch === batches.length - 1 && boundary.resumeAt === undefined) {
       throw new Error(
         `${prefix}: stage "${boundary.name}" follows the last batch, so nothing would run ` +
           `after it. Remove the boundary or move it to an earlier step.`,
@@ -82,6 +89,9 @@ export function resolveStageBoundaries(
       afterBatch,
       initialVersioningBehavior: boundary.initialVersioningBehavior ?? "AUTO_UPGRADE",
       ...(boundary.aliases && boundary.aliases.length > 0 && { aliases: [...boundary.aliases] }),
+      ...(boundary.resumeAt !== undefined && { resumeAt: boundary.resumeAt }),
+      ...(boundary.when !== undefined && { when: boundary.when }),
+      ...(boundary.carry && Object.keys(boundary.carry).length > 0 && { carry: { ...boundary.carry } }),
     };
   });
 
@@ -126,6 +136,74 @@ export function resolveStageBoundaries(
         `${prefix}: checkpoint "${checkpoint.name}" comes after stage "${firstBoundary.name}". ` +
           `Checkpoints must be reached before the first continue-as-new.`,
       );
+    }
+  }
+
+  // A loop resumes after an earlier stage, and decides on fields that exist by the time it
+  // is reached: initial data, or what a step in or before its batch provides.
+  const byName = new Map(resolved.map((boundary) => [boundary.name, boundary]));
+  for (const boundary of resolved) {
+    if (boundary.resumeAt === undefined) continue;
+    const target = byName.get(boundary.resumeAt);
+    if (!target) {
+      throw new Error(
+        `${prefix}: stage "${boundary.name}" resumes at unknown stage "${boundary.resumeAt}". ` +
+          `Known stages: [${[...byName.keys()].join(", ")}]`,
+      );
+    }
+    if (target.afterBatch >= boundary.afterBatch) {
+      throw new Error(
+        `${prefix}: stage "${boundary.name}" resumes at stage "${boundary.resumeAt}", which ` +
+          `does not come before it. A loop resumes at an earlier stage.`,
+      );
+    }
+    if (boundary.when === undefined) {
+      throw new Error(
+        `${prefix}: stage "${boundary.name}" resumes at stage "${boundary.resumeAt}" but names ` +
+          `no when field to decide the loop on`,
+      );
+    }
+    const available = new Set<string>(initialFields);
+    batches.slice(0, boundary.afterBatch + 1).forEach((batch) => {
+      for (const step of batch) for (const field of step.provides) available.add(String(field));
+    });
+    const carry = boundary.carry ?? {};
+    const reads = [
+      ["when", boundary.when],
+      ...Object.entries(carry).map(([target, source]) => [`carry.${target}`, source]),
+    ] as const;
+    for (const [what, field] of reads) {
+      if (!available.has(field)) {
+        throw new Error(
+          `${prefix}: stage "${boundary.name}" reads ${what} from field "${field}", which ` +
+            `nothing before it provides. Available fields: [${[...available].join(", ")}]`,
+        );
+      }
+    }
+    // Each iteration decides on `when` anew, so a step in the loop must provide it, or a carry
+    // set it: a field fixed before the stage would loop forever. A carry target the loop
+    // provides is the mirror image, overwritten before anything reads it.
+    const bodyFields = new Set<string>();
+    batches.slice(target.afterBatch + 1, boundary.afterBatch + 1).forEach((batch) => {
+      for (const step of batch) for (const field of step.provides) bodyFields.add(String(field));
+    });
+    if (!bodyFields.has(boundary.when) && !Object.hasOwn(carry, boundary.when)) {
+      throw new Error(
+        `${prefix}: stage "${boundary.name}" decides on field "${boundary.when}", which no step ` +
+          `after stage "${target.name}" provides and no carry sets, so it could never change ` +
+          `between iterations`,
+      );
+    }
+    for (const field of Object.keys(carry)) {
+      if (field === "__proto__") {
+        throw new Error(`${prefix}: stage "${boundary.name}" cannot carry a field named "__proto__"`);
+      }
+      if (bodyFields.has(field)) {
+        throw new Error(
+          `${prefix}: stage "${boundary.name}" carries field "${field}", which a step after ` +
+            `stage "${target.name}" provides again; carry only fields from before that stage`,
+        );
+      }
     }
   }
 

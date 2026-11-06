@@ -448,6 +448,112 @@ describe("signal waits", () => {
     });
   });
 
+  // A deadline read from a record is an instant in the bag, not a duration fixed where the
+  // wait is defined.
+  describe("timeoutAt", () => {
+    const dueAt = "2026-11-20T00:00:00.000Z";
+
+    function dueAtPlan(wait: Partial<NonNullable<StepBatch["signalWaits"]>[number]> = {}) {
+      const plan = waitPlan({ timeoutAtField: "dueAt", ...wait });
+      plan.batches[0] = { steps: [step("a", ["id"], ["x", "dueAt"])] };
+      return plan;
+    }
+
+    beforeEach(() => {
+      mocks.activityFunctions.a = activity({ x: "X", dueAt });
+      mocks.nowMs = Date.parse("2026-11-18T00:00:00.000Z");
+    });
+
+    it("waits on a timer that ends at the instant the field holds", async () => {
+      mocks.onBlock = () => mocks.defaultSignalHandler!("approval", "late");
+      await createWorkflowFunction(dueAtPlan())({ initialData: { id: "1" } });
+      expect(mocks.conditionTimeouts).toEqual([2 * 86_400_000]);
+    });
+
+    it("takes epoch milliseconds as the instant too", async () => {
+      mocks.activityFunctions.a = activity({ x: "X", dueAt: Date.parse(dueAt) });
+      mocks.onBlock = () => mocks.defaultSignalHandler!("approval", "late");
+      await createWorkflowFunction(dueAtPlan())({ initialData: { id: "1" } });
+      expect(mocks.conditionTimeouts).toEqual([2 * 86_400_000]);
+    });
+
+    it("uses the timeout value once the instant passes with no signal", async () => {
+      const result = (await createWorkflowFunction(
+        dueAtPlan({ hasTimeoutValue: true, timeoutValue: "expired" }),
+      )({ initialData: { id: "1" } })) as TemporalWorkflowResult;
+      expect(result.bag.approval).toBe("expired");
+      expect(mocks.nowMs).toBe(Date.parse(dueAt));
+    });
+
+    it("ends at once, without a timer, when the instant has already passed", async () => {
+      mocks.nowMs = Date.parse("2026-11-21T00:00:00.000Z");
+      const result = (await createWorkflowFunction(
+        dueAtPlan({ hasTimeoutValue: true, timeoutValue: "expired" }),
+      )({ initialData: { id: "1" } })) as TemporalWorkflowResult;
+      expect(result.bag.approval).toBe("expired");
+      expect(mocks.conditionTimeouts).toEqual([]);
+    });
+
+    it("still prefers a signal that arrived before an instant already past", async () => {
+      mocks.nowMs = Date.parse("2026-11-21T00:00:00.000Z");
+      mocks.activityFunctions.a = vi.fn(async () => {
+        mocks.defaultSignalHandler!("approval", "early");
+        return { x: "X", dueAt };
+      });
+      const result = (await createWorkflowFunction(
+        dueAtPlan({ hasTimeoutValue: true, timeoutValue: "expired" }),
+      )({ initialData: { id: "1" } })) as TemporalWorkflowResult;
+      expect(result.bag.approval).toBe("early");
+    });
+
+    it("shows the instant in the run's details while it waits", async () => {
+      mocks.onBlock = () => mocks.defaultSignalHandler!("approval", "late");
+      await createWorkflowFunction(dueAtPlan())({ initialData: { id: "1" } });
+      expect(mocks.details).toContain(
+        `Stage: (first stage)\nWaiting for signal: "approval" until ${dueAt}`,
+      );
+    });
+
+    it("fails the node with the timeout code once the instant passes", async () => {
+      const outcome = await createWorkflowFunction(dueAtPlan())({ initialData: { id: "1" } }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      const detail = (outcome as ApplicationFailure).details?.[0] as {
+        error: TemporalWorkflowResult["error"];
+      };
+      expect(detail.error?.errors?.[0]).toMatchObject({
+        stepName: "awaitApproval",
+        code: SIGNAL_WAIT_TIMEOUT_CODE,
+      });
+    });
+
+    it.each([
+      ["missing", {}],
+      ["not an instant", { dueAt: "soon" }],
+      ["a date-time without an offset", { dueAt: "2026-11-20T00:00:00" }],
+      ["a date that is not ISO 8601", { dueAt: "Nov 20 2026" }],
+      ["a non-finite number", { dueAt: Number.POSITIVE_INFINITY }],
+      ["an epoch outside the Date range", { dueAt: 1e18 }],
+      ["an epoch in microseconds", { dueAt: Date.parse("2026-11-20T00:00:00Z") * 1000 }],
+    ])("fails the node, not the task, when the field is %s", async (_label, output) => {
+      mocks.activityFunctions.a = activity({ x: "X", ...output });
+      const outcome = await createWorkflowFunction(dueAtPlan())({ initialData: { id: "1" } }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(outcome).toBeInstanceOf(ApplicationFailure);
+      const detail = (outcome as ApplicationFailure).details?.[0] as {
+        error: TemporalWorkflowResult["error"];
+      };
+      expect(detail.error?.errors?.[0]).toMatchObject({
+        stepName: "awaitApproval",
+        code: "COMPOSER_INVALID_SIGNAL_WAIT",
+      });
+      expect(mocks.conditionTimeouts).toEqual([]);
+    });
+  });
+
   it("routes a wait timeout to the error handler", async () => {
     mocks.activityFunctions["waiting__errorHandler"] = vi.fn(async () => ({
       handled: true,
@@ -927,5 +1033,152 @@ describe("current details", () => {
       stage: "gone",
       knownStages: "second, third",
     });
+  });
+});
+
+// A loop boundary resumes after an earlier stage while its field reads true, dropping what
+// the body produced and carrying what the next iteration should start from.
+describe("loop boundaries", () => {
+  /** a -> [boundary "second"] -> b -> c -> [loop "repeat" back to "second" while c.again] */
+  function loopPlan(overrides: Partial<WorkflowPlan> = {}): WorkflowPlan {
+    return {
+      name: "looping",
+      batches: [
+        { steps: [step("a", ["id"], ["x"])] },
+        { steps: [step("b", ["x"], ["y"])] },
+        { steps: [step("c", ["y"], ["z", "again"])] },
+      ],
+      stageBoundaries: [
+        { name: "second", afterBatch: 0, initialVersioningBehavior: "AUTO_UPGRADE" },
+        {
+          name: "repeat",
+          afterBatch: 2,
+          initialVersioningBehavior: "AUTO_UPGRADE",
+          resumeAt: "second",
+          when: "again",
+          carry: { id: "y" },
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    mocks.activityFunctions.c = activity({ z: "Z", again: true });
+  });
+
+  it("continues as new at the earlier stage while the field is true", async () => {
+    const continued = await runUntilContinued(loopPlan(), {
+      initialData: { id: "1" },
+      continuation: continuation({ stage: "second", bag: { x: "X" }, completedSteps: ["a"] }),
+    });
+
+    expect(mocks.activityFunctions.a).not.toHaveBeenCalled();
+    expect(mocks.activityFunctions.b).toHaveBeenCalledTimes(1);
+    expect(mocks.activityFunctions.c).toHaveBeenCalledTimes(1);
+    expect(continued.next.continuation).toEqual({
+      version: 1,
+      stage: "second",
+      // x came before the loop body and stays; y, z and again are the body's and go;
+      // id is the next iteration's, carried from y.
+      bag: { x: "X", id: "Y" },
+      completedSteps: ["a"],
+      signals: {},
+    });
+  });
+
+  it("re-runs the body on the next iteration with the carried fields", async () => {
+    mocks.activityFunctions.c = activity({ z: "Z", again: false });
+    const result = (await createWorkflowFunction(loopPlan())({
+      initialData: { id: "1" },
+      continuation: continuation({ stage: "second", bag: { x: "X", id: "Y" }, completedSteps: ["a"] }),
+    })) as TemporalWorkflowResult;
+
+    expect(mocks.activityFunctions.a).not.toHaveBeenCalled();
+    expect(mocks.activityFunctions.b).toHaveBeenCalledWith(expect.anything(), { x: "X" });
+    expect(result.error).toBeUndefined();
+    expect(result.bag).toMatchObject({ id: "Y", x: "X", y: "Y", z: "Z", again: false });
+  });
+
+  it.each([
+    ["false", false],
+    ["missing", undefined],
+    ["a truthy non-boolean", "yes"],
+  ])("goes on past the boundary, finishing the run, when the field is %s", async (_label, again) => {
+    mocks.activityFunctions.c = activity({ z: "Z", ...(again !== undefined && { again }) });
+    const result = (await createWorkflowFunction(loopPlan())({
+      initialData: { id: "1" },
+      continuation: continuation({ stage: "second", bag: { x: "X" }, completedSteps: ["a"] }),
+    })) as TemporalWorkflowResult;
+
+    expect(result.error).toBeUndefined();
+    expect(result.bag.z).toBe("Z");
+    expect(mocks.continueAsNewOptions).toHaveLength(0);
+  });
+
+  it("carries nothing for a field whose source is not in the bag, with a warning", async () => {
+    const continued = await runUntilContinued(
+      loopPlan({
+        stageBoundaries: [
+          { name: "second", afterBatch: 0 },
+          { name: "repeat", afterBatch: 2, resumeAt: "second", when: "again", carry: { id: "nope" } },
+        ],
+      }),
+      { initialData: { id: "1" }, continuation: continuation({ bag: { x: "X" }, completedSteps: ["a"] }) },
+    );
+    expect(continued.next.continuation?.bag).toEqual({ x: "X" });
+    expect(mocks.log.warn).toHaveBeenCalledWith(
+      "Loop carries nothing for a field: its source is not in the bag",
+      expect.objectContaining({ field: "id", source: "nope" }),
+    );
+  });
+
+  it("keeps unconsumed signals across the loop", async () => {
+    const plan = loopPlan();
+    plan.batches.push(waitBatch("awaitApproval", "approval", "approval"));
+    plan.stageBoundaries![1] = { ...plan.stageBoundaries![1]!, afterBatch: 2 };
+    mocks.activityFunctions.b = vi.fn(async () => {
+      mocks.defaultSignalHandler!("approval", "early");
+      return { y: "Y" };
+    });
+    const continued = await runUntilContinued(plan, {
+      initialData: { id: "1" },
+      continuation: continuation({ bag: { x: "X" }, completedSteps: ["a"] }),
+    });
+    expect(continued.next.continuation?.signals).toEqual({ approval: wrapped("early") });
+  });
+
+  it("fails the task, not the workflow, on a hand-built plan whose loop names no when field", async () => {
+    const outcome = await createWorkflowFunction(
+      loopPlan({
+        stageBoundaries: [
+          { name: "second", afterBatch: 0 },
+          { name: "repeat", afterBatch: 2, resumeAt: "second" },
+        ],
+      }),
+    )({ initialData: { id: "1" }, continuation: continuation({ bag: { x: "X" }, completedSteps: ["a"] }) }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(outcome).toBeInstanceOf(Error);
+    expect(outcome).not.toBeInstanceOf(ApplicationFailure);
+    expect((outcome as Error).message).toContain("names no when field");
+  });
+
+  it("fails the task, not the workflow, on a hand-built plan that resumes at an unknown stage", async () => {
+    const outcome = await createWorkflowFunction(
+      loopPlan({
+        stageBoundaries: [
+          { name: "second", afterBatch: 0 },
+          { name: "repeat", afterBatch: 2, resumeAt: "nowhere", when: "again" },
+        ],
+      }),
+    )({ initialData: { id: "1" }, continuation: continuation({ bag: { x: "X" }, completedSteps: ["a"] }) }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(outcome).toBeInstanceOf(Error);
+    expect(outcome).not.toBeInstanceOf(ApplicationFailure);
+    expect((outcome as Error).message).toContain('unknown stage "nowhere"');
   });
 });

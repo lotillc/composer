@@ -63,6 +63,8 @@ export interface SignalWaitMetadata {
    */
   signal: WorkflowSignal<unknown>;
   timeout?: DurationString;
+  /** Bag field holding the instant the wait ends at; set instead of `timeout`. */
+  timeoutAtField?: string;
   maxPendingSignals?: number;
   timeoutValue?: unknown;
   /** Distinguishes an explicit `timeoutValue: undefined` from no fallback at all. */
@@ -162,6 +164,11 @@ function sameAsJsonCopy(original: unknown, copy: unknown): boolean {
  * given (it must be plain JSON data); otherwise the node fails with `SIGNAL_WAIT_TIMEOUT_CODE`, which the workflow's
  * `onError` handler sees like any step failure. With no `timeout`, the wait has no limit.
  *
+ * `timeoutAt` names a bag field instead: the wait ends at the instant that field holds (an
+ * ISO 8601 string or epoch milliseconds) when the wait begins, so a deadline a step read
+ * from a record bounds it. An instant already past ends the wait at once. The field is
+ * added to `needs`, so the step that provides it runs first.
+ *
  * `needs` only orders the wait after the steps that produce those fields.
  *
  * Only signal names a wait declares are accepted; any other signal is dropped with a
@@ -193,6 +200,7 @@ export function waitForSignal<Bag extends Record<string, any>>() {
     needs?: Needs;
     provides: readonly [Field];
     timeout?: DurationString;
+    timeoutAt?: keyof Bag & string;
     timeoutValue?: NoInfer<Bag[Field]>;
     maxPendingSignals?: number;
   }): SignalWait<Bag, Needs, Field, Name> => {
@@ -222,6 +230,21 @@ export function waitForSignal<Bag extends Record<string, any>>() {
         );
       }
     }
+    if (definition.timeoutAt !== undefined) {
+      if (definition.timeout !== undefined) {
+        throw new Error(
+          `waitForSignal "${definition.name}": set timeout or timeoutAt, not both`,
+        );
+      }
+      if (typeof definition.timeoutAt !== "string" || definition.timeoutAt.length === 0) {
+        throw new Error(`waitForSignal "${definition.name}": timeoutAt must name a bag field`);
+      }
+      if (definition.timeoutAt === definition.provides[0]) {
+        throw new Error(
+          `waitForSignal "${definition.name}": timeoutAt cannot be the field the wait provides`,
+        );
+      }
+    }
     // `undefined` is allowed: a missing value is what an omitted JSON key reads back as.
     if (definition.timeoutValue !== undefined && !isJsonSafe(definition.timeoutValue)) {
       throw new Error(
@@ -238,9 +261,15 @@ export function waitForSignal<Bag extends Record<string, any>>() {
       );
     }
 
+    // The deadline's field is a dependency like any other: whoever provides it runs first.
+    const needs: (keyof Bag)[] = [...(definition.needs ?? [])];
+    if (definition.timeoutAt !== undefined && !needs.includes(definition.timeoutAt)) {
+      needs.push(definition.timeoutAt);
+    }
+
     return {
       name: definition.name,
-      needs: (definition.needs ?? []) as unknown as Needs,
+      needs: needs as unknown as Needs,
       provides: definition.provides,
       run: async () => {
         throw new Error(
@@ -252,6 +281,7 @@ export function waitForSignal<Bag extends Record<string, any>>() {
         signalName: definition.signal.name,
         signal: definition.signal as WorkflowSignal<unknown>,
         ...(definition.timeout !== undefined && { timeout: definition.timeout }),
+        ...(definition.timeoutAt !== undefined && { timeoutAtField: definition.timeoutAt }),
         ...(maxPending !== undefined && { maxPendingSignals: maxPending }),
         ...("timeoutValue" in definition && { timeoutValue: definition.timeoutValue }),
         hasTimeoutValue: "timeoutValue" in definition,

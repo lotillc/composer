@@ -147,6 +147,7 @@ export function generateWorkflowPlan(workflow: Workflow<any, any, any, any, any>
             signalName: wait.signalName,
             provides: String(step.provides[0]),
             ...(wait.timeout !== undefined && { timeout: wait.timeout }),
+            ...(wait.timeoutAtField !== undefined && { timeoutAtField: wait.timeoutAtField }),
             ...(wait.hasTimeoutValue && { timeoutValue: wait.timeoutValue }),
             hasTimeoutValue: wait.hasTimeoutValue,
             ...(wait.maxPendingSignals !== undefined && {

@@ -53,6 +53,7 @@ export {
   step,
   syncSchedules,
   type TemporalConfig,
+  type WorkflowFailureErrorTypes,
   use,
   waitForSignal,
   type Workflow,

@@ -247,12 +247,29 @@ export interface StageBoundary {
    * runs waiting to resume at it.
    */
   aliases?: string[];
+  /**
+   * Makes this a loop boundary: the next run resumes after the earlier stage named here
+   * instead of after this one, re-running the steps between. Taken only while the bag
+   * field `when` is `true`; otherwise the run goes on past the boundary.
+   */
+  resumeAt?: string;
+  /** Bag field that must be `true` for the loop to be taken. Required with `resumeAt`. */
+  when?: string;
+  /**
+   * Bag fields set for the next iteration, each from a field of this one: the next run's
+   * `stepIndex` from this run's `nextStepIndex`, say. Lets an iteration update a field
+   * the loop body needs, which a step cannot provide without an ordering cycle.
+   */
+  carry?: Record<string, string>;
 }
 
 /**
  * Options for declaring a stage boundary on a workflow.
  */
-export interface StageBoundaryOptions<S extends Step<any, any, any, any, any>> {
+export interface StageBoundaryOptions<
+  S extends Step<any, any, any, any, any>,
+  Bag extends Record<string, any> = Record<string, any>,
+> {
   /** Step reference whose batch ends the stage. */
   afterStep: S;
   /** Defaults to `AUTO_UPGRADE`. */
@@ -263,6 +280,23 @@ export interface StageBoundaryOptions<S extends Step<any, any, any, any, any>> {
    * removing one whose in-flight runs should continue from here instead.
    */
   aliases?: readonly string[];
+  /**
+   * The name of an earlier stage to resume after instead of this one, which makes this a
+   * loop boundary. The steps between run again in the next iteration; what they produced
+   * this time is dropped from the bag, and what came before them is kept. Requires `when`.
+   */
+  resumeAt?: string;
+  /**
+   * Bag field that must be `true` for the loop to be taken. Any other value lets the run
+   * go on past the boundary, in this same run.
+   */
+  when?: keyof Bag & string;
+  /**
+   * Bag fields set for the next iteration, each from a field of this one. A target may be
+   * an initial field, which steps cannot provide, so an iteration can advance a counter
+   * or an index the loop body reads.
+   */
+  carry?: Partial<Record<keyof Bag & string, keyof Bag & string>>;
 }
 
 /**
@@ -507,15 +541,25 @@ export type WorkflowBuilder<
    *
    * Checkpoints must come no later than the first boundary. Ignored in sync mode.
    *
+   * With `resumeAt`, the boundary is a loop: while the bag field `when` is `true`, the
+   * next run resumes after that earlier stage and runs the steps between again, with
+   * `carry` setting fields for the next iteration. Otherwise the run goes on past it.
+   *
    * @example
    * ```typescript
    * .continueAsNew("awaiting-approval", { afterStep: sendRequestStep })
    * .continueAsNew("verifying", { afterStep: awaitApproval })
+   * .continueAsNew("next-step", {
+   *   afterStep: decideNext,
+   *   resumeAt: "awaiting-approval",
+   *   when: "escalate",
+   *   carry: { stepIndex: "nextStepIndex" },
+   * })
    * ```
    */
   continueAsNew<S extends Steps[number]>(
     name: string,
-    options: StageBoundaryOptions<S>,
+    options: StageBoundaryOptions<S, Bag>,
   ): WorkflowBuilder<Bag, RequiredInitial, ConfiguredValues, Steps, CheckpointNames>;
 
   /**
@@ -781,7 +825,7 @@ function workflow<
 
       continueAsNew<S extends Steps[number]>(
         stageName: string,
-        options: StageBoundaryOptions<S>,
+        options: StageBoundaryOptions<S, Bag>,
       ): WorkflowBuilder<Bag, RequiredInitial, ConfiguredValues, Steps, CurrentCheckpointNames> {
         assertValidName("Stage", stageName);
         for (const alias of options.aliases ?? []) assertValidName("Stage", alias);
@@ -789,6 +833,34 @@ function workflow<
           throw new Error(
             `Duplicate stage name "${stageName}". Stage names must be unique within a workflow.`,
           );
+        }
+        const carry: Record<string, string> = {};
+        const carries = Object.entries(options.carry ?? {});
+        if (options.resumeAt !== undefined || options.when !== undefined || carries.length > 0) {
+          if (options.resumeAt === undefined || options.when === undefined) {
+            throw new Error(
+              `Stage "${stageName}": a loop boundary needs both resumeAt (the stage to ` +
+                `resume after) and when (the bag field that keeps it looping).`,
+            );
+          }
+          if (options.resumeAt === stageName) {
+            throw new Error(`Stage "${stageName}": resumeAt cannot name the stage itself.`);
+          }
+          if (typeof options.when !== "string" || options.when.length === 0) {
+            throw new Error(`Stage "${stageName}": when must name a bag field.`);
+          }
+          for (const [target, source] of carries) {
+            if (typeof source !== "string" || source.length === 0 || target.length === 0) {
+              throw new Error(
+                `Stage "${stageName}": carry maps bag field names to bag field names.`,
+              );
+            }
+            // Assigned below, it would set the prototype and vanish from the boundary.
+            if (target === "__proto__") {
+              throw new Error(`Stage "${stageName}": carry cannot name "__proto__".`);
+            }
+            carry[target] = source;
+          }
         }
 
         const stepName = options.afterStep.name;
@@ -808,6 +880,9 @@ function workflow<
             initialVersioningBehavior: options.initialVersioningBehavior,
           }),
           ...(options.aliases && options.aliases.length > 0 && { aliases: [...options.aliases] }),
+          ...(options.resumeAt !== undefined && { resumeAt: options.resumeAt }),
+          ...(options.when !== undefined && { when: options.when }),
+          ...(Object.keys(carry).length > 0 && { carry }),
         };
         const newWf = { ...currentWf, stageBoundaries: [...currentBoundaries, boundary] };
         // Fail where the workflow is defined, not when a worker first plans it.
@@ -1477,6 +1552,16 @@ export async function runSyncWorkflow<
     InferWorkflowResult<Bag, Steps, RequiredInitialData, Extract<keyof ConfiguredValues, keyof Bag>>
   >
 > {
+  // A loop re-runs its body through continue-as-new, which only a Temporal run has. Running
+  // the body once would silently be another workflow, so refuse, as a wait node does.
+  const loop = wf.stageBoundaries?.find((boundary) => boundary.resumeAt !== undefined);
+  if (loop) {
+    throw new Error(
+      `Workflow "${wf.name}" has a loop stage boundary ("${loop.name}"), which only Temporal ` +
+        `(runAsyncWorkflow or startAsyncWorkflow) can run.`,
+    );
+  }
+
   // Resolve defaults for optional parameters
   const log = logger ?? defaultLogger;
   const deepFreeze_ = enableDeepFreeze ?? false;

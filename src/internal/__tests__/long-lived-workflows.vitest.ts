@@ -62,6 +62,73 @@ describe("waitForSignal", () => {
     ).toThrow("exactly one field");
   });
 
+  describe("timeoutAt", () => {
+    it("rejects timeout and timeoutAt together", () => {
+      expect(() =>
+        waitForSignal<Bag>()({
+          name: "w",
+          signal: approvalSignal,
+          provides: ["approval"],
+          timeout: "1 day",
+          timeoutAt: "sentAt",
+        }),
+      ).toThrow("set timeout or timeoutAt, not both");
+    });
+
+    it("rejects a timeoutAt that names the field the wait provides", () => {
+      expect(() =>
+        waitForSignal<Bag>()({
+          name: "w",
+          signal: approvalSignal,
+          provides: ["approval"],
+          timeoutAt: "approval",
+        }),
+      ).toThrow("cannot be the field the wait provides");
+    });
+
+    it("rejects an empty timeoutAt", () => {
+      expect(() =>
+        waitForSignal<Bag>()({
+          name: "w",
+          signal: approvalSignal,
+          provides: ["approval"],
+          timeoutAt: "" as never,
+        }),
+      ).toThrow("timeoutAt must name a bag field");
+    });
+
+    it("adds the field to needs, so its provider runs before the wait", () => {
+      const wait = waitForSignal<Bag>()({
+        name: "awaitApproval",
+        signal: approvalSignal,
+        provides: ["approval"],
+        timeoutAt: "sentAt",
+      });
+      expect(wait.needs).toEqual(["sentAt"]);
+      const plan = generateWorkflowPlan(
+        createWorkflow<Bag>("due").requires("requestId").build([wait, sendRequest, verify]),
+      );
+      expect(plan.batches.map((b) => [...b.steps.map((s) => s.name), ...(b.signalWaits ?? []).map((w) => w.name)])).toEqual([
+        ["sendRequest"],
+        ["awaitApproval"],
+        ["verify"],
+      ]);
+      expect(plan.batches[1]?.signalWaits?.[0]).toMatchObject({ timeoutAtField: "sentAt" });
+      expect(plan.batches[1]?.signalWaits?.[0]).not.toHaveProperty("timeout");
+    });
+
+    it("lists the field once when needs already names it", () => {
+      const wait = waitForSignal<Bag>()({
+        name: "awaitApproval",
+        signal: approvalSignal,
+        needs: ["sentAt"],
+        provides: ["approval"],
+        timeoutAt: "sentAt",
+      });
+      expect(wait.needs).toEqual(["sentAt"]);
+    });
+  });
+
   it.each([
     ["a Date", new Date(0)],
     ["a Map", new Map()],
@@ -503,6 +570,139 @@ describe("builder", () => {
     );
   });
 
+  describe("loop boundaries", () => {
+    const looping = () =>
+      baseWorkflow()
+        .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+        .continueAsNew("again", {
+          afterStep: verify,
+          resumeAt: "awaiting-approval",
+          when: "verified",
+          carry: { requestId: "sentAt" },
+        });
+
+    it("records a loop boundary, which may follow the last batch", () => {
+      expect(looping().stageBoundaries?.[1]).toEqual({
+        name: "again",
+        afterStep: "verify",
+        resumeAt: "awaiting-approval",
+        when: "verified",
+        carry: { requestId: "sentAt" },
+      });
+    });
+
+    it("threads the loop into the plan", () => {
+      expect(generateWorkflowPlan(looping()).stageBoundaries?.[1]).toEqual({
+        name: "again",
+        afterBatch: 2,
+        initialVersioningBehavior: "AUTO_UPGRADE",
+        resumeAt: "awaiting-approval",
+        when: "verified",
+        carry: { requestId: "sentAt" },
+      });
+    });
+
+    it("needs both resumeAt and when", () => {
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", { afterStep: verify, resumeAt: "awaiting-approval" }),
+      ).toThrow("needs both resumeAt");
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", { afterStep: verify, when: "verified" }),
+      ).toThrow("needs both resumeAt");
+    });
+
+    it("rejects a loop that resumes at itself or at an unknown stage", () => {
+      expect(() =>
+        baseWorkflow().continueAsNew("again", { afterStep: verify, resumeAt: "again", when: "verified" }),
+      ).toThrow("cannot name the stage itself");
+      // The builder checks each boundary as it is added, so a later stage is unknown then.
+      expect(() =>
+        baseWorkflow().continueAsNew("again", { afterStep: verify, resumeAt: "nowhere", when: "verified" }),
+      ).toThrow('resumes at unknown stage "nowhere"');
+    });
+
+    it("rejects a loop that resumes at a stage that does not come before it", () => {
+      const wf = {
+        ...baseWorkflow(),
+        stageBoundaries: [
+          { name: "first", afterStep: "sendRequest", resumeAt: "later", when: "sentAt" },
+          { name: "later", afterStep: "awaitApproval" },
+        ],
+      };
+      expect(() => generateWorkflowPlan(wf)).toThrow("does not come before it");
+    });
+
+    it("rejects a loop whose field, or a carried source, nothing before it provides", () => {
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", { afterStep: awaitApproval, resumeAt: "awaiting-approval", when: "verified" }),
+      ).toThrow('reads when from field "verified"');
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", {
+            afterStep: verify,
+            resumeAt: "awaiting-approval",
+            when: "verified",
+            carry: { requestId: "nope" as never },
+          }),
+      ).toThrow('reads carry.requestId from field "nope"');
+    });
+
+    it("rejects a loop whose field nothing in the loop provides or carries", () => {
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", { afterStep: verify, resumeAt: "awaiting-approval", when: "sentAt" }),
+      ).toThrow('decides on field "sentAt"');
+      // Carried, the field can change between iterations.
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", {
+            afterStep: verify,
+            resumeAt: "awaiting-approval",
+            when: "requestId",
+            carry: { requestId: "sentAt" },
+          }),
+      ).not.toThrow();
+    });
+
+    it("rejects a carry of a field the loop provides again, or named __proto__", () => {
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", {
+            afterStep: verify,
+            resumeAt: "awaiting-approval",
+            when: "verified",
+            carry: { approval: "sentAt" },
+          }),
+      ).toThrow('carries field "approval"');
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", {
+            afterStep: verify,
+            resumeAt: "awaiting-approval",
+            when: "verified",
+            carry: { ["__proto__"]: "sentAt" } as never,
+          }),
+      ).toThrow('cannot name "__proto__"');
+    });
+
+    it("still rejects an ordinary boundary after the last batch", () => {
+      expect(() => baseWorkflow().continueAsNew("end", { afterStep: verify })).toThrow(
+        "follows the last batch",
+      );
+    });
+  });
+
   it("rejects a duplicate stage name", () => {
     expect(() =>
       baseWorkflow()
@@ -817,6 +1017,15 @@ describe("sync execution", () => {
     });
     expect(result.error).toBeUndefined();
     expect(result.bag.verified).toBe(true);
+  });
+
+  it("refuses a workflow with a loop boundary", async () => {
+    const looping = baseWorkflow()
+      .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+      .continueAsNew("again", { afterStep: verify, resumeAt: "awaiting-approval", when: "verified" });
+    await expect(testComposer.runSyncWorkflow(looping, { requestId: "r" })).rejects.toThrow(
+      'loop stage boundary ("again")',
+    );
   });
 
   it("fails a signal wait with an error naming async execution", async () => {

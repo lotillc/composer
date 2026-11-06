@@ -28,7 +28,10 @@ import { dirname, resolve } from "node:path";
 import type { DataConverter } from "@temporalio/common";
 import { VersioningBehavior } from "@temporalio/common";
 import { NativeConnection, Worker, type WorkerOptions } from "@temporalio/worker";
-import type { ComposerWorkerInterceptors } from "../../context-provider.js";
+import type {
+  ComposerWorkerInterceptors,
+  WorkflowFailureErrorTypes,
+} from "../../context-provider.js";
 import type { Workflow } from "../../dag-sync-workflow.js";
 import { defaultLogger } from "../../defaults.js";
 import { errorForLog } from "../../error-for-log.js";
@@ -155,6 +158,12 @@ export interface WorkflowWorkerConfig {
    * Interceptors forwarded to `Worker.create`. Only `workflowModules` applies to this worker.
    */
   interceptors?: ComposerWorkerInterceptors;
+
+  /**
+   * Error types that fail a workflow execution instead of its workflow task. See
+   * `TemporalConfig.workflowFailureErrorTypes`.
+   */
+  workflowFailureErrorTypes?: WorkflowFailureErrorTypes;
 }
 
 /**
@@ -235,6 +244,9 @@ export async function createWorkflowWorkers(
         ...(config.dataConverter ? { dataConverter: config.dataConverter } : {}),
         ...(workflowInterceptorModules
           ? { interceptors: { workflowModules: workflowInterceptorModules } }
+          : {}),
+        ...(config.workflowFailureErrorTypes
+          ? { workflowFailureErrorTypes: config.workflowFailureErrorTypes }
           : {}),
         // Enable Build ID versioning for safe rainbow deploys when a git hash is available.
         // PINNED ensures workflows started on a specific version continue using that version.

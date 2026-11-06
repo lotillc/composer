@@ -391,6 +391,7 @@ export function createComposer<TContext>(
         dataConverter: temporalConfig.dataConverter,
         interceptors: temporalConfig.interceptors,
         continuationBudgetBytes: temporalConfig.continuationBudgetBytes,
+        workflowFailureErrorTypes: temporalConfig.workflowFailureErrorTypes,
         ...config,
         logger: resolvedLogger,
       });
@@ -401,6 +402,7 @@ export function createComposer<TContext>(
         ...options,
         dataConverter: temporalConfig.dataConverter,
         interceptors: temporalConfig.interceptors,
+        workflowFailureErrorTypes: temporalConfig.workflowFailureErrorTypes,
         continuationBudgetBytes: temporalConfig.continuationBudgetBytes,
       });
     },

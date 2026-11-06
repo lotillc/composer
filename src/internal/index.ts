@@ -26,6 +26,7 @@ export type {
   StepContextProvider,
   SyncComposer,
   TemporalConfig,
+  WorkflowFailureErrorTypes,
 } from "./context-provider.js";
 export { createComposer } from "./create-composer.js";
 export {
