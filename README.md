@@ -346,7 +346,7 @@ export const escalate = createWorkflow<EscalationBag>("escalate")
   .continueAsNew("next-step", {
     afterStep: recordOutcome,
     resumeAt: "stepping", // the earlier stage the next run resumes after
-    when: "hasNextStep", // taken only while this field is exactly `true`
+    when: "hasNextStep", // a boolean field; taken only while it is exactly `true`
     carry: { stepIndex: "nextStepIndex" }, // next run's field, from this run's field
   });
 ```

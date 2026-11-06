@@ -287,10 +287,10 @@ export interface StageBoundaryOptions<
    */
   resumeAt?: string;
   /**
-   * Bag field that must be `true` for the loop to be taken. Any other value lets the run
-   * go on past the boundary, in this same run.
+   * Boolean bag field that must be `true` for the loop to be taken. Any other value lets
+   * the run go on past the boundary, in this same run.
    */
-  when?: keyof Bag & string;
+  when?: BooleanField<Bag>;
   /**
    * Bag fields set for the next iteration, each from a field of this one. A target may be
    * an initial field, which steps cannot provide, so an iteration can advance a counter
@@ -298,6 +298,15 @@ export interface StageBoundaryOptions<
    */
   carry?: { [Target in keyof Bag & string]?: FieldsAssignableTo<Bag, Bag[Target]> };
 }
+
+/** The bag fields that hold a boolean, which a loop can decide on. */
+export type BooleanField<Bag> = {
+  [K in keyof Bag & string]: [Bag[K]] extends [boolean]
+    ? K
+    : boolean extends Bag[K]
+      ? K
+      : never;
+}[keyof Bag & string];
 
 /** The bag fields whose value a field of type `Value` could take. */
 export type FieldsAssignableTo<Bag, Value> = {

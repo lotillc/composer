@@ -56,9 +56,20 @@ export const DEFAULT_MAX_PENDING_SIGNALS = 100;
  * Runtime metadata for a signal wait node.
  */
 /** The bag fields that can hold an instant: a string (ISO 8601) or a number (epoch milliseconds). */
+// A field that can only be null or undefined has no instant to hold: `never` is checked first,
+// since a conditional on it would otherwise read as true.
 export type InstantField<Bag> = {
-  [K in keyof Bag & string]: NonNullable<Bag[K]> extends string | number ? K : never;
+  [K in keyof Bag & string]: [NonNullable<Bag[K]>] extends [never]
+    ? never
+    : NonNullable<Bag[K]> extends string | number
+      ? K
+      : never;
 }[keyof Bag & string];
+
+/** A wait's needs with its deadline field, when it has one; a wait without keeps its own. */
+export type WaitNeeds<Needs extends readonly PropertyKey[], TimeoutAt> = [TimeoutAt] extends [never]
+  ? Needs
+  : readonly [...Needs, TimeoutAt];
 
 export interface SignalWaitMetadata {
   signalName: string;
@@ -211,7 +222,7 @@ export function waitForSignal<Bag extends Record<string, any>>() {
     maxPendingSignals?: number;
     // The deadline's field is a dependency like any other, so it is typed as one: a workflow
     // that neither requires nor provides it is refused where it is defined.
-  }): SignalWait<Bag, readonly [...Needs, TimeoutAt], Field, Name> => {
+  }): SignalWait<Bag, WaitNeeds<Needs, TimeoutAt>, Field, Name> => {
     assertValidName("SignalWait", definition.name);
     if (typeof definition.signal?.name !== "string") {
       throw new Error(
@@ -277,7 +288,7 @@ export function waitForSignal<Bag extends Record<string, any>>() {
 
     return {
       name: definition.name,
-      needs: needs as unknown as readonly [...Needs, TimeoutAt],
+      needs: needs as unknown as WaitNeeds<Needs, TimeoutAt>,
       provides: definition.provides,
       run: async () => {
         throw new Error(

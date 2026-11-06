@@ -659,7 +659,11 @@ describe("builder", () => {
       expect(() =>
         baseWorkflow()
           .continueAsNew("awaiting-approval", { afterStep: sendRequest })
-          .continueAsNew("again", { afterStep: verify, resumeAt: "awaiting-approval", when: "sentAt" }),
+          .continueAsNew("again", {
+            afterStep: verify,
+            resumeAt: "awaiting-approval",
+            when: "sentAt" as never,
+          }),
       ).toThrow('decides on field "sentAt"');
       // Carried, the field can change between iterations.
       expect(() =>
@@ -668,7 +672,7 @@ describe("builder", () => {
           .continueAsNew("again", {
             afterStep: verify,
             resumeAt: "awaiting-approval",
-            when: "requestId",
+            when: "requestId" as never,
             carry: { requestId: "sentAt" },
           }),
       ).not.toThrow();
@@ -693,6 +697,17 @@ describe("builder", () => {
         timeoutAt: "sentAt",
       });
       expectTypeOf(dueWait.needs).toEqualTypeOf<readonly ["sentAt"]>();
+      // A wait without a deadline field keeps its own needs, with nothing appended.
+      expectTypeOf(awaitApproval.needs).toEqualTypeOf<readonly ["sentAt"]>();
+      expectTypeOf(
+        waitForSignal<Bag>()({ name: "plain", signal: approvalSignal, provides: ["approval"] }).needs,
+      ).toEqualTypeOf<readonly []>();
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          // @ts-expect-error -- a loop decides on a boolean field, and sentAt is a string
+          .continueAsNew("again", { afterStep: verify, resumeAt: "awaiting-approval", when: "sentAt" }),
+      ).toThrow();
       // @ts-expect-error -- nothing requires or provides the deadline field the wait needs
       expect(() => createWorkflow<Bag>("due").requires("requestId").build([dueWait])).toThrow();
     });
