@@ -1033,11 +1033,14 @@ describe("execution timeout", () => {
     expect(mockExecuteWorkflow.mock.calls[0]?.[0].workflowExecutionTimeoutMs).toBeUndefined();
   });
 
+  // The type admits each of these; a limit Temporal cannot serialize must never reach it.
   it.each([
-    ["zero", "0s", "must be a positive duration"],
-    ["negative", "-1 day", "must be a positive duration"],
-    ["unparseable", "soon", "Unparseable duration"],
-  ])("refuses a %s limit before anything starts", async (_label, timeout, message) => {
+    ["zero", "0s"],
+    ["negative", "-1 day"],
+    ["infinite", "1e999 days"],
+    ["unparseable", "soon"],
+  ])("refuses a %s limit before anything starts", async (_label, timeout) => {
+    const message = `executionTimeout must be a positive duration, got "${timeout}"`;
     await expect(
       startWorkflowTemporal(workflow, {}, { workflowId, clientConfig, executionTimeout: timeout as never }),
     ).rejects.toThrow(message);
@@ -1046,7 +1049,7 @@ describe("execution timeout", () => {
       clientConfig,
       executionTimeout: timeout as never,
     });
-    expect(result.error?.message).toContain(message);
+    expect(result.error?.message).toBe(message);
     expect(mockExecuteWorkflow).not.toHaveBeenCalled();
     expect(mockExecuteWorkflowAndWait).not.toHaveBeenCalled();
   });

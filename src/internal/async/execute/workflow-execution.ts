@@ -260,12 +260,18 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
 
 /**
  * The execution timeout in milliseconds, checked before the start so a bad duration fails
- * the caller instead of reaching Temporal.
+ * the caller instead of reaching Temporal. Same rule as a wait's timeout: the type admits
+ * "0s", "-1 day" and "1e999 days", and none of them is a limit.
  */
 function executionTimeoutMs(timeout: DurationString | undefined): number | undefined {
   if (timeout === undefined) return undefined;
-  const ms = durationToMs(timeout);
-  if (!(ms > 0)) {
+  let ms: number;
+  try {
+    ms = durationToMs(timeout);
+  } catch {
+    ms = Number.NaN;
+  }
+  if (!Number.isFinite(ms) || ms <= 0) {
     throw new Error(`executionTimeout must be a positive duration, got ${JSON.stringify(timeout)}`);
   }
   return ms;
