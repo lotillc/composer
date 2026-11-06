@@ -986,3 +986,68 @@ describe("startWorkflowTemporal", () => {
     );
   });
 });
+
+// The limit is checked here, before any start, so a bad duration never reaches Temporal.
+describe("execution timeout", () => {
+  const workflowId = "01234567-89ab-cdef-0123-456789abcdef" as UUIDV7;
+  const clientConfig = { address: "localhost:7233", namespace: "default" };
+  const workflow = {
+    name: "timed-workflow",
+    steps: [],
+    checkpoints: [{ name: "early", afterStep: "s" }],
+  } as unknown as Workflow<any, any, any>;
+  const THIRTY_DAYS_MS = 30 * 86_400_000;
+
+  beforeEach(() => {
+    mockExecuteWorkflow.mockReset().mockResolvedValue({} as never);
+    mockExecuteWorkflowAndWait.mockReset().mockResolvedValue({ bag: {} } as never);
+    mockStartWorkflowWithUpdate.mockReset().mockResolvedValue({} as never);
+  });
+
+  it("startWorkflowTemporal passes the limit to the start in milliseconds", async () => {
+    await startWorkflowTemporal(workflow, {}, { workflowId, clientConfig, executionTimeout: "30 days" });
+    expect(mockExecuteWorkflow).toHaveBeenCalledWith(
+      expect.objectContaining({ workflowExecutionTimeoutMs: THIRTY_DAYS_MS }),
+    );
+  });
+
+  it.each([
+    ["waits for the result", {}, mockExecuteWorkflowAndWait],
+    ["starts only", { startOnly: true }, mockExecuteWorkflow],
+    ["awaits a checkpoint", { awaitCheckpoint: "early" }, mockStartWorkflowWithUpdate],
+  ])("executeWorkflowTemporal passes the limit when it %s", async (_label, extra, start) => {
+    const result = await executeWorkflowTemporal(workflow, {}, {
+      workflowId,
+      clientConfig,
+      executionTimeout: "30 days",
+      ...extra,
+    });
+    expect(result.error).toBeUndefined();
+    expect(start).toHaveBeenCalledWith(
+      expect.objectContaining({ workflowExecutionTimeoutMs: THIRTY_DAYS_MS }),
+    );
+  });
+
+  it("passes no limit when none is given, so Temporal applies none", async () => {
+    await startWorkflowTemporal(workflow, {}, { workflowId, clientConfig });
+    expect(mockExecuteWorkflow.mock.calls[0]?.[0].workflowExecutionTimeoutMs).toBeUndefined();
+  });
+
+  it.each([
+    ["zero", "0s", "must be a positive duration"],
+    ["negative", "-1 day", "must be a positive duration"],
+    ["unparseable", "soon", "Unparseable duration"],
+  ])("refuses a %s limit before anything starts", async (_label, timeout, message) => {
+    await expect(
+      startWorkflowTemporal(workflow, {}, { workflowId, clientConfig, executionTimeout: timeout as never }),
+    ).rejects.toThrow(message);
+    const result = await executeWorkflowTemporal(workflow, {}, {
+      workflowId,
+      clientConfig,
+      executionTimeout: timeout as never,
+    });
+    expect(result.error?.message).toContain(message);
+    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
+    expect(mockExecuteWorkflowAndWait).not.toHaveBeenCalled();
+  });
+});

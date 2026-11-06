@@ -27,6 +27,14 @@ const composer = createComposer({
   temporal: { serverAddress: "localhost:7233", namespace: "test", serviceName: "test-service" },
 });
 
+// A run as the internal describeWorkflow reports it; only the status matters to these tests.
+const runWithStatus = (status: "RUNNING" | "COMPLETED") => ({
+  status,
+  runId: "run-1",
+  startTime: new Date("2026-11-06T10:00:00.000Z"),
+  historyLength: 1,
+});
+
 describe("createComposer liveness API", () => {
   beforeEach(() => {
     mockDescribeWorkflow.mockReset();
@@ -34,11 +42,17 @@ describe("createComposer liveness API", () => {
 
   describe("describeWorkflow", () => {
     it("delegates to the internal describeWorkflow with the composer's Temporal config", async () => {
-      mockDescribeWorkflow.mockResolvedValue({ status: "RUNNING" });
+      const description = {
+        status: "RUNNING" as const,
+        runId: "run-1",
+        startTime: new Date("2026-11-06T10:00:00.000Z"),
+        historyLength: 3,
+      };
+      mockDescribeWorkflow.mockResolvedValue(description);
 
       const result = await composer.describeWorkflow("wf-1");
 
-      expect(result).toEqual({ status: "RUNNING" });
+      expect(result).toEqual(description);
       expect(mockDescribeWorkflow).toHaveBeenCalledWith("wf-1", {
         address: "localhost:7233",
         namespace: "test",
@@ -54,13 +68,13 @@ describe("createComposer liveness API", () => {
 
   describe("isWorkflowRunning", () => {
     it("returns true when the workflow status is RUNNING", async () => {
-      mockDescribeWorkflow.mockResolvedValue({ status: "RUNNING" });
+      mockDescribeWorkflow.mockResolvedValue(runWithStatus("RUNNING"));
 
       expect(await composer.isWorkflowRunning("wf-1")).toBe(true);
     });
 
     it("returns false for a non-running status", async () => {
-      mockDescribeWorkflow.mockResolvedValue({ status: "COMPLETED" });
+      mockDescribeWorkflow.mockResolvedValue(runWithStatus("COMPLETED"));
 
       expect(await composer.isWorkflowRunning("wf-1")).toBe(false);
     });
@@ -457,5 +471,58 @@ describe("continuation budget", () => {
     expect(vi.mocked(replayHistories.replayWorkflowHistories).mock.calls[0]?.[0]).toMatchObject({
       continuationBudgetBytes: 900_000,
     });
+  });
+});
+
+// The limit and the terminate reach Temporal through the composer's own client config, so a
+// caller has nothing to configure beyond the option it passes.
+describe("ending a run from outside", () => {
+  const mockTerminateWorkflow = vi.mocked(temporalClient.terminateWorkflow);
+  const workflow = { name: "timed-wf", steps: [] } as unknown as Workflow<any, any, any>;
+  const THIRTY_DAYS_MS = 30 * 86_400_000;
+
+  beforeEach(() => {
+    mockExecuteWorkflow.mockReset().mockResolvedValue(
+      undefined as unknown as Awaited<ReturnType<typeof temporalClient.executeWorkflow>>,
+    );
+    mockTerminateWorkflow.mockReset();
+  });
+
+  it.each([
+    ["startAsyncWorkflow", () => composer.startAsyncWorkflow(workflow, {}, { executionTimeout: "30 days" })],
+    [
+      "runAsyncWorkflow",
+      () => composer.runAsyncWorkflow(workflow, {}, { startOnly: true, executionTimeout: "30 days" }),
+    ],
+  ])("%s starts the workflow with the execution limit in milliseconds", async (_label, start) => {
+    await start();
+    expect(mockExecuteWorkflow).toHaveBeenCalledWith(
+      expect.objectContaining({ workflowExecutionTimeoutMs: THIRTY_DAYS_MS }),
+    );
+  });
+
+  it("startAsyncWorkflow rejects a limit that is not positive, and starts nothing", async () => {
+    await expect(
+      composer.startAsyncWorkflow(workflow, {}, { executionTimeout: "0 days" }),
+    ).rejects.toThrow("executionTimeout must be a positive duration");
+    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("terminateAsyncWorkflow terminates through the composer's Temporal config and reports the outcome", async () => {
+    mockTerminateWorkflow.mockResolvedValue("terminated");
+    expect(
+      await composer.terminateAsyncWorkflow("wf-1", { reason: "replaced by run 2", runId: "run-1" }),
+    ).toBe("terminated");
+    expect(mockTerminateWorkflow).toHaveBeenCalledWith(
+      "wf-1",
+      { reason: "replaced by run 2", runId: "run-1" },
+      { address: "localhost:7233", namespace: "test" },
+    );
+  });
+
+  it("terminateAsyncWorkflow ends the current run when no options are given", async () => {
+    mockTerminateWorkflow.mockResolvedValue("notRunning");
+    expect(await composer.terminateAsyncWorkflow("wf-gone")).toBe("notRunning");
+    expect(mockTerminateWorkflow.mock.calls[0]?.[1]).toEqual({});
   });
 });

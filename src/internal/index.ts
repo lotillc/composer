@@ -15,6 +15,7 @@ export {
   syncSchedules,
   type TemporalScheduleConfig,
 } from "./async/schedule/sync-schedules.js";
+export type { WorkflowDescription } from "./async/execute/temporal-client.js";
 export type {
   AsyncWorkflowOptions,
   Composer,
@@ -26,6 +27,8 @@ export type {
   StepContextProvider,
   SyncComposer,
   TemporalConfig,
+  TerminateAsyncWorkflowOptions,
+  TerminateAsyncWorkflowOutcome,
 } from "./context-provider.js";
 export { createComposer } from "./create-composer.js";
 export {

@@ -16,11 +16,13 @@
 
 import { ApplicationFailure, WorkflowFailedError } from "@temporalio/client";
 import type { VersioningOverride } from "@temporalio/common";
+import type { DurationString } from "../../dag-sync-step.js";
 import {
   DEFAULT_CHECKPOINT_TIMEOUT_MS,
   type Workflow,
   type WorkflowResult,
 } from "../../dag-sync-workflow.js";
+import { durationToMs } from "../../duration.js";
 import type { UUIDV7 } from "../../types.js";
 import { CHECKPOINT_TIMEOUT_CODE } from "../../workflow-codes.js";
 import type { TemporalWorkflowResult } from "../build/workflow-factory.js";
@@ -52,6 +54,11 @@ export interface TemporalExecutionOptions {
    * What to do when a workflow with this ID is already running.
    */
   workflowIdConflictPolicy?: "FAIL" | "USE_EXISTING";
+
+  /**
+   * A limit on the whole execution, across continue-as-new, as a positive duration.
+   */
+  executionTimeout?: DurationString;
 
   /**
    * Optional checkpoint name to await.
@@ -117,6 +124,7 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
     if (options.startOnly && options.awaitCheckpoint) {
       throw new Error("Cannot use startOnly and awaitCheckpoint together");
     }
+    const workflowExecutionTimeoutMs = executionTimeoutMs(options.executionTimeout);
 
     // Validate checkpoint name and resolve timeout if awaitCheckpoint is specified
     let checkpointTimeoutMs: number | undefined;
@@ -147,6 +155,7 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
         clientConfig,
         versioningOverride: options.versioningOverride,
         workflowIdConflictPolicy: options.workflowIdConflictPolicy,
+        workflowExecutionTimeoutMs,
       });
 
       // With USE_EXISTING the start may have attached to a run begun earlier with other
@@ -174,6 +183,7 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
         clientConfig,
         versioningOverride: options.versioningOverride,
         workflowIdConflictPolicy: options.workflowIdConflictPolicy,
+        workflowExecutionTimeoutMs,
         update: awaitCheckpointUpdate,
         updateArgs: [{ checkpointName: options.awaitCheckpoint }],
       });
@@ -215,6 +225,7 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
       clientConfig,
       versioningOverride: options.versioningOverride,
       workflowIdConflictPolicy: options.workflowIdConflictPolicy,
+      workflowExecutionTimeoutMs,
     });
 
     return result as WorkflowResult<Bag>;
@@ -245,6 +256,19 @@ export async function executeWorkflowTemporal<Bag extends Record<string, any>>(
     const error = err instanceof Error ? err : new Error(String(err));
     return { bag: mergedInitialData as Bag, error: withFailureCode(error, err) };
   }
+}
+
+/**
+ * The execution timeout in milliseconds, checked before the start so a bad duration fails
+ * the caller instead of reaching Temporal.
+ */
+function executionTimeoutMs(timeout: DurationString | undefined): number | undefined {
+  if (timeout === undefined) return undefined;
+  const ms = durationToMs(timeout);
+  if (!(ms > 0)) {
+    throw new Error(`executionTimeout must be a positive duration, got ${JSON.stringify(timeout)}`);
+  }
+  return ms;
 }
 
 /** Shape of a classifier code a workflow puts on an ApplicationFailure's `type`. */
@@ -289,7 +313,11 @@ export async function startWorkflowTemporal<Bag extends Record<string, any>>(
   initialData: Partial<Bag>,
   options: Pick<
     TemporalExecutionOptions,
-    "workflowId" | "clientConfig" | "versioningOverride" | "workflowIdConflictPolicy"
+    | "workflowId"
+    | "clientConfig"
+    | "versioningOverride"
+    | "workflowIdConflictPolicy"
+    | "executionTimeout"
   >,
 ): Promise<{ workflowId: string }> {
   // Merge configured values with initial data (like sync path does)
@@ -313,6 +341,7 @@ export async function startWorkflowTemporal<Bag extends Record<string, any>>(
     clientConfig: options.clientConfig,
     versioningOverride: options.versioningOverride,
     workflowIdConflictPolicy: options.workflowIdConflictPolicy,
+    workflowExecutionTimeoutMs: executionTimeoutMs(options.executionTimeout),
   });
 
   return { workflowId: options.workflowId };

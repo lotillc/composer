@@ -2,12 +2,14 @@ import { WorkflowNotFoundError } from "@temporalio/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UUIDV7 } from "../../../types.js";
 
-const { mockConnect, mockGetHandle, mockStart, clientOptions } = vi.hoisted(() => ({
-  mockConnect: vi.fn(),
-  mockGetHandle: vi.fn(),
-  mockStart: vi.fn(),
-  clientOptions: [] as Array<Record<string, unknown>>,
-}));
+const { mockConnect, mockGetHandle, mockStart, mockExecuteUpdateWithStart, clientOptions } =
+  vi.hoisted(() => ({
+    mockConnect: vi.fn(),
+    mockGetHandle: vi.fn(),
+    mockStart: vi.fn(),
+    mockExecuteUpdateWithStart: vi.fn(),
+    clientOptions: [] as Array<Record<string, unknown>>,
+  }));
 
 vi.mock("@temporalio/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@temporalio/client")>();
@@ -17,7 +19,11 @@ vi.mock("@temporalio/client", async (importOriginal) => {
       connect: mockConnect,
     },
     Client: class {
-      workflow = { getHandle: mockGetHandle, start: mockStart };
+      workflow = {
+        getHandle: mockGetHandle,
+        start: mockStart,
+        executeUpdateWithStart: mockExecuteUpdateWithStart,
+      };
       constructor(options: Record<string, unknown>) {
         clientOptions.push(options);
       }
@@ -25,7 +31,22 @@ vi.mock("@temporalio/client", async (importOriginal) => {
   };
 });
 
-function handleReturning(describeResult: { status: { name: string } }) {
+const startTime = new Date("2026-11-06T10:00:00.000Z");
+const closeTime = new Date("2026-11-06T12:30:00.000Z");
+
+// What the SDK's `handle.describe()` resolves, in the fields this module reads.
+function describedAs(status: string, extra: { closeTime?: Date } = {}) {
+  return {
+    status: { name: status },
+    runId: "run-1",
+    startTime,
+    historyLength: 12,
+    executionTime: startTime,
+    ...extra,
+  };
+}
+
+function handleReturning(describeResult: ReturnType<typeof describedAs>) {
   return { describe: vi.fn().mockResolvedValue(describeResult) };
 }
 
@@ -35,8 +56,8 @@ describe("describeWorkflow", () => {
     mockGetHandle.mockReset();
   });
 
-  it("returns the workflow status when the workflow exists", async () => {
-    mockGetHandle.mockReturnValue(handleReturning({ status: { name: "RUNNING" } }));
+  it("returns the current run's status, id, start time and history length while it runs", async () => {
+    mockGetHandle.mockReturnValue(handleReturning(describedAs("RUNNING")));
 
     const { describeWorkflow } = await import("../temporal-client.js");
     const result = await describeWorkflow("wf-running" as UUIDV7, {
@@ -44,8 +65,27 @@ describe("describeWorkflow", () => {
       namespace: "default",
     });
 
-    expect(result).toEqual({ status: "RUNNING" });
+    expect(result).toEqual({ status: "RUNNING", runId: "run-1", startTime, historyLength: 12 });
+    expect(result).not.toHaveProperty("closeTime");
     expect(mockGetHandle).toHaveBeenCalledWith("wf-running");
+  });
+
+  it("adds the close time once the run has closed", async () => {
+    mockGetHandle.mockReturnValue(handleReturning(describedAs("TERMINATED", { closeTime })));
+
+    const { describeWorkflow } = await import("../temporal-client.js");
+    const result = await describeWorkflow("wf-closed" as UUIDV7, {
+      address: "closed-test:7233",
+      namespace: "default",
+    });
+
+    expect(result).toEqual({
+      status: "TERMINATED",
+      runId: "run-1",
+      startTime,
+      closeTime,
+      historyLength: 12,
+    });
   });
 
   it("returns null when the workflow does not exist", async () => {
@@ -77,7 +117,7 @@ describe("describeWorkflow", () => {
   });
 
   it("reuses the cached client across calls with the same config", async () => {
-    mockGetHandle.mockReturnValue(handleReturning({ status: { name: "COMPLETED" } }));
+    mockGetHandle.mockReturnValue(handleReturning(describedAs("COMPLETED")));
 
     const { describeWorkflow } = await import("../temporal-client.js");
     const config = { address: "cache-test:7233", namespace: "default" };
@@ -189,6 +229,92 @@ describe("executeWorkflow conflict policy", () => {
     const { executeWorkflow } = await import("../temporal-client.js");
     await executeWorkflow(base);
     expect(mockStart.mock.calls[0]?.[1]).not.toHaveProperty("workflowIdConflictPolicy");
+  });
+});
+
+describe("executeWorkflow execution timeout", () => {
+  const clientConfig = { address: "timeout-test:7233", namespace: "default" };
+  const base = {
+    workflowName: "wf",
+    workflowId: "request-43" as UUIDV7,
+    input: { initialData: {} },
+    clientConfig,
+  };
+
+  beforeEach(() => {
+    mockConnect.mockResolvedValue({});
+    mockStart.mockReset().mockResolvedValue({});
+  });
+
+  it("passes the limit to Temporal as workflowExecutionTimeout", async () => {
+    const { executeWorkflow } = await import("../temporal-client.js");
+    await executeWorkflow({ ...base, workflowExecutionTimeoutMs: 86_400_000 });
+    expect(mockStart.mock.calls[0]?.[1]).toMatchObject({ workflowExecutionTimeout: 86_400_000 });
+  });
+
+  it("omits the key when there is no limit, so Temporal applies none", async () => {
+    const { executeWorkflow } = await import("../temporal-client.js");
+    await executeWorkflow(base);
+    expect(mockStart.mock.calls[0]?.[1]).not.toHaveProperty("workflowExecutionTimeout");
+  });
+
+  // The checkpoint path starts through Update-With-Start, so the limit has to ride on its
+  // start operation too.
+  it("passes the limit on an update-with-start as well", async () => {
+    mockExecuteUpdateWithStart.mockReset().mockResolvedValue({});
+    const { startWorkflowWithUpdate } = await import("../temporal-client.js");
+    await startWorkflowWithUpdate({
+      ...base,
+      workflowExecutionTimeoutMs: 86_400_000,
+      update: { name: "await-checkpoint" } as never,
+      updateArgs: [],
+    });
+    const startOperation = mockExecuteUpdateWithStart.mock.calls[0]?.[1]?.startWorkflowOperation;
+    expect(startOperation?.options).toMatchObject({ workflowExecutionTimeout: 86_400_000 });
+  });
+});
+
+describe("terminateWorkflow", () => {
+  const clientConfig = { address: "terminate-test:7233", namespace: "default" };
+  const terminate = vi.fn();
+
+  beforeEach(() => {
+    mockConnect.mockResolvedValue({});
+    terminate.mockReset().mockResolvedValue({});
+    mockGetHandle.mockReset().mockReturnValue({ terminate });
+  });
+
+  it("terminates the workflow's current run with the reason and reports it", async () => {
+    const { terminateWorkflow } = await import("../temporal-client.js");
+    const outcome = await terminateWorkflow(
+      "wf-stuck" as UUIDV7,
+      { reason: "replaced by run 2" },
+      clientConfig,
+    );
+    expect(outcome).toBe("terminated");
+    expect(mockGetHandle).toHaveBeenCalledWith("wf-stuck", undefined);
+    expect(terminate).toHaveBeenCalledWith("replaced by run 2");
+  });
+
+  it("terminates only the run named, so a run that has moved on is left alone", async () => {
+    const { terminateWorkflow } = await import("../temporal-client.js");
+    await terminateWorkflow("wf-stuck" as UUIDV7, { runId: "run-1" }, clientConfig);
+    expect(mockGetHandle).toHaveBeenCalledWith("wf-stuck", "run-1");
+    expect(terminate).toHaveBeenCalledWith(undefined);
+  });
+
+  it("reports notRunning when Temporal has nothing running under the id", async () => {
+    terminate.mockRejectedValue(new WorkflowNotFoundError("not found", "wf-gone", undefined));
+    const { terminateWorkflow } = await import("../temporal-client.js");
+    expect(await terminateWorkflow("wf-gone" as UUIDV7, {}, clientConfig)).toBe("notRunning");
+  });
+
+  it("rethrows errors that are not WorkflowNotFoundError", async () => {
+    terminate.mockRejectedValue(new Error("connection refused"));
+    const { terminateWorkflow } = await import("../temporal-client.js");
+    await expect(terminateWorkflow("wf-err" as UUIDV7, {}, clientConfig)).rejects.toThrow(
+      "connection refused",
+    );
   });
 });
 

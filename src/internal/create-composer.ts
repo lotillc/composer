@@ -14,6 +14,7 @@ import type { VersioningOverride } from "@temporalio/common";
 import {
   describeWorkflow as describeWorkflowTemporal,
   signalWorkflow,
+  terminateWorkflow,
 } from "./async/execute/temporal-client.js";
 import { executeWorkflowTemporal, startWorkflowTemporal } from "./async/execute/workflow-execution.js";
 import { runActivityWorkers as runActivityWorkersInternal } from "./async/register/activity-worker.js";
@@ -34,6 +35,7 @@ import type {
   StepContextProvider,
   SyncComposer,
   TemporalConfig,
+  TerminateAsyncWorkflowOptions,
 } from "./context-provider.js";
 import type { WorkflowSignal } from "./dag-sync-signal.js";
 import type { Step } from "./dag-sync-step.js";
@@ -254,6 +256,7 @@ export function createComposer<TContext>(
         },
         versioningOverride: versioningOverrideFor(workflow),
         workflowIdConflictPolicy: conflictPolicyFor(options?.ifRunning),
+        executionTimeout: options?.executionTimeout,
         awaitCheckpoint: options?.awaitCheckpoint,
         startOnly: options?.startOnly,
       },
@@ -308,6 +311,7 @@ export function createComposer<TContext>(
         },
         versioningOverride: versioningOverrideFor(workflow),
         workflowIdConflictPolicy: conflictPolicyFor(options?.ifRunning),
+        executionTimeout: options?.executionTimeout,
       },
     );
   }
@@ -343,12 +347,16 @@ export function createComposer<TContext>(
       );
     },
 
-        async describeWorkflow(workflowId: string) {
+    async describeWorkflow(workflowId: string) {
       return describeWorkflowTemporal(workflowId as UUIDV7, {
         address: temporalConfig.serverAddress,
         namespace: temporalConfig.namespace,
         dataConverter: temporalConfig.dataConverter,
       });
+    },
+
+    async terminateAsyncWorkflow(workflowId: string, options?: TerminateAsyncWorkflowOptions) {
+      return terminateWorkflow(workflowId as UUIDV7, options ?? {}, clientConfig);
     },
 
     async isWorkflowRunning(workflowId: string) {

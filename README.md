@@ -370,6 +370,28 @@ if (failures.length > 0) {
 
 The composer method applies the composer's own data converter and workflow interceptors. The standalone `replayWorkflowHistories` export takes them as options. Histories can also be saved files, either JSON from `temporal workflow show --output json` or `History` objects. A failure means that deploying this build, or rolling back from it, would fail the in-flight runs.
 
+#### Ending a Run From Outside
+
+A run on a build that cannot replay it, or one whose signal never comes, stays open with no end unless something outside ends it. Two things can:
+
+- **`executionTimeout`**, on `startAsyncWorkflow` and `runAsyncWorkflow`, limits the whole execution, across every continue-as-new run. When it passes, Temporal ends the workflow as `TIMED_OUT`, whatever it is doing. Set it a safe margin past the longest the workflow should ever take. It must be a positive duration; a limit that is not is refused before anything starts. With `ifRunning: "useExisting"`, the running workflow keeps the limit it started with.
+- **`terminateAsyncWorkflow(workflowId, { reason, runId })`** ends a workflow now, without running any of its code: the current run closes as `TERMINATED`, so a chain of stages ends there. It resolves `"terminated"`, or `"notRunning"` when nothing under that ID is running (none exists, or it already finished), so a retried call is safe. Pass the `runId` that `describeWorkflow` reported to end exactly the run you judged: a workflow that has since moved on to another run is then left alone. Terminating a run undoes nothing it already did.
+
+`describeWorkflow(workflowId)` reports the current run's `status`, `runId`, `startTime`, `closeTime` (once closed) and `historyLength`, or `null` for an ID Temporal has never seen. For a workflow that has continued as new, these describe the latest run, not the first.
+
+```typescript
+await composer.startAsyncWorkflow(review, { requestId }, {
+  workflowId: requestId,
+  executionTimeout: "90 days",
+});
+
+// A sweep that ends a run nothing else can end.
+const run = await composer.describeWorkflow(requestId);
+if (run?.status === "RUNNING" && run.startTime < staleBefore) {
+  await composer.terminateAsyncWorkflow(requestId, { reason: "stuck; replaced", runId: run.runId });
+}
+```
+
 ### Error Handling
 
 Attach an error handler to workflows for domain-specific error recovery:

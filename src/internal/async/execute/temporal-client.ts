@@ -105,9 +105,29 @@ export interface ExecuteWorkflowOptions {
   workflowIdConflictPolicy?: "FAIL" | "USE_EXISTING";
 
   /**
+   * Temporal's `workflowExecutionTimeout`, in milliseconds: a limit on the whole execution,
+   * across continue-as-new. Omitted, Temporal applies no limit.
+   */
+  workflowExecutionTimeoutMs?: number;
+
+  /**
    * Override Temporal client config for this execution
    */
   clientConfig: TemporalClientConfig;
+}
+
+/** What `describeWorkflow` reports about a workflow's current run. */
+export interface WorkflowDescription {
+  /** Temporal's status name: `RUNNING`, `COMPLETED`, `TERMINATED`, `TIMED_OUT` and so on. */
+  status: WorkflowExecutionStatusName;
+  /** The current run's ID: the latest run, once a workflow has continued as new. */
+  runId: string;
+  /** When the current run started, by the server's clock; not the first run's start. */
+  startTime: Date;
+  /** When the current run closed; absent while it runs. */
+  closeTime?: Date;
+  /** Events in the current run's history so far. */
+  historyLength: number;
 }
 
 const cachedClients = new Map<string, Promise<Client>>();
@@ -224,6 +244,9 @@ export async function executeWorkflow(
     ...(options.workflowIdConflictPolicy
       ? { workflowIdConflictPolicy: options.workflowIdConflictPolicy }
       : {}),
+    ...(options.workflowExecutionTimeoutMs !== undefined
+      ? { workflowExecutionTimeout: options.workflowExecutionTimeoutMs }
+      : {}),
   });
 
   return handle;
@@ -250,6 +273,9 @@ export async function startWorkflowWithUpdate<Ret, Args extends any[]>(
     // Required by Update-With-Start; FAIL is what a plain start does by default.
     workflowIdConflictPolicy: options.workflowIdConflictPolicy ?? "FAIL",
     ...(options.versioningOverride ? { versioningOverride: options.versioningOverride } : {}),
+    ...(options.workflowExecutionTimeoutMs !== undefined
+      ? { workflowExecutionTimeout: options.workflowExecutionTimeoutMs }
+      : {}),
   });
   return client.workflow.executeUpdateWithStart(options.update, {
     args: options.updateArgs,
@@ -276,25 +302,56 @@ export async function getWorkflowHandle(
 }
 
 /**
- * Describes an existing workflow execution's current status, reusing the
- * cached client connection.
+ * Describes an existing workflow's current run, reusing the cached client connection.
  *
  * @param workflowId - The workflow execution ID
  * @param config - Client configuration
- * @returns The current status, or `null` if the workflow does not exist
+ * @returns The current run's description, or `null` if the workflow does not exist
  *   (`WorkflowNotFoundError`). Other errors are rethrown.
  */
 export async function describeWorkflow(
   workflowId: UUIDV7,
   config: TemporalClientConfig,
-): Promise<{ status: WorkflowExecutionStatusName } | null> {
+): Promise<WorkflowDescription | null> {
   const handle = await getWorkflowHandle(workflowId, config);
   try {
     const description = await handle.describe();
-    return { status: description.status.name };
+    return {
+      status: description.status.name,
+      runId: description.runId,
+      startTime: description.startTime,
+      ...(description.closeTime ? { closeTime: description.closeTime } : {}),
+      historyLength: description.historyLength,
+    };
   } catch (error) {
     if (error instanceof WorkflowNotFoundError) {
       return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Terminates a workflow's current run, or the one run `runId` names, reusing the cached
+ * client connection.
+ *
+ * @returns `"terminated"`, or `"notRunning"` when Temporal has no running workflow under
+ *   the ID (`WorkflowNotFoundError`: none exists, it already closed, or the named run has
+ *   given way to another), so a retried call is safe. Other errors are rethrown.
+ */
+export async function terminateWorkflow(
+  workflowId: UUIDV7,
+  options: { reason?: string; runId?: string },
+  config: TemporalClientConfig,
+): Promise<"terminated" | "notRunning"> {
+  const client = await createTemporalClient(config);
+  const handle = client.workflow.getHandle(workflowId, options.runId);
+  try {
+    await handle.terminate(options.reason);
+    return "terminated";
+  } catch (error) {
+    if (error instanceof WorkflowNotFoundError) {
+      return "notRunning";
     }
     throw error;
   }

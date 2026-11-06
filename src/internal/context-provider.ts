@@ -8,7 +8,6 @@
  * for both sync and async workflow execution.
  */
 
-import type { WorkflowExecutionStatusName } from "@temporalio/client";
 import type { DataConverter } from "@temporalio/common";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
 import type { ScheduleDefinition } from "./async/schedule/define-schedule.js";
@@ -17,7 +16,9 @@ import type {
   ReplayWorkflowHistoriesResult,
 } from "./async/register/replay-histories.js";
 import type { SyncSchedulesResult } from "./async/schedule/sync-schedules.js";
+import type { WorkflowDescription } from "./async/execute/temporal-client.js";
 import type { WorkflowSignal } from "./dag-sync-signal.js";
+import type { DurationString } from "./dag-sync-step.js";
 import type {
   ExtractWorkflowBag,
   ExtractWorkflowCheckpointNames,
@@ -275,6 +276,14 @@ export interface AsyncWorkflowOptions<CheckpointNames extends string = never> {
   ifRunning?: IfRunning;
 
   /**
+   * A limit on the whole execution, across every continue-as-new run, after which Temporal
+   * ends the workflow as `TIMED_OUT` whatever it is doing. Without one a run can stay open
+   * with no end, for example on a build that cannot replay it. Must be a positive duration.
+   * With `ifRunning: "useExisting"`, the running workflow keeps the limit it started with.
+   */
+  executionTimeout?: DurationString;
+
+  /**
    * Start the Temporal workflow and return immediately after Temporal accepts it.
    *
    * This is intended for long-running fire-and-forget workflows where the caller
@@ -302,7 +311,33 @@ export interface StartAsyncWorkflowOptions {
    * data it was started with.
    */
   ifRunning?: IfRunning;
+
+  /**
+   * A limit on the whole execution, across every continue-as-new run, after which Temporal
+   * ends the workflow as `TIMED_OUT` whatever it is doing. Without one a run can stay open
+   * with no end, for example on a build that cannot replay it. Must be a positive duration.
+   * With `ifRunning: "useExisting"`, the running workflow keeps the limit it started with.
+   */
+  executionTimeout?: DurationString;
 }
+
+/**
+ * Options for ending a workflow from outside.
+ */
+export interface TerminateAsyncWorkflowOptions {
+  /** Why it was ended; shown in Temporal UI and kept in the run's history. */
+  reason?: string;
+
+  /**
+   * The run to end, as `describeWorkflow` reported it. Without it the current run is ended.
+   * With it, a workflow that has since moved on to another run is left alone and the call
+   * resolves `"notRunning"`, so a sweep ends only the run it judged.
+   */
+  runId?: string;
+}
+
+/** What a termination did: `"notRunning"` when there was nothing running to end. */
+export type TerminateAsyncWorkflowOutcome = "terminated" | "notRunning";
 
 /**
  * Options for delivering a signal.
@@ -520,8 +555,8 @@ export interface Composer<TContext> extends SyncComposer<TContext> {
   readonly temporal: TemporalConfig;
 
   /**
-   * Describe a workflow execution's current status, reusing Composer's own
-   * Temporal connection.
+   * Describe a workflow's current run, reusing Composer's own Temporal connection: its
+   * status, run ID, start and close times and history length.
    *
    * Useful for reconciliation/reaper sweeps that need to check whether a
    * previously-launched workflow is still alive before acting on stranded
@@ -529,11 +564,29 @@ export interface Composer<TContext> extends SyncComposer<TContext> {
    * or other errors are thrown rather than reported as "not found".
    *
    * @param workflowId - The workflow execution ID
-   * @returns The current status, or `null` if the workflow does not exist
+   * @returns The current run's description, or `null` if the workflow does not exist
    */
-  describeWorkflow(
+  describeWorkflow(workflowId: string): Promise<WorkflowDescription | null>;
+
+  /**
+   * End a workflow from outside, at once and without running any of its code: its current
+   * run closes as `TERMINATED`, so a continue-as-new chain ends there. For a run nothing
+   * else can end, such as one on a build that cannot replay it. Prefer `executionTimeout`
+   * at start for a limit every run gets.
+   *
+   * Resolves `"terminated"`, or `"notRunning"` when no workflow with this ID is running
+   * (none exists, or it already finished), so a retried call is safe. Other errors are
+   * thrown. Pass the `runId` from `describeWorkflow` to end exactly the run judged stuck.
+   *
+   * @example
+   * ```typescript
+   * await composer.terminateAsyncWorkflow(workflowId, { reason: "replaced by run 2", runId });
+   * ```
+   */
+  terminateAsyncWorkflow(
     workflowId: string,
-  ): Promise<{ status: WorkflowExecutionStatusName } | null>;
+    options?: TerminateAsyncWorkflowOptions,
+  ): Promise<TerminateAsyncWorkflowOutcome>;
 
   /**
    * Coarse liveness check: resolves to `true` only if the workflow currently
