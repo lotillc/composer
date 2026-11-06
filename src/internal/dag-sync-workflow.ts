@@ -296,8 +296,13 @@ export interface StageBoundaryOptions<
    * an initial field, which steps cannot provide, so an iteration can advance a counter
    * or an index the loop body reads.
    */
-  carry?: Partial<Record<keyof Bag & string, keyof Bag & string>>;
+  carry?: { [Target in keyof Bag & string]?: FieldsAssignableTo<Bag, Bag[Target]> };
 }
+
+/** The bag fields whose value a field of type `Value` could take. */
+export type FieldsAssignableTo<Bag, Value> = {
+  [K in keyof Bag & string]: Bag[K] extends Value ? K : never;
+}[keyof Bag & string];
 
 /**
  * IMMUTABILITY PROTECTION FEATURE FLAG

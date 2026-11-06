@@ -506,6 +506,13 @@ describe("signal waits", () => {
       expect(result.bag.approval).toBe("early");
     });
 
+    it("reads a date-time with an offset as the instant it names", async () => {
+      mocks.activityFunctions.a = activity({ x: "X", dueAt: "2026-11-20T02:30:00.5+02:30" });
+      mocks.onBlock = () => mocks.defaultSignalHandler!("approval", "late");
+      await createWorkflowFunction(dueAtPlan())({ initialData: { id: "1" } });
+      expect(mocks.conditionTimeouts).toEqual([2 * 86_400_000 + 500]);
+    });
+
     it("shows the instant in the run's details while it waits", async () => {
       mocks.onBlock = () => mocks.defaultSignalHandler!("approval", "late");
       await createWorkflowFunction(dueAtPlan())({ initialData: { id: "1" } });
@@ -533,6 +540,9 @@ describe("signal waits", () => {
       ["not an instant", { dueAt: "soon" }],
       ["a date-time without an offset", { dueAt: "2026-11-20T00:00:00" }],
       ["a date that is not ISO 8601", { dueAt: "Nov 20 2026" }],
+      ["a day the month does not have", { dueAt: "2026-02-31T00:00:00Z" }],
+      ["an hour past the day", { dueAt: "2026-11-20T24:00:00Z" }],
+      ["a bigint", { dueAt: 1_700_000_000_000n }],
       ["a non-finite number", { dueAt: Number.POSITIVE_INFINITY }],
       ["an epoch outside the Date range", { dueAt: 1e18 }],
       ["an epoch in microseconds", { dueAt: Date.parse("2026-11-20T00:00:00Z") * 1000 }],
@@ -1114,6 +1124,17 @@ describe("loop boundaries", () => {
     expect(result.error).toBeUndefined();
     expect(result.bag.z).toBe("Z");
     expect(mocks.continueAsNewOptions).toHaveLength(0);
+  });
+
+  it("drops only what the loop's own steps provide, keeping a field from a later batch", async () => {
+    const plan = loopPlan();
+    // A step after the loop boundary provides `w`; a handler set it early, so it is not the loop's.
+    plan.batches.push({ steps: [step("d", ["z"], ["w"])] });
+    const continued = await runUntilContinued(plan, {
+      initialData: { id: "1" },
+      continuation: continuation({ bag: { x: "X", w: "W" }, completedSteps: ["a"] }),
+    });
+    expect(continued.next.continuation?.bag).toEqual({ x: "X", w: "W", id: "Y" });
   });
 
   it("carries nothing for a field whose source is not in the bag, with a warning", async () => {

@@ -55,6 +55,11 @@ export const DEFAULT_MAX_PENDING_SIGNALS = 100;
 /**
  * Runtime metadata for a signal wait node.
  */
+/** The bag fields that can hold an instant: a string (ISO 8601) or a number (epoch milliseconds). */
+export type InstantField<Bag> = {
+  [K in keyof Bag & string]: NonNullable<Bag[K]> extends string | number ? K : never;
+}[keyof Bag & string];
+
 export interface SignalWaitMetadata {
   signalName: string;
   /**
@@ -194,16 +199,19 @@ export function waitForSignal<Bag extends Record<string, any>>() {
     const Name extends string,
     const Field extends keyof Bag,
     const Needs extends readonly (keyof Bag)[] = readonly [],
+    const TimeoutAt extends InstantField<Bag> = never,
   >(definition: {
     name: Name;
     signal: WorkflowSignal<NoInfer<Bag[Field]>>;
     needs?: Needs;
     provides: readonly [Field];
     timeout?: DurationString;
-    timeoutAt?: keyof Bag & string;
+    timeoutAt?: TimeoutAt;
     timeoutValue?: NoInfer<Bag[Field]>;
     maxPendingSignals?: number;
-  }): SignalWait<Bag, Needs, Field, Name> => {
+    // The deadline's field is a dependency like any other, so it is typed as one: a workflow
+    // that neither requires nor provides it is refused where it is defined.
+  }): SignalWait<Bag, readonly [...Needs, TimeoutAt], Field, Name> => {
     assertValidName("SignalWait", definition.name);
     if (typeof definition.signal?.name !== "string") {
       throw new Error(
@@ -239,7 +247,7 @@ export function waitForSignal<Bag extends Record<string, any>>() {
       if (typeof definition.timeoutAt !== "string" || definition.timeoutAt.length === 0) {
         throw new Error(`waitForSignal "${definition.name}": timeoutAt must name a bag field`);
       }
-      if (definition.timeoutAt === definition.provides[0]) {
+      if ((definition.timeoutAt as string) === String(definition.provides[0])) {
         throw new Error(
           `waitForSignal "${definition.name}": timeoutAt cannot be the field the wait provides`,
         );
@@ -269,7 +277,7 @@ export function waitForSignal<Bag extends Record<string, any>>() {
 
     return {
       name: definition.name,
-      needs: needs as unknown as Needs,
+      needs: needs as unknown as readonly [...Needs, TimeoutAt],
       provides: definition.provides,
       run: async () => {
         throw new Error(

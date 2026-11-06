@@ -81,7 +81,7 @@ describe("waitForSignal", () => {
           name: "w",
           signal: approvalSignal,
           provides: ["approval"],
-          timeoutAt: "approval",
+          timeoutAt: "approval" as never,
         }),
       ).toThrow("cannot be the field the wait provides");
     });
@@ -105,8 +105,9 @@ describe("waitForSignal", () => {
         timeoutAt: "sentAt",
       });
       expect(wait.needs).toEqual(["sentAt"]);
+      // Typed as a dependency too: the wait must be listed after the step that provides it.
       const plan = generateWorkflowPlan(
-        createWorkflow<Bag>("due").requires("requestId").build([wait, sendRequest, verify]),
+        createWorkflow<Bag>("due").requires("requestId").build([sendRequest, wait, verify]),
       );
       expect(plan.batches.map((b) => [...b.steps.map((s) => s.name), ...(b.signalWaits ?? []).map((w) => w.name)])).toEqual([
         ["sendRequest"],
@@ -673,6 +674,29 @@ describe("builder", () => {
       ).not.toThrow();
     });
 
+    it("types a carry source by its target, and the deadline field as a dependency", () => {
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", {
+            afterStep: verify,
+            resumeAt: "awaiting-approval",
+            when: "verified",
+            // @ts-expect-error -- a boolean field cannot carry into a string one
+            carry: { requestId: "verified" },
+          }),
+      ).not.toThrow();
+      const dueWait = waitForSignal<Bag>()({
+        name: "w",
+        signal: approvalSignal,
+        provides: ["approval"],
+        timeoutAt: "sentAt",
+      });
+      expectTypeOf(dueWait.needs).toEqualTypeOf<readonly ["sentAt"]>();
+      // @ts-expect-error -- nothing requires or provides the deadline field the wait needs
+      expect(() => createWorkflow<Bag>("due").requires("requestId").build([dueWait])).toThrow();
+    });
+
     it("rejects a carry of a field the loop provides again, or named __proto__", () => {
       expect(() =>
         baseWorkflow()
@@ -681,7 +705,7 @@ describe("builder", () => {
             afterStep: verify,
             resumeAt: "awaiting-approval",
             when: "verified",
-            carry: { approval: "sentAt" },
+            carry: { approval: "sentAt" as never },
           }),
       ).toThrow('carries field "approval"');
       expect(() =>

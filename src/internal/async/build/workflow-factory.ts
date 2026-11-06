@@ -443,9 +443,42 @@ interface WaitDeadline {
 }
 
 /** An ISO 8601 date-time with its offset: the one form every worker reads the same instant from. */
-const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+const ISO_INSTANT =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(?:Z|([+-])(\d{2}):(\d{2}))$/;
 /** No wait means to last this long; a deadline further out is a unit mistake, caught here. */
 const MAX_WAIT_AHEAD_MS = 100 * 365.25 * 24 * 60 * 60 * 1000;
+
+/** The instant an ISO 8601 date-time with its offset names, or none for a string that is not one. */
+// Parsed by hand: `Date.parse` reads a missing offset as local time and quietly rolls a day the
+// month does not have into the next, and neither may decide when a workflow wakes.
+function parseInstant(text: string): number | undefined {
+  const match = ISO_INSTANT.exec(text);
+  if (!match) return undefined;
+  const [year, month, day, hour, minute] = match.slice(1, 6).map(Number) as number[];
+  const second = Number(match[6] ?? "0");
+  const ms = Number((match[7] ?? "0").padEnd(3, "0").slice(0, 3));
+  const [offsetHours, offsetMinutes] = [Number(match[9] ?? "0"), Number(match[10] ?? "0")];
+  if (hour! > 23 || minute! > 59 || second > 59 || offsetHours > 23 || offsetMinutes > 59) {
+    return undefined;
+  }
+  const local = Date.UTC(year!, month! - 1, day!, hour!, minute!, second, ms);
+  const date = new Date(local);
+  // A month or day out of range rolls over in Date.UTC; the date must come back as given.
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month! - 1 || date.getUTCDate() !== day) {
+    return undefined;
+  }
+  const offsetMs = (match[8] === "-" ? -1 : 1) * (offsetHours * 60 + offsetMinutes) * 60_000;
+  return local - offsetMs;
+}
+
+/** A bag value for a message; one JSON cannot write (a bigint, a cycle) is named by its type. */
+function describeValue(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return typeof value;
+  }
+}
 
 function invalidSignalWait(wait: SignalWaitBatchEntry, message: string) {
   // `waitForSignal` rejects what it can where the wait is defined; a hand-built plan, or a
@@ -472,16 +505,15 @@ function resolveWaitDeadline(
     const at =
       typeof raw === "number"
         ? raw
-        : typeof raw === "string" && ISO_INSTANT.test(raw)
-          ? Date.parse(raw)
+        : typeof raw === "string"
+          ? (parseInstant(raw) ?? Number.NaN)
           : Number.NaN;
-    // A string without an offset would be read in each worker's own time zone, a different
-    // instant on each; a number outside the Date range has no instant at all.
+    // A number outside the Date range has no instant at all.
     if (!Number.isFinite(at) || Number.isNaN(new Date(at).getTime())) {
       throw invalidSignalWait(
         wait,
         `field "${wait.timeoutAtField}" must hold an instant (an ISO 8601 date-time with its ` +
-          `offset, or epoch milliseconds), got ${JSON.stringify(raw) ?? String(raw)}`,
+          `offset, or epoch milliseconds), got ${describeValue(raw)}`,
       );
     }
     const iso = new Date(at).toISOString();
@@ -1475,8 +1507,10 @@ async function continueAtStage(
       );
     }
     stage = target.name;
+    // The body: the batches after the stage resumed at, up to this boundary. A field whose
+    // provider comes later (set by an error handler, say) is not the loop's to drop.
     plan.batches.forEach((batch, index) => {
-      if (index <= target.afterBatch) return;
+      if (index <= target.afterBatch || index > boundary.afterBatch) return;
       for (const step of batch.steps) {
         bodyNames.add(step.name);
         for (const field of step.provides) bodyFields.add(field);
