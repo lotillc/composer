@@ -187,12 +187,19 @@ export function resolveStageBoundaries(
     batches.slice(target.afterBatch + 1, boundary.afterBatch + 1).forEach((batch) => {
       for (const step of batch) for (const field of step.provides) bodyFields.add(String(field));
     });
-    if (!bodyFields.has(boundary.when) && !Object.hasOwn(carry, boundary.when)) {
-      throw new Error(
-        `${prefix}: stage "${boundary.name}" decides on field "${boundary.when}", which no step ` +
-          `after stage "${target.name}" provides and no carry sets, so it could never change ` +
-          `between iterations`,
-      );
+    if (!bodyFields.has(boundary.when)) {
+      // Carried, the field changes only if its source does: the source must be the loop's.
+      const source = Object.hasOwn(carry, boundary.when) ? carry[boundary.when] : undefined;
+      if (source === undefined || !bodyFields.has(source)) {
+        throw new Error(
+          `${prefix}: stage "${boundary.name}" decides on field "${boundary.when}", which no ` +
+            `step after stage "${target.name}" provides` +
+            (source === undefined
+              ? " and no carry sets"
+              : ` and whose carried source "${source}" none provides either`) +
+            ", so it could never change between iterations",
+        );
+      }
     }
     for (const field of Object.keys(carry)) {
       if (field === "__proto__") {

@@ -676,7 +676,18 @@ describe("builder", () => {
             when: "sentAt" as never,
           }),
       ).toThrow('decides on field "sentAt"');
-      // Carried, the field can change between iterations.
+      // Carried from a field the loop provides, the field can change between iterations.
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", {
+            afterStep: verify,
+            resumeAt: "awaiting-approval",
+            when: "requestId" as never,
+            carry: { requestId: "verified" as never },
+          }),
+      ).not.toThrow();
+      // Carried from a field fixed before the stage, it never changes.
       expect(() =>
         baseWorkflow()
           .continueAsNew("awaiting-approval", { afterStep: sendRequest })
@@ -686,7 +697,7 @@ describe("builder", () => {
             when: "requestId" as never,
             carry: { requestId: "sentAt" },
           }),
-      ).not.toThrow();
+      ).toThrow('carried source "sentAt"');
     });
 
     it("types a carry source by its target, and the deadline field as a dependency", () => {
