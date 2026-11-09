@@ -42,3 +42,6 @@ export function durationToMs(duration: DurationString): number {
   }
   return Number(match[1]) * unitMs;
 }
+
+/** No wait means to last longer than this; a timeout or deadline further out is a unit mistake. */
+export const MAX_WAIT_MS = 100 * 365.25 * 24 * 60 * 60 * 1000;

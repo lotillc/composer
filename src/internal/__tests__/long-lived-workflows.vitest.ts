@@ -63,6 +63,17 @@ describe("waitForSignal", () => {
   });
 
   describe("timeoutAt", () => {
+    it("rejects a timeout longer than a century", () => {
+      expect(() =>
+        waitForSignal<Bag>()({
+          name: "w",
+          signal: approvalSignal,
+          provides: ["approval"],
+          timeout: "1e9 days",
+        }),
+      ).toThrow("at most a century");
+    });
+
     it("rejects timeout and timeoutAt together", () => {
       expect(() =>
         waitForSignal<Bag>()({
@@ -697,8 +708,18 @@ describe("builder", () => {
         timeoutAt: "sentAt",
       });
       expectTypeOf(dueWait.needs).toEqualTypeOf<readonly ["sentAt"]>();
-      // A wait without a deadline field keeps its own needs, with nothing appended.
+      // A wait without a deadline field keeps its own needs, with nothing appended, and so does
+      // one whose needs already name the field.
       expectTypeOf(awaitApproval.needs).toEqualTypeOf<readonly ["sentAt"]>();
+      const named = waitForSignal<Bag>()({
+        name: "named",
+        signal: approvalSignal,
+        needs: ["sentAt"],
+        provides: ["approval"],
+        timeoutAt: "sentAt",
+      });
+      expectTypeOf(named.needs).toEqualTypeOf<readonly ["sentAt"]>();
+      expect(named.needs).toEqual(["sentAt"]);
       expectTypeOf(
         waitForSignal<Bag>()({ name: "plain", signal: approvalSignal, provides: ["approval"] }).needs,
       ).toEqualTypeOf<readonly []>();

@@ -26,7 +26,7 @@ import type {
 } from "../../dag-sync-workflow.js";
 // Pure, with no imports beyond types and the leaf duration module, so safe in the sandbox.
 import { DEFAULT_MAX_PENDING_SIGNALS } from "../../dag-sync-signal.js";
-import { durationToMs } from "../../duration.js";
+import { durationToMs, MAX_WAIT_MS } from "../../duration.js";
 import { jsonStringBytes, utf8Length } from "../../json-size.js";
 import { safeErrorName } from "../../error-for-log.js";
 import { assignOwn, setOwn } from "../../own-properties.js";
@@ -445,8 +445,6 @@ interface WaitDeadline {
 /** An ISO 8601 date-time with its offset: the one form every worker reads the same instant from. */
 const ISO_INSTANT =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(?:Z|([+-])(\d{2}):(\d{2}))$/;
-/** No wait means to last this long; a deadline further out is a unit mistake, caught here. */
-const MAX_WAIT_AHEAD_MS = 100 * 365.25 * 24 * 60 * 60 * 1000;
 
 /** The instant an ISO 8601 date-time with its offset names, or none for a string that is not one. */
 // Parsed by hand: `Date.parse` reads a missing offset as local time and quietly rolls a day the
@@ -517,7 +515,7 @@ function resolveWaitDeadline(
       );
     }
     const iso = new Date(at).toISOString();
-    if (at - Date.now() > MAX_WAIT_AHEAD_MS) {
+    if (at - Date.now() > MAX_WAIT_MS) {
       throw invalidSignalWait(
         wait,
         `field "${wait.timeoutAtField}" holds ${iso}, over a century ahead; is it in milliseconds?`,
@@ -529,6 +527,11 @@ function resolveWaitDeadline(
     const timeoutMs = durationToMs(wait.timeout);
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
       throw invalidSignalWait(wait, `timeout must be a positive duration, got ${wait.timeout}`);
+    }
+    // Bounded where the wait is defined too; a hand-built plan can still carry more, and an
+    // instant past the Date range would have no form to show or to time.
+    if (timeoutMs > MAX_WAIT_MS) {
+      throw invalidSignalWait(wait, `timeout must be at most a century, got ${wait.timeout}`);
     }
     const atMs = Date.now() + timeoutMs;
     return { atMs, iso: new Date(atMs).toISOString(), bound: `within ${wait.timeout}` };

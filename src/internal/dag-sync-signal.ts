@@ -1,5 +1,5 @@
 import type { DurationString, Step } from "./dag-sync-step.js";
-import { durationToMs } from "./duration.js";
+import { durationToMs, MAX_WAIT_MS } from "./duration.js";
 import { assertValidName } from "./validate-name.js";
 
 /**
@@ -66,10 +66,12 @@ export type InstantField<Bag> = {
       : never;
 }[keyof Bag & string];
 
-/** A wait's needs with its deadline field, when it has one; a wait without keeps its own. */
+/** A wait's needs with its deadline field, when it has one and the needs do not already name it. */
 export type WaitNeeds<Needs extends readonly PropertyKey[], TimeoutAt> = [TimeoutAt] extends [never]
   ? Needs
-  : readonly [...Needs, TimeoutAt];
+  : TimeoutAt extends Needs[number]
+    ? Needs
+    : readonly [...Needs, TimeoutAt];
 
 export interface SignalWaitMetadata {
   signalName: string;
@@ -245,6 +247,13 @@ export function waitForSignal<Bag extends Record<string, any>>() {
       if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
         throw new Error(
           `waitForSignal "${definition.name}": timeout must be a positive duration, ` +
+            `got "${definition.timeout}"`,
+        );
+      }
+      // Finite, yet past any instant a Date can hold or a wait could mean.
+      if (timeoutMs > MAX_WAIT_MS) {
+        throw new Error(
+          `waitForSignal "${definition.name}": timeout must be at most a century, ` +
             `got "${definition.timeout}"`,
         );
       }

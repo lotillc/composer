@@ -564,6 +564,24 @@ describe("signal waits", () => {
     });
   });
 
+  it("fails the node, not the task, on a hand-built timeout past a century", async () => {
+    const outcome = await createWorkflowFunction(waitPlan({ timeout: "1e9 days" }))({
+      initialData: { id: "1" },
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(outcome).toBeInstanceOf(ApplicationFailure);
+    const detail = (outcome as ApplicationFailure).details?.[0] as {
+      error: TemporalWorkflowResult["error"];
+    };
+    expect(detail.error?.errors?.[0]).toMatchObject({
+      stepName: "awaitApproval",
+      code: "COMPOSER_INVALID_SIGNAL_WAIT",
+    });
+    expect(mocks.conditionTimeouts).toEqual([]);
+  });
+
   it("routes a wait timeout to the error handler", async () => {
     mocks.activityFunctions["waiting__errorHandler"] = vi.fn(async () => ({
       handled: true,
