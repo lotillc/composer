@@ -459,8 +459,10 @@ function parseInstant(text: string): number | undefined {
   if (hour! > 23 || minute! > 59 || second > 59 || offsetHours > 23 || offsetMinutes > 59) {
     return undefined;
   }
-  const local = Date.UTC(year!, month! - 1, day!, hour!, minute!, second, ms);
-  const date = new Date(local);
+  // Built in a leap year and then dated: Date.UTC reads a year under 100 as 19xx.
+  const date = new Date(Date.UTC(2000, month! - 1, day!, hour!, minute!, second, ms));
+  date.setUTCFullYear(year!);
+  const local = date.getTime();
   // A month or day out of range rolls over in Date.UTC; the date must come back as given.
   if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month! - 1 || date.getUTCDate() !== day) {
     return undefined;

@@ -299,13 +299,10 @@ export interface StageBoundaryOptions<
   carry?: { [Target in keyof Bag & string]?: FieldsAssignableTo<Bag, Bag[Target]> };
 }
 
-/** The bag fields that hold a boolean, which a loop can decide on. */
+/** The bag fields that can hold both `true` and `false`, which a loop can decide on. */
+// A field typed only `true` or only `false` could never change, so it is not one of them.
 export type BooleanField<Bag> = {
-  [K in keyof Bag & string]: [Bag[K]] extends [boolean]
-    ? K
-    : boolean extends Bag[K]
-      ? K
-      : never;
+  [K in keyof Bag & string]: [boolean] extends [Bag[K]] ? K : never;
 }[keyof Bag & string];
 
 /** The bag fields whose value a field of type `Value` could take. */

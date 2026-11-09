@@ -10,7 +10,7 @@ import { generateWorkflowPlan } from "../async/register/generate-workflow-source
 import { fanOut } from "../dag-sync-fanout.js";
 import { defineWorkflowSignal, waitForSignal } from "../dag-sync-signal.js";
 import { type DurationString, step } from "../dag-sync-step.js";
-import { createWorkflow, use } from "../dag-sync-workflow.js";
+import { type BooleanField, createWorkflow, use } from "../dag-sync-workflow.js";
 
 interface Bag {
   requestId: string;
@@ -719,6 +719,10 @@ describe("builder", () => {
         timeoutAt: "sentAt",
       });
       expectTypeOf(dueWait.needs).toEqualTypeOf<readonly ["sentAt"]>();
+      // A loop decides on a field that can be either boolean; one typed as a single literal
+      // could never change.
+      expectTypeOf<BooleanField<{ a: boolean; b: true; c: false; d: string; e?: boolean }>>()
+        .toEqualTypeOf<"a" | "e">();
       // A wait without a deadline field keeps its own needs, with nothing appended, and so does
       // one whose needs already name the field.
       expectTypeOf(awaitApproval.needs).toEqualTypeOf<readonly ["sentAt"]>();

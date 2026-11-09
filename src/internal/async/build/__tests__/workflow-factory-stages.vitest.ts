@@ -513,6 +513,22 @@ describe("signal waits", () => {
       expect(mocks.conditionTimeouts).toEqual([2 * 86_400_000 + 500]);
     });
 
+    it("reads a year under 100 as given, so an ancient instant is simply past", async () => {
+      mocks.activityFunctions.a = activity({ x: "X", dueAt: "0099-01-01T00:00:00Z" });
+      const outcome = await createWorkflowFunction(dueAtPlan())({ initialData: { id: "1" } }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      const detail = (outcome as ApplicationFailure).details?.[0] as {
+        error: TemporalWorkflowResult["error"];
+      };
+      expect(detail.error?.errors?.[0]).toMatchObject({
+        stepName: "awaitApproval",
+        code: SIGNAL_WAIT_TIMEOUT_CODE,
+      });
+      expect(mocks.conditionTimeouts).toEqual([]);
+    });
+
     it("shows the instant in the run's details while it waits", async () => {
       mocks.onBlock = () => mocks.defaultSignalHandler!("approval", "late");
       await createWorkflowFunction(dueAtPlan())({ initialData: { id: "1" } });
