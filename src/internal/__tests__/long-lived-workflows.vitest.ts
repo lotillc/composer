@@ -721,8 +721,18 @@ describe("builder", () => {
       expectTypeOf(dueWait.needs).toEqualTypeOf<readonly ["sentAt"]>();
       // A loop decides on a field that can be either boolean; one typed as a single literal
       // could never change.
-      expectTypeOf<BooleanField<{ a: boolean; b: true; c: false; d: string; e?: boolean }>>()
-        .toEqualTypeOf<"a" | "e">();
+      expectTypeOf<
+        BooleanField<{
+          a: boolean;
+          b: true;
+          c: false;
+          d: string;
+          e?: boolean;
+          f: boolean | string;
+          g: unknown;
+          h: boolean | null;
+        }>
+      >().toEqualTypeOf<"a" | "e" | "h">();
       // A wait without a deadline field keeps its own needs, with nothing appended, and so does
       // one whose needs already name the field.
       expectTypeOf(awaitApproval.needs).toEqualTypeOf<readonly ["sentAt"]>();

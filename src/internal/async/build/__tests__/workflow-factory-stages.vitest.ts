@@ -7,7 +7,11 @@
 import { ApplicationFailure } from "@temporalio/workflow";
 import { beforeEach, describe, expect, it, type MockedFunction, vi } from "vitest";
 
-import { CONTINUATION_TOO_LARGE_CODE, SIGNAL_WAIT_TIMEOUT_CODE } from "../../../workflow-codes.js";
+import {
+  CONTINUATION_TOO_LARGE_CODE,
+  LOOP_CARRY_MISSING_CODE,
+  SIGNAL_WAIT_TIMEOUT_CODE,
+} from "../../../workflow-codes.js";
 import type {
   CarriedSignal,
   StepBatch,
@@ -1171,21 +1175,25 @@ describe("loop boundaries", () => {
     expect(continued.next.continuation?.bag).toEqual({ x: "X", w: "W", id: "Y" });
   });
 
-  it("carries nothing for a field whose source is not in the bag, with a warning", async () => {
-    const continued = await runUntilContinued(
+  it("fails the workflow, naming the field, when a carry source is not in the bag", async () => {
+    const outcome = await createWorkflowFunction(
       loopPlan({
         stageBoundaries: [
           { name: "second", afterBatch: 0 },
           { name: "repeat", afterBatch: 2, resumeAt: "second", when: "again", carry: { id: "nope" } },
         ],
       }),
-      { initialData: { id: "1" }, continuation: continuation({ bag: { x: "X" }, completedSteps: ["a"] }) },
+    )({ initialData: { id: "1" }, continuation: continuation({ bag: { x: "X" }, completedSteps: ["a"] }) }).then(
+      () => undefined,
+      (err: unknown) => err,
     );
-    expect(continued.next.continuation?.bag).toEqual({ x: "X" });
-    expect(mocks.log.warn).toHaveBeenCalledWith(
-      "Loop carries nothing for a field: its source is not in the bag",
-      expect.objectContaining({ field: "id", source: "nope" }),
-    );
+    expect(outcome).toBeInstanceOf(ApplicationFailure);
+    expect((outcome as ApplicationFailure).type).toBe(LOOP_CARRY_MISSING_CODE);
+    expect((outcome as ApplicationFailure).nonRetryable).toBe(true);
+    expect((outcome as ApplicationFailure).details?.[0]).toMatchObject({
+      error: { code: LOOP_CARRY_MISSING_CODE, data: { field: "id", source: "nope" } },
+    });
+    expect(mocks.continueAsNewOptions).toHaveLength(0);
   });
 
   it("keeps unconsumed signals across the loop", async () => {

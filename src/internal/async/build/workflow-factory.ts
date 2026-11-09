@@ -35,6 +35,7 @@ import {
   CONTINUATION_TOO_LARGE_CODE,
   UNKNOWN_CHECKPOINT_CODE,
   INVALID_SIGNAL_WAIT_CODE,
+  LOOP_CARRY_MISSING_CODE,
   SIGNAL_WAIT_TIMEOUT_CODE,
   STEP_NOT_READY_CODE,
   STEP_POLL_TIMEOUT_CODE,
@@ -1544,12 +1545,14 @@ async function continueAtStage(
   // What the next iteration reads in place of this one's values, initial fields included.
   for (const [target, source] of Object.entries(boundary.carry ?? {})) {
     if (!Object.hasOwn(bag, source)) {
-      wf.log.warn("Loop carries nothing for a field: its source is not in the bag", {
-        stage: boundary.name,
-        field: target,
-        source,
-      });
-      continue;
+      // Skipped, the target would keep this iteration's value, or revert to the initial one,
+      // and the next iteration would run on it: a loop that could repeat itself without end.
+      throw workflowFailure(
+        LOOP_CARRY_MISSING_CODE,
+        `Stage "${boundary.name}" of workflow "${wf.workflowInfo().workflowType}" carries ` +
+          `field "${target}" from "${source}", which is not in the bag.`,
+        { stage: boundary.name, field: target, source },
+      );
     }
     setOwn(carried, target, bag[source]);
   }

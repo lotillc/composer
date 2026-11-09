@@ -25,6 +25,12 @@ export const SIGNAL_WAIT_TIMEOUT_CODE = "COMPOSER_SIGNAL_WAIT_TIMEOUT";
  */
 export const CONTINUATION_TOO_LARGE_CODE = "COMPOSER_CONTINUATION_TOO_LARGE";
 
+/**
+ * Thrown by the workflow when a loop boundary is taken but a field it carries has no source in
+ * the bag. Carrying on would start the next iteration on a stale value, so the workflow fails.
+ */
+export const LOOP_CARRY_MISSING_CODE = "COMPOSER_LOOP_CARRY_MISSING";
+
 /** A signal wait the workflow cannot run: a non-positive timeout, or a wait not alone. */
 export const INVALID_SIGNAL_WAIT_CODE = "COMPOSER_INVALID_SIGNAL_WAIT";
 
