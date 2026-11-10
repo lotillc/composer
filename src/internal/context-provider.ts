@@ -10,7 +10,7 @@
 
 import type { WorkflowExecutionStatusName } from "@temporalio/client";
 import type { DataConverter } from "@temporalio/common";
-import type { ActivityInterceptorsFactory, WorkerOptions } from "@temporalio/worker";
+import type { ActivityInterceptorsFactory } from "@temporalio/worker";
 import type { ScheduleDefinition } from "./async/schedule/define-schedule.js";
 import type {
   ReplayWorkflowHistoriesOptions,
@@ -330,8 +330,11 @@ export interface SignalAsyncWorkflowOptions {
 /** What a start does when a workflow with the same ID is already running. */
 export type IfRunning = "fail" | "useExisting";
 
-/** Temporal's `workflowFailureErrorTypes` worker option, by workflow type or `"*"`. */
-export type WorkflowFailureErrorTypes = NonNullable<WorkerOptions["workflowFailureErrorTypes"]>;
+/**
+ * Temporal's `workflowFailureErrorTypes` worker option: error type names by workflow type, or
+ * `"*"` for all. Declared here because the option is not in every `@temporalio/worker` allowed.
+ */
+export type WorkflowFailureErrorTypes = Readonly<Record<string, readonly string[]>>;
 
 /**
  * Sync-only Composer instance.

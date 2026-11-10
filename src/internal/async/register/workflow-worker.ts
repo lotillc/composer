@@ -230,6 +230,10 @@ export async function createWorkflowWorkers(
   });
 
   const workflowInterceptorModules = config.interceptors?.workflowModules;
+  // Untyped: Temporal added the option in 1.18, below the range Composer accepts.
+  const failFast: object = config.workflowFailureErrorTypes
+    ? { workflowFailureErrorTypes: config.workflowFailureErrorTypes }
+    : {};
 
   // Create workers for each task queue
   // Note: Temporal requires one Worker per task queue, but they all load the same workflows
@@ -245,9 +249,7 @@ export async function createWorkflowWorkers(
         ...(workflowInterceptorModules
           ? { interceptors: { workflowModules: workflowInterceptorModules } }
           : {}),
-        ...(config.workflowFailureErrorTypes
-          ? { workflowFailureErrorTypes: config.workflowFailureErrorTypes }
-          : {}),
+        ...failFast,
         // Enable Build ID versioning for safe rainbow deploys when a git hash is available.
         // PINNED ensures workflows started on a specific version continue using that version.
         ...(config.buildId
