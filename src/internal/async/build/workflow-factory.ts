@@ -1482,13 +1482,14 @@ async function continueAtStage(
   }
   // What the next iteration reads in place of this one's values, initial fields included.
   for (const [target, source] of Object.entries(boundary.carry ?? {})) {
-    if (!Object.hasOwn(bag, source)) {
-      // Skipped, the target would keep this iteration's value, or revert to the initial one,
-      // and the next iteration would run on it: a loop that could repeat itself without end.
+    // Skipped, the target would keep this iteration's value, or revert to the initial one,
+    // and the next iteration would run on it: a loop that could repeat itself without end. An
+    // undefined value is skipped too, since the continuation's JSON drops it.
+    if (!Object.hasOwn(bag, source) || bag[source] === undefined) {
       throw workflowFailure(
         LOOP_CARRY_MISSING_CODE,
         `Stage "${boundary.name}" of workflow "${wf.workflowInfo().workflowType}" carries ` +
-          `field "${target}" from "${source}", which is not in the bag.`,
+          `field "${target}" from "${source}", which is not in the bag or is undefined.`,
         { stage: boundary.name, field: target, source },
       );
     }

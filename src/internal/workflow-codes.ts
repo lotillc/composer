@@ -27,7 +27,8 @@ export const CONTINUATION_TOO_LARGE_CODE = "COMPOSER_CONTINUATION_TOO_LARGE";
 
 /**
  * Thrown by the workflow when a loop boundary is taken but a field it carries has no source in
- * the bag. Carrying on would start the next iteration on a stale value, so the workflow fails.
+ * the bag, or an undefined one, which the continuation cannot hold. Carrying on would start the
+ * next iteration on a stale value, so the workflow fails.
  */
 export const LOOP_CARRY_MISSING_CODE = "COMPOSER_LOOP_CARRY_MISSING";
 

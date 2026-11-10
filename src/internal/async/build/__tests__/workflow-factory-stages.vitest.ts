@@ -1140,6 +1140,23 @@ describe("loop boundaries", () => {
     expect(mocks.continueAsNewOptions).toHaveLength(0);
   });
 
+  it("fails the workflow when a carry source is undefined, which the continuation would drop", async () => {
+    mocks.activityFunctions.b = activity({ y: undefined });
+    const outcome = await createWorkflowFunction(loopPlan())({
+      initialData: { id: "1" },
+      continuation: continuation({ bag: { x: "X" }, completedSteps: ["a"] }),
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(outcome).toBeInstanceOf(ApplicationFailure);
+    expect((outcome as ApplicationFailure).type).toBe(LOOP_CARRY_MISSING_CODE);
+    expect((outcome as ApplicationFailure).details?.[0]).toMatchObject({
+      error: { code: LOOP_CARRY_MISSING_CODE, data: { field: "id", source: "y" } },
+    });
+    expect(mocks.continueAsNewOptions).toHaveLength(0);
+  });
+
   it("carries a signal the body's wait left unconsumed into the next pass", async () => {
     const plan = loopPlan();
     // a | b | awaitApproval | c, looping back to "second": the wait is inside the body.
