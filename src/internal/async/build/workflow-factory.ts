@@ -26,7 +26,7 @@ import type {
 } from "../../dag-sync-workflow.js";
 // Pure, with no imports beyond types and the leaf duration module, so safe in the sandbox.
 import { DEFAULT_MAX_PENDING_SIGNALS } from "../../dag-sync-signal.js";
-import { durationToMs, MAX_WAIT_MS } from "../../duration.js";
+import { durationToMs } from "../../duration.js";
 import { jsonStringBytes, utf8Length } from "../../json-size.js";
 import { safeErrorName } from "../../error-for-log.js";
 import { assignOwn, setOwn } from "../../own-properties.js";
@@ -438,53 +438,14 @@ function receiveSignal(
 /** When a wait ends if no signal comes, read once as the wait begins. */
 interface WaitDeadline {
   atMs: number;
-  iso: string;
   /** How the wait was bounded, for its timeout failure: "within 21 days" or "by <instant>". */
   bound: string;
-}
-
-/** An ISO 8601 date-time with its offset: the one form every worker reads the same instant from. */
-const ISO_INSTANT =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(?:Z|([+-])(\d{2}):(\d{2}))$/;
-
-/** The instant an ISO 8601 date-time with its offset names, or none for a string that is not one. */
-// Parsed by hand: `Date.parse` reads a missing offset as local time and quietly rolls a day the
-// month does not have into the next, and neither may decide when a workflow wakes.
-function parseInstant(text: string): number | undefined {
-  const match = ISO_INSTANT.exec(text);
-  if (!match) return undefined;
-  const [year, month, day, hour, minute] = match.slice(1, 6).map(Number) as number[];
-  const second = Number(match[6] ?? "0");
-  const ms = Number((match[7] ?? "0").padEnd(3, "0").slice(0, 3));
-  const [offsetHours, offsetMinutes] = [Number(match[9] ?? "0"), Number(match[10] ?? "0")];
-  if (hour! > 23 || minute! > 59 || second > 59 || offsetHours > 23 || offsetMinutes > 59) {
-    return undefined;
-  }
-  // Built in a leap year and then dated: Date.UTC reads a year under 100 as 19xx.
-  const date = new Date(Date.UTC(2000, month! - 1, day!, hour!, minute!, second, ms));
-  date.setUTCFullYear(year!);
-  const local = date.getTime();
-  // A month or day out of range rolls over in Date.UTC; the date must come back as given.
-  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month! - 1 || date.getUTCDate() !== day) {
-    return undefined;
-  }
-  const offsetMs = (match[8] === "-" ? -1 : 1) * (offsetHours * 60 + offsetMinutes) * 60_000;
-  return local - offsetMs;
-}
-
-/** A bag value for a message; one JSON cannot write (a bigint, a cycle) is named by its type. */
-function describeValue(value: unknown): string {
-  try {
-    return JSON.stringify(value) ?? String(value);
-  } catch {
-    return typeof value;
-  }
 }
 
 function invalidSignalWait(wait: SignalWaitBatchEntry, message: string) {
   // `waitForSignal` rejects what it can where the wait is defined; a hand-built plan, or a
   // bag field, can still carry it. Fail the node, not the workflow task, so it reaches
-  // `onError` and the result like any step failure, instead of retrying forever.
+  // onError rather than retrying forever.
   return wf.ApplicationFailure.create({
     type: INVALID_SIGNAL_WAIT_CODE,
     message: `Signal wait "${wait.name}": ${message}`,
@@ -502,42 +463,23 @@ function resolveWaitDeadline(
   bag: Record<string, unknown>,
 ): WaitDeadline | undefined {
   if (wait.timeoutAtField !== undefined) {
-    const raw = bag[wait.timeoutAtField];
-    const at =
-      typeof raw === "number"
-        ? raw
-        : typeof raw === "string"
-          ? (parseInstant(raw) ?? Number.NaN)
-          : Number.NaN;
-    // A number outside the Date range has no instant at all.
-    if (!Number.isFinite(at) || Number.isNaN(new Date(at).getTime())) {
+    const at = bag[wait.timeoutAtField];
+    // Epoch milliseconds from 1973 to 5138: a value outside is in seconds or microseconds.
+    if (typeof at !== "number" || !(at >= 1e11 && at < 1e14)) {
       throw invalidSignalWait(
         wait,
-        `field "${wait.timeoutAtField}" must hold an instant (an ISO 8601 date-time with its ` +
-          `offset, or epoch milliseconds), got ${describeValue(raw)}`,
+        `field "${wait.timeoutAtField}" must hold an instant in epoch milliseconds, got ` +
+          (typeof at === "number" ? String(at) : `a value of type ${typeof at}`),
       );
     }
-    const iso = new Date(at).toISOString();
-    if (at - Date.now() > MAX_WAIT_MS) {
-      throw invalidSignalWait(
-        wait,
-        `field "${wait.timeoutAtField}" holds ${iso}, over a century ahead; is it in milliseconds?`,
-      );
-    }
-    return { atMs: at, iso, bound: `by ${iso}` };
+    return { atMs: at, bound: `by ${new Date(at).toISOString()}` };
   }
   if (wait.timeout !== undefined) {
     const timeoutMs = durationToMs(wait.timeout);
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
       throw invalidSignalWait(wait, `timeout must be a positive duration, got ${wait.timeout}`);
     }
-    // Bounded where the wait is defined too; a hand-built plan can still carry more, and an
-    // instant past the Date range would have no form to show or to time.
-    if (timeoutMs > MAX_WAIT_MS) {
-      throw invalidSignalWait(wait, `timeout must be at most a century, got ${wait.timeout}`);
-    }
-    const atMs = Date.now() + timeoutMs;
-    return { atMs, iso: new Date(atMs).toISOString(), bound: `within ${wait.timeout}` };
+    return { atMs: Date.now() + timeoutMs, bound: `within ${wait.timeout}` };
   }
   return undefined;
 }
@@ -552,9 +494,10 @@ function resolveWaitDeadline(
 async function runSignalWait(
   wait: SignalWaitBatchEntry,
   inbox: SignalInbox,
-  deadline: WaitDeadline | undefined,
+  bag: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const hasPending = () => (inbox.queues.get(wait.signalName)?.length ?? 0) > 0;
+  const deadline = resolveWaitDeadline(wait, bag);
 
   for (;;) {
     if (hasPending()) {
@@ -584,7 +527,7 @@ async function runSignalWait(
             stepName: wait.name,
             signalName: wait.signalName,
             ...(wait.timeoutAtField !== undefined
-              ? { timeoutAt: deadline.iso }
+              ? { timeoutAt: deadline.atMs }
               : { timeout: wait.timeout }),
           },
         },
@@ -815,7 +758,7 @@ export interface SignalWaitBatchEntry {
   provides: string;
   /** Bound on the wait; unset means no limit */
   timeout?: DurationString;
-  /** Bag field holding the instant the wait ends at (ISO 8601 or epoch ms); set instead of `timeout` */
+  /** Bag field holding the instant the wait ends at, in epoch ms; set instead of `timeout` */
   timeoutAtField?: string;
   /** Field value on timeout, when `hasTimeoutValue` */
   timeoutValue?: unknown;
@@ -1052,13 +995,11 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
 
     // Shown by Temporal UI and describe, so an operator can see where a long-lived run is
     // without decoding its input. A stage is named by the boundary that begins it.
-    const waitingOn = new Map<string, WaitDeadline | undefined>();
+    const waitingOn = new Set<string>();
     const showDetails = () => {
       if (!usesSignals) return;
       const stage = continuation?.stage ?? "(first stage)";
-      const waits = [...waitingOn]
-        .map(([name, deadline]) => `"${name}"${deadline ? ` until ${deadline.iso}` : ""}`)
-        .join(", ");
+      const waits = [...waitingOn].map((name) => `"${name}"`).join(", ");
       wf.setCurrentDetails(`Stage: ${stage}${waits ? `\nWaiting for signal: ${waits}` : ""}`);
     };
     showDetails();
@@ -1244,13 +1185,10 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
         allNames.push(wait.name);
         allPromises.push(
           (async (): Promise<BatchResult> => {
-            // Resolved before the wait shows: an invalid deadline fails the node at once, and a
-            // valid one is in the run's details for as long as it waits.
-            const deadline = resolveWaitDeadline(wait, bag);
-            waitingOn.set(wait.signalName, deadline);
+            waitingOn.add(wait.signalName);
             showDetails();
             try {
-              const output = await runSignalWait(wait, inbox, deadline);
+              const output = await runSignalWait(wait, inbox, bag);
               return { stepName: wait.name, output };
             } finally {
               waitingOn.delete(wait.signalName);

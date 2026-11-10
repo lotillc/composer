@@ -16,10 +16,7 @@
 import { unlink } from "node:fs/promises";
 import type { DataConverter, HistoryAndWorkflowId } from "@temporalio/common";
 import { Worker } from "@temporalio/worker";
-import type {
-  ComposerWorkerInterceptors,
-  WorkflowFailureErrorTypes,
-} from "../../context-provider.js";
+import type { ComposerWorkerInterceptors } from "../../context-provider.js";
 import type { Workflow } from "../../dag-sync-workflow.js";
 import { writeWorkflowSourceFile } from "./generate-workflow-source.js";
 import { workflowBundlerOptions } from "./workflow-worker.js";
@@ -40,8 +37,6 @@ export interface ReplayWorkflowHistoriesOptions {
   dataConverter?: DataConverter;
   /** Workflow interceptor modules the workers load; they take part in replay too. */
   interceptors?: Pick<ComposerWorkerInterceptors, "workflowModules">;
-  /** The workers' `workflowFailureErrorTypes`, so a replay fails where the workers would. */
-  workflowFailureErrorTypes?: WorkflowFailureErrorTypes;
   /**
    * The workers' carried-state budget. It decides whether a stage boundary continues as new
    * or fails, so replaying under a different one can report histories that are fine.
@@ -107,9 +102,6 @@ export async function replayWorkflowHistories(
         ...(options.dataConverter ? { dataConverter: options.dataConverter } : {}),
         ...(options.interceptors?.workflowModules
           ? { interceptors: { workflowModules: options.interceptors.workflowModules } }
-          : {}),
-        ...(options.workflowFailureErrorTypes
-          ? { workflowFailureErrorTypes: options.workflowFailureErrorTypes }
           : {}),
       },
       options.histories,

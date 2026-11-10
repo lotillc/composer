@@ -31,7 +31,10 @@ export const CONTINUATION_TOO_LARGE_CODE = "COMPOSER_CONTINUATION_TOO_LARGE";
  */
 export const LOOP_CARRY_MISSING_CODE = "COMPOSER_LOOP_CARRY_MISSING";
 
-/** A signal wait the workflow cannot run: a non-positive timeout, or a wait not alone. */
+/**
+ * A signal wait the workflow cannot run: a non-positive timeout, a `timeoutAt` field that does
+ * not hold epoch milliseconds, or a wait not alone.
+ */
 export const INVALID_SIGNAL_WAIT_CODE = "COMPOSER_INVALID_SIGNAL_WAIT";
 
 /** `awaitCheckpoint` named a checkpoint the running build's workflow does not declare. */

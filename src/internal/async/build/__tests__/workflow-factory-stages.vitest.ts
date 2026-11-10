@@ -452,10 +452,10 @@ describe("signal waits", () => {
     });
   });
 
-  // A deadline read from a record is an instant in the bag, not a duration fixed where the
-  // wait is defined.
+  // A deadline known only at run time is an instant in the bag, not a duration fixed where
+  // the wait is defined.
   describe("timeoutAt", () => {
-    const dueAt = "2026-11-20T00:00:00.000Z";
+    const dueAt = Date.parse("2026-11-20T00:00:00.000Z");
 
     function dueAtPlan(wait: Partial<NonNullable<StepBatch["signalWaits"]>[number]> = {}) {
       const plan = waitPlan({ timeoutAtField: "dueAt", ...wait });
@@ -474,19 +474,12 @@ describe("signal waits", () => {
       expect(mocks.conditionTimeouts).toEqual([2 * 86_400_000]);
     });
 
-    it("takes epoch milliseconds as the instant too", async () => {
-      mocks.activityFunctions.a = activity({ x: "X", dueAt: Date.parse(dueAt) });
-      mocks.onBlock = () => mocks.defaultSignalHandler!("approval", "late");
-      await createWorkflowFunction(dueAtPlan())({ initialData: { id: "1" } });
-      expect(mocks.conditionTimeouts).toEqual([2 * 86_400_000]);
-    });
-
     it("uses the timeout value once the instant passes with no signal", async () => {
       const result = (await createWorkflowFunction(
         dueAtPlan({ hasTimeoutValue: true, timeoutValue: "expired" }),
       )({ initialData: { id: "1" } })) as TemporalWorkflowResult;
       expect(result.bag.approval).toBe("expired");
-      expect(mocks.nowMs).toBe(Date.parse(dueAt));
+      expect(mocks.nowMs).toBe(dueAt);
     });
 
     it("ends at once, without a timer, when the instant has already passed", async () => {
@@ -510,37 +503,6 @@ describe("signal waits", () => {
       expect(result.bag.approval).toBe("early");
     });
 
-    it("reads a date-time with an offset as the instant it names", async () => {
-      mocks.activityFunctions.a = activity({ x: "X", dueAt: "2026-11-20T02:30:00.5+02:30" });
-      mocks.onBlock = () => mocks.defaultSignalHandler!("approval", "late");
-      await createWorkflowFunction(dueAtPlan())({ initialData: { id: "1" } });
-      expect(mocks.conditionTimeouts).toEqual([2 * 86_400_000 + 500]);
-    });
-
-    it("reads a year under 100 as given, so an ancient instant is simply past", async () => {
-      mocks.activityFunctions.a = activity({ x: "X", dueAt: "0099-01-01T00:00:00Z" });
-      const outcome = await createWorkflowFunction(dueAtPlan())({ initialData: { id: "1" } }).then(
-        () => undefined,
-        (err: unknown) => err,
-      );
-      const detail = (outcome as ApplicationFailure).details?.[0] as {
-        error: TemporalWorkflowResult["error"];
-      };
-      expect(detail.error?.errors?.[0]).toMatchObject({
-        stepName: "awaitApproval",
-        code: SIGNAL_WAIT_TIMEOUT_CODE,
-      });
-      expect(mocks.conditionTimeouts).toEqual([]);
-    });
-
-    it("shows the instant in the run's details while it waits", async () => {
-      mocks.onBlock = () => mocks.defaultSignalHandler!("approval", "late");
-      await createWorkflowFunction(dueAtPlan())({ initialData: { id: "1" } });
-      expect(mocks.details).toContain(
-        `Stage: (first stage)\nWaiting for signal: "approval" until ${dueAt}`,
-      );
-    });
-
     it("fails the node with the timeout code once the instant passes", async () => {
       const outcome = await createWorkflowFunction(dueAtPlan())({ initialData: { id: "1" } }).then(
         () => undefined,
@@ -557,15 +519,11 @@ describe("signal waits", () => {
 
     it.each([
       ["missing", {}],
-      ["not an instant", { dueAt: "soon" }],
-      ["a date-time without an offset", { dueAt: "2026-11-20T00:00:00" }],
-      ["a date that is not ISO 8601", { dueAt: "Nov 20 2026" }],
-      ["a day the month does not have", { dueAt: "2026-02-31T00:00:00Z" }],
-      ["an hour past the day", { dueAt: "2026-11-20T24:00:00Z" }],
+      ["a string, even an ISO 8601 date-time", { dueAt: "2026-11-20T00:00:00Z" }],
       ["a bigint", { dueAt: 1_700_000_000_000n }],
-      ["a non-finite number", { dueAt: Number.POSITIVE_INFINITY }],
-      ["an epoch outside the Date range", { dueAt: 1e18 }],
-      ["an epoch in microseconds", { dueAt: Date.parse("2026-11-20T00:00:00Z") * 1000 }],
+      ["not finite", { dueAt: Number.POSITIVE_INFINITY }],
+      ["in seconds", { dueAt: dueAt / 1000 }],
+      ["in microseconds", { dueAt: dueAt * 1000 }],
     ])("fails the node, not the task, when the field is %s", async (_label, output) => {
       mocks.activityFunctions.a = activity({ x: "X", ...output });
       const outcome = await createWorkflowFunction(dueAtPlan())({ initialData: { id: "1" } }).then(
@@ -582,24 +540,6 @@ describe("signal waits", () => {
       });
       expect(mocks.conditionTimeouts).toEqual([]);
     });
-  });
-
-  it("fails the node, not the task, on a hand-built timeout past a century", async () => {
-    const outcome = await createWorkflowFunction(waitPlan({ timeout: "1e9 days" }))({
-      initialData: { id: "1" },
-    }).then(
-      () => undefined,
-      (err: unknown) => err,
-    );
-    expect(outcome).toBeInstanceOf(ApplicationFailure);
-    const detail = (outcome as ApplicationFailure).details?.[0] as {
-      error: TemporalWorkflowResult["error"];
-    };
-    expect(detail.error?.errors?.[0]).toMatchObject({
-      stepName: "awaitApproval",
-      code: "COMPOSER_INVALID_SIGNAL_WAIT",
-    });
-    expect(mocks.conditionTimeouts).toEqual([]);
   });
 
   it("routes a wait timeout to the error handler", async () => {
@@ -1093,7 +1033,7 @@ describe("loop boundaries", () => {
       name: "looping",
       batches: [
         { steps: [step("a", ["id"], ["x"])] },
-        { steps: [step("b", ["x"], ["y"])] },
+        { steps: [step("b", ["x", "id"], ["y"])] },
         { steps: [step("c", ["y"], ["z", "again"])] },
       ],
       stageBoundaries: [
@@ -1135,17 +1075,21 @@ describe("loop boundaries", () => {
     });
   });
 
-  it("re-runs the body on the next iteration with the carried fields", async () => {
-    mocks.activityFunctions.c = activity({ z: "Z", again: false });
-    const result = (await createWorkflowFunction(loopPlan())({
+  it("runs the body again in the next run, which reads the carried field", async () => {
+    const continued = await runUntilContinued(loopPlan(), {
       initialData: { id: "1" },
-      continuation: continuation({ stage: "second", bag: { x: "X", id: "Y" }, completedSteps: ["a"] }),
-    })) as TemporalWorkflowResult;
+      continuation: continuation({ stage: "second", bag: { x: "X" }, completedSteps: ["a"] }),
+    });
+    mocks.activityFunctions.b = activity({ y: "Y2" });
+    mocks.activityFunctions.c = activity({ z: "Z2", again: false });
+    const result = (await createWorkflowFunction(loopPlan())(
+      continued.next,
+    )) as TemporalWorkflowResult;
 
     expect(mocks.activityFunctions.a).not.toHaveBeenCalled();
-    expect(mocks.activityFunctions.b).toHaveBeenCalledWith(expect.anything(), { x: "X" });
+    expect(mocks.activityFunctions.b).toHaveBeenCalledWith(expect.anything(), { x: "X", id: "Y" });
     expect(result.error).toBeUndefined();
-    expect(result.bag).toMatchObject({ id: "Y", x: "X", y: "Y", z: "Z", again: false });
+    expect(result.bag).toMatchObject({ id: "Y", x: "X", y: "Y2", z: "Z2", again: false });
   });
 
   it.each([
@@ -1196,19 +1140,22 @@ describe("loop boundaries", () => {
     expect(mocks.continueAsNewOptions).toHaveLength(0);
   });
 
-  it("keeps unconsumed signals across the loop", async () => {
+  it("carries a signal the body's wait left unconsumed into the next pass", async () => {
     const plan = loopPlan();
-    plan.batches.push(waitBatch("awaitApproval", "approval", "approval"));
-    plan.stageBoundaries![1] = { ...plan.stageBoundaries![1]!, afterBatch: 2 };
+    // a | b | awaitApproval | c, looping back to "second": the wait is inside the body.
+    plan.batches.splice(2, 0, waitBatch("awaitApproval", "approval", "approval"));
+    plan.stageBoundaries![1] = { ...plan.stageBoundaries![1]!, afterBatch: 3 };
     mocks.activityFunctions.b = vi.fn(async () => {
-      mocks.defaultSignalHandler!("approval", "early");
+      mocks.defaultSignalHandler!("approval", "first");
+      mocks.defaultSignalHandler!("approval", "second");
       return { y: "Y" };
     });
     const continued = await runUntilContinued(plan, {
       initialData: { id: "1" },
       continuation: continuation({ bag: { x: "X" }, completedSteps: ["a"] }),
     });
-    expect(continued.next.continuation?.signals).toEqual({ approval: wrapped("early") });
+    expect(continued.next.continuation?.bag).toEqual({ x: "X", id: "Y" });
+    expect(continued.next.continuation?.signals).toEqual({ approval: wrapped("second") });
   });
 
   it("fails the task, not the workflow, on a hand-built plan whose loop names no when field", async () => {

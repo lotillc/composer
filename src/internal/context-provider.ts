@@ -197,9 +197,11 @@ export interface TemporalConfig {
 
   /**
    * Error types that fail a workflow execution instead of its workflow task, by workflow
-   * type (`"*"` for all). Temporal's default retries a failed task forever, so a run on a
-   * build that cannot replay its history stays open. `{ "*": ["NondeterminismError"] }`
-   * fails such a run at once, which an alarm can see and an operator can restart.
+   * type (`"*"` for all), passed to the workflow workers. Temporal's default retries a failed
+   * task forever, so a run on a build that cannot replay its history stays open;
+   * `{ "*": ["NondeterminismError"] }` fails it instead, for an alarm to see and an operator
+   * to restart. That includes a run a newer build advanced, after a rollback. Temporal marks
+   * the option experimental; it needs `@temporalio/worker` 1.18 or later.
    */
   workflowFailureErrorTypes?: WorkflowFailureErrorTypes;
 

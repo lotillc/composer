@@ -1,5 +1,5 @@
 import type { DurationString, Step } from "./dag-sync-step.js";
-import { durationToMs, MAX_WAIT_MS } from "./duration.js";
+import { durationToMs } from "./duration.js";
 import { assertValidName } from "./validate-name.js";
 
 /**
@@ -52,16 +52,12 @@ export function defineWorkflowSignal<Payload>(
 /** Unconsumed payloads kept per signal name when a wait sets no `maxPendingSignals`. */
 export const DEFAULT_MAX_PENDING_SIGNALS = 100;
 
-/**
- * Runtime metadata for a signal wait node.
- */
-/** The bag fields that can hold an instant: a string (ISO 8601) or a number (epoch milliseconds). */
-// A field that can only be null or undefined has no instant to hold: `never` is checked first,
-// since a conditional on it would otherwise read as true.
-export type InstantField<Bag> = {
+/** The bag fields typed as a number, the epoch milliseconds a wait's `timeoutAt` reads. */
+export type EpochMsField<Bag> = {
+  // Checked for `never` first: a field that is only null or undefined would otherwise match.
   [K in keyof Bag & string]: [NonNullable<Bag[K]>] extends [never]
     ? never
-    : NonNullable<Bag[K]> extends string | number
+    : NonNullable<Bag[K]> extends number
       ? K
       : never;
 }[keyof Bag & string];
@@ -73,6 +69,9 @@ export type WaitNeeds<Needs extends readonly PropertyKey[], TimeoutAt> = [Timeou
     ? Needs
     : readonly [...Needs, TimeoutAt];
 
+/**
+ * Runtime metadata for a signal wait node.
+ */
 export interface SignalWaitMetadata {
   signalName: string;
   /**
@@ -81,7 +80,7 @@ export interface SignalWaitMetadata {
    */
   signal: WorkflowSignal<unknown>;
   timeout?: DurationString;
-  /** Bag field holding the instant the wait ends at; set instead of `timeout`. */
+  /** Bag field holding the instant the wait ends at, in epoch ms; set instead of `timeout`. */
   timeoutAtField?: string;
   maxPendingSignals?: number;
   timeoutValue?: unknown;
@@ -182,10 +181,9 @@ function sameAsJsonCopy(original: unknown, copy: unknown): boolean {
  * given (it must be plain JSON data); otherwise the node fails with `SIGNAL_WAIT_TIMEOUT_CODE`, which the workflow's
  * `onError` handler sees like any step failure. With no `timeout`, the wait has no limit.
  *
- * `timeoutAt` names a bag field instead: the wait ends at the instant that field holds (an
- * ISO 8601 string or epoch milliseconds) when the wait begins, so a deadline a step read
- * from a record bounds it. An instant already past ends the wait at once. The field is
- * added to `needs`, so the step that provides it runs first.
+ * `timeoutAt` names a bag field instead: the wait ends at the instant, in epoch milliseconds,
+ * that the field holds when the wait begins, so a deadline known only at run time bounds it.
+ * An instant already past ends the wait at once. The field is added to `needs`.
  *
  * `needs` only orders the wait after the steps that produce those fields.
  *
@@ -212,7 +210,7 @@ export function waitForSignal<Bag extends Record<string, any>>() {
     const Name extends string,
     const Field extends keyof Bag,
     const Needs extends readonly (keyof Bag)[] = readonly [],
-    const TimeoutAt extends InstantField<Bag> = never,
+    const TimeoutAt extends EpochMsField<Bag> = never,
   >(definition: {
     name: Name;
     signal: WorkflowSignal<NoInfer<Bag[Field]>>;
@@ -222,8 +220,6 @@ export function waitForSignal<Bag extends Record<string, any>>() {
     timeoutAt?: TimeoutAt;
     timeoutValue?: NoInfer<Bag[Field]>;
     maxPendingSignals?: number;
-    // The deadline's field is a dependency like any other, so it is typed as one: a workflow
-    // that neither requires nor provides it is refused where it is defined.
   }): SignalWait<Bag, WaitNeeds<Needs, TimeoutAt>, Field, Name> => {
     assertValidName("SignalWait", definition.name);
     if (typeof definition.signal?.name !== "string") {
@@ -247,13 +243,6 @@ export function waitForSignal<Bag extends Record<string, any>>() {
       if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
         throw new Error(
           `waitForSignal "${definition.name}": timeout must be a positive duration, ` +
-            `got "${definition.timeout}"`,
-        );
-      }
-      // Finite, yet past any instant a Date can hold or a wait could mean.
-      if (timeoutMs > MAX_WAIT_MS) {
-        throw new Error(
-          `waitForSignal "${definition.name}": timeout must be at most a century, ` +
             `got "${definition.timeout}"`,
         );
       }
@@ -289,7 +278,8 @@ export function waitForSignal<Bag extends Record<string, any>>() {
       );
     }
 
-    // The deadline's field is a dependency like any other: whoever provides it runs first.
+    // The deadline's field is a dependency like any other, in the type too: whoever provides
+    // it runs first, and a workflow that has no such field is refused where it is defined.
     const needs: (keyof Bag)[] = [...(definition.needs ?? [])];
     if (definition.timeoutAt !== undefined && !needs.includes(definition.timeoutAt)) {
       needs.push(definition.timeoutAt);
