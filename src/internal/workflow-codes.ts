@@ -45,3 +45,6 @@ export const CHECKPOINT_PASSED_CODE = "COMPOSER_CHECKPOINT_PASSED";
 
 /** `awaitCheckpoint` gave up waiting after the checkpoint's timeout. */
 export const CHECKPOINT_TIMEOUT_CODE = "COMPOSER_CHECKPOINT_TIMEOUT";
+
+/** The `@temporalio/*` peers resolve to different versions, which Temporal does not support. */
+export const TEMPORAL_VERSION_MISMATCH_CODE = "COMPOSER_TEMPORAL_VERSION_MISMATCH";

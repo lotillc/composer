@@ -20,6 +20,7 @@ import type { ComposerWorkerInterceptors } from "../../context-provider.js";
 import type { Workflow } from "../../dag-sync-workflow.js";
 import { writeWorkflowSourceFile } from "./generate-workflow-source.js";
 import { workflowBundlerOptions } from "./workflow-worker.js";
+import { assertTemporalVersionsAligned } from "../utils/temporal-versions.js";
 
 /**
  * Options for {@link replayWorkflowHistories}.
@@ -87,6 +88,7 @@ let replayCounter = 0;
 export async function replayWorkflowHistories(
   options: ReplayWorkflowHistoriesOptions,
 ): Promise<ReplayWorkflowHistoriesResult> {
+  assertTemporalVersionsAligned();
   // A file of its own, so a replay never rewrites the source a worker in this process loads.
   const workflowsPath = await writeWorkflowSourceFile(options.workflows, {
     workerVersioning: true,

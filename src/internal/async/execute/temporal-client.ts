@@ -39,6 +39,7 @@ import type { UpdateDefinition } from "@temporalio/common";
 import type { DataConverter, PayloadCodec, VersioningOverride } from "@temporalio/common";
 import type { UUIDV7 } from "../../types.js";
 import type { WorkflowInput } from "../build/workflow-factory.js";
+import { assertTemporalVersionsAligned } from "../utils/temporal-versions.js";
 
 /**
  * Configuration for connecting to Temporal Server.
@@ -147,6 +148,7 @@ function dataConverterCacheKey(dataConverter: DataConverter | undefined): string
  * @returns Temporal Client instance
  */
 export function createTemporalClient(config: TemporalClientConfig): Promise<Client> {
+  assertTemporalVersionsAligned();
   const cacheKey = `${config.address}:${config.namespace}:${dataConverterCacheKey(config.dataConverter)}`;
 
   const existing = cachedClients.get(cacheKey);
