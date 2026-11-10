@@ -34,6 +34,7 @@ import { defaultLogger } from "../../defaults.js";
 import { errorForLog } from "../../error-for-log.js";
 import type { ComposerLogger } from "../../types.js";
 import { writeWorkflowSourceFile } from "./generate-workflow-source.js";
+import { assertTemporalVersionsAligned } from "../utils/temporal-versions.js";
 
 /**
  * Resolve the node_modules directory containing @temporalio/workflow.
@@ -197,6 +198,7 @@ const DEFAULT_CONFIG = {
 export async function createWorkflowWorkers(
   config: WorkflowWorkerConfig,
 ): Promise<{ workers: Worker[]; connection: NativeConnection }> {
+  assertTemporalVersionsAligned();
   const logger = config.logger ?? defaultLogger;
   const finalConfig = { ...DEFAULT_CONFIG, ...config };
 

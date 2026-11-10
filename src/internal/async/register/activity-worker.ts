@@ -48,6 +48,7 @@ import {
   type ComposerErrorInstance,
 } from "../utils/is-composer-error.js";
 import { collectAllWorkflows } from "./generate-workflow-source.js";
+import { assertTemporalVersionsAligned } from "../utils/temporal-versions.js";
 
 const v8StackGetter = Object.getOwnPropertyDescriptor(new Error(), "stack")?.get;
 
@@ -629,6 +630,7 @@ export async function createActivityWorkers<TContext = unknown>(
   metricsHandle?: TaskQueueMetricsHandle;
   activeActivityTracker: ActiveActivityTracker;
 }> {
+  assertTemporalVersionsAligned();
   const logger = config.logger ?? defaultLogger;
 
   const workflowCount = config.workflows.length;

@@ -12,10 +12,12 @@ Composer lets you define steps with explicit inputs and outputs, compose them in
 ## Installation
 
 ```bash
-pnpm add @lotiai/composer
+pnpm add @lotiai/composer @temporalio/activity @temporalio/client @temporalio/common @temporalio/worker @temporalio/workflow
 # or
-npm install @lotiai/composer
+npm install @lotiai/composer @temporalio/activity @temporalio/client @temporalio/common @temporalio/worker @temporalio/workflow
 ```
+
+The Temporal SDK packages are peer dependencies, so your project owns the one copy of each. Keep every `@temporalio/*` package on the same version.
 
 ### Requirements
 
