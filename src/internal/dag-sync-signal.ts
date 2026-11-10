@@ -52,6 +52,23 @@ export function defineWorkflowSignal<Payload>(
 /** Unconsumed payloads kept per signal name when a wait sets no `maxPendingSignals`. */
 export const DEFAULT_MAX_PENDING_SIGNALS = 100;
 
+/** The bag fields typed as a number, the epoch milliseconds a wait's `timeoutAt` reads. */
+export type EpochMsField<Bag> = {
+  // Checked for `never` first: a field that is only null or undefined would otherwise match.
+  [K in keyof Bag & string]: [NonNullable<Bag[K]>] extends [never]
+    ? never
+    : NonNullable<Bag[K]> extends number
+      ? K
+      : never;
+}[keyof Bag & string];
+
+/** A wait's needs with its deadline field, when it has one and the needs do not already name it. */
+export type WaitNeeds<Needs extends readonly PropertyKey[], TimeoutAt> = [TimeoutAt] extends [never]
+  ? Needs
+  : TimeoutAt extends Needs[number]
+    ? Needs
+    : readonly [...Needs, TimeoutAt];
+
 /**
  * Runtime metadata for a signal wait node.
  */
@@ -63,6 +80,8 @@ export interface SignalWaitMetadata {
    */
   signal: WorkflowSignal<unknown>;
   timeout?: DurationString;
+  /** Bag field holding the instant the wait ends at, in epoch ms; set instead of `timeout`. */
+  timeoutAtField?: string;
   maxPendingSignals?: number;
   timeoutValue?: unknown;
   /** Distinguishes an explicit `timeoutValue: undefined` from no fallback at all. */
@@ -162,6 +181,10 @@ function sameAsJsonCopy(original: unknown, copy: unknown): boolean {
  * given (it must be plain JSON data); otherwise the node fails with `SIGNAL_WAIT_TIMEOUT_CODE`, which the workflow's
  * `onError` handler sees like any step failure. With no `timeout`, the wait has no limit.
  *
+ * `timeoutAt` names a bag field instead: the wait ends at the instant, in epoch milliseconds,
+ * that the field holds when the wait begins, so a deadline known only at run time bounds it.
+ * An instant already past ends the wait at once. The field is added to `needs`.
+ *
  * `needs` only orders the wait after the steps that produce those fields.
  *
  * Only signal names a wait declares are accepted; any other signal is dropped with a
@@ -187,15 +210,17 @@ export function waitForSignal<Bag extends Record<string, any>>() {
     const Name extends string,
     const Field extends keyof Bag,
     const Needs extends readonly (keyof Bag)[] = readonly [],
+    const TimeoutAt extends EpochMsField<Bag> = never,
   >(definition: {
     name: Name;
     signal: WorkflowSignal<NoInfer<Bag[Field]>>;
     needs?: Needs;
     provides: readonly [Field];
     timeout?: DurationString;
+    timeoutAt?: TimeoutAt;
     timeoutValue?: NoInfer<Bag[Field]>;
     maxPendingSignals?: number;
-  }): SignalWait<Bag, Needs, Field, Name> => {
+  }): SignalWait<Bag, WaitNeeds<Needs, TimeoutAt>, Field, Name> => {
     assertValidName("SignalWait", definition.name);
     if (typeof definition.signal?.name !== "string") {
       throw new Error(
@@ -222,6 +247,21 @@ export function waitForSignal<Bag extends Record<string, any>>() {
         );
       }
     }
+    if (definition.timeoutAt !== undefined) {
+      if (definition.timeout !== undefined) {
+        throw new Error(
+          `waitForSignal "${definition.name}": set timeout or timeoutAt, not both`,
+        );
+      }
+      if (typeof definition.timeoutAt !== "string" || definition.timeoutAt.length === 0) {
+        throw new Error(`waitForSignal "${definition.name}": timeoutAt must name a bag field`);
+      }
+      if ((definition.timeoutAt as string) === String(definition.provides[0])) {
+        throw new Error(
+          `waitForSignal "${definition.name}": timeoutAt cannot be the field the wait provides`,
+        );
+      }
+    }
     // `undefined` is allowed: a missing value is what an omitted JSON key reads back as.
     if (definition.timeoutValue !== undefined && !isJsonSafe(definition.timeoutValue)) {
       throw new Error(
@@ -238,9 +278,16 @@ export function waitForSignal<Bag extends Record<string, any>>() {
       );
     }
 
+    // The deadline's field is a dependency like any other, in the type too: whoever provides
+    // it runs first, and a workflow that has no such field is refused where it is defined.
+    const needs: (keyof Bag)[] = [...(definition.needs ?? [])];
+    if (definition.timeoutAt !== undefined && !needs.includes(definition.timeoutAt)) {
+      needs.push(definition.timeoutAt);
+    }
+
     return {
       name: definition.name,
-      needs: (definition.needs ?? []) as unknown as Needs,
+      needs: needs as unknown as WaitNeeds<Needs, TimeoutAt>,
       provides: definition.provides,
       run: async () => {
         throw new Error(
@@ -252,6 +299,7 @@ export function waitForSignal<Bag extends Record<string, any>>() {
         signalName: definition.signal.name,
         signal: definition.signal as WorkflowSignal<unknown>,
         ...(definition.timeout !== undefined && { timeout: definition.timeout }),
+        ...(definition.timeoutAt !== undefined && { timeoutAtField: definition.timeoutAt }),
         ...(maxPending !== undefined && { maxPendingSignals: maxPending }),
         ...("timeoutValue" in definition && { timeoutValue: definition.timeoutValue }),
         hasTimeoutValue: "timeoutValue" in definition,

@@ -459,3 +459,40 @@ describe("continuation budget", () => {
     });
   });
 });
+
+// Temporal retries a failed workflow task forever, so a run a build cannot replay stays
+// open unless the worker is told which errors fail the execution instead.
+describe("workflowFailureErrorTypes", () => {
+  it("reaches the workflow workers from the Temporal config", async () => {
+    mockRunWorkflowWorkers.mockReset().mockResolvedValue(undefined);
+    const failFast = createComposer({
+      contextProvider: noOpContextProvider,
+      temporal: {
+        serverAddress: "localhost:7233",
+        namespace: "test",
+        serviceName: "test-service",
+        workflowFailureErrorTypes: { "*": ["NondeterminismError"] },
+      },
+    });
+
+    await failFast.runWorkflowWorkers({
+      taskQueues: ["workflow-tasks"],
+      maxConcurrentWorkflowTaskExecutions: 1,
+      workflows: [],
+    });
+
+    expect(mockRunWorkflowWorkers).toHaveBeenCalledWith(
+      expect.objectContaining({ workflowFailureErrorTypes: { "*": ["NondeterminismError"] } }),
+    );
+  });
+
+  it("leaves the worker default in place when none is configured", async () => {
+    mockRunWorkflowWorkers.mockReset().mockResolvedValue(undefined);
+    await composer.runWorkflowWorkers({
+      taskQueues: ["workflow-tasks"],
+      maxConcurrentWorkflowTaskExecutions: 1,
+      workflows: [],
+    });
+    expect(mockRunWorkflowWorkers.mock.calls[0]?.[0]?.workflowFailureErrorTypes).toBeUndefined();
+  });
+});

@@ -391,6 +391,7 @@ export function createComposer<TContext>(
         dataConverter: temporalConfig.dataConverter,
         interceptors: temporalConfig.interceptors,
         continuationBudgetBytes: temporalConfig.continuationBudgetBytes,
+        workflowFailureErrorTypes: temporalConfig.workflowFailureErrorTypes,
         ...config,
         logger: resolvedLogger,
       });

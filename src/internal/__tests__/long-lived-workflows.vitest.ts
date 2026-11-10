@@ -10,11 +10,12 @@ import { generateWorkflowPlan } from "../async/register/generate-workflow-source
 import { fanOut } from "../dag-sync-fanout.js";
 import { defineWorkflowSignal, waitForSignal } from "../dag-sync-signal.js";
 import { type DurationString, step } from "../dag-sync-step.js";
-import { createWorkflow, use } from "../dag-sync-workflow.js";
+import { type BooleanField, createWorkflow, use } from "../dag-sync-workflow.js";
 
 interface Bag {
   requestId: string;
   sentAt: string;
+  dueAt: number;
   scratch: string;
   approval: { approved: boolean };
   verified: boolean;
@@ -27,6 +28,13 @@ const sendRequest = step<Bag>()({
   needs: ["requestId"],
   provides: ["sentAt", "scratch"],
   run: async () => ({ sentAt: "now", scratch: "s" }),
+});
+
+const scheduleDue = step<Bag>()({
+  name: "scheduleDue",
+  needs: ["sentAt"],
+  provides: ["dueAt"],
+  run: async () => ({ dueAt: 1_800_000_000_000 }),
 });
 
 const awaitApproval = waitForSignal<Bag>()({
@@ -60,6 +68,97 @@ describe("waitForSignal", () => {
         provides: [] as unknown as readonly ["approval"],
       }),
     ).toThrow("exactly one field");
+  });
+
+  describe("timeoutAt", () => {
+    it("rejects timeout and timeoutAt together", () => {
+      expect(() =>
+        waitForSignal<Bag>()({
+          name: "w",
+          signal: approvalSignal,
+          provides: ["approval"],
+          timeout: "1 day",
+          timeoutAt: "dueAt",
+        }),
+      ).toThrow("set timeout or timeoutAt, not both");
+    });
+
+    it("rejects a timeoutAt that names the field the wait provides", () => {
+      expect(() =>
+        waitForSignal<Bag>()({
+          name: "w",
+          signal: approvalSignal,
+          provides: ["approval"],
+          timeoutAt: "approval" as never,
+        }),
+      ).toThrow("cannot be the field the wait provides");
+    });
+
+    it("rejects an empty timeoutAt", () => {
+      expect(() =>
+        waitForSignal<Bag>()({
+          name: "w",
+          signal: approvalSignal,
+          provides: ["approval"],
+          timeoutAt: "" as never,
+        }),
+      ).toThrow("timeoutAt must name a bag field");
+    });
+
+    it("adds the field to needs, so its provider runs before the wait", () => {
+      const wait = waitForSignal<Bag>()({
+        name: "awaitApproval",
+        signal: approvalSignal,
+        provides: ["approval"],
+        timeoutAt: "dueAt",
+      });
+      expect(wait.needs).toEqual(["dueAt"]);
+      const plan = generateWorkflowPlan(
+        createWorkflow<Bag>("due")
+          .requires("requestId")
+          .build([sendRequest, scheduleDue, wait, verify]),
+      );
+      expect(
+        plan.batches.map((b) => [
+          ...b.steps.map((s) => s.name),
+          ...(b.signalWaits ?? []).map((w) => w.name),
+        ]),
+      ).toEqual([["sendRequest"], ["scheduleDue"], ["awaitApproval"], ["verify"]]);
+      expect(plan.batches[2]?.signalWaits?.[0]).toMatchObject({ timeoutAtField: "dueAt" });
+      expect(plan.batches[2]?.signalWaits?.[0]).not.toHaveProperty("timeout");
+    });
+
+    it("lists the field once when needs already names it", () => {
+      const wait = waitForSignal<Bag>()({
+        name: "awaitApproval",
+        signal: approvalSignal,
+        needs: ["dueAt"],
+        provides: ["approval"],
+        timeoutAt: "dueAt",
+      });
+      expect(wait.needs).toEqual(["dueAt"]);
+      expectTypeOf(wait.needs).toEqualTypeOf<readonly ["dueAt"]>();
+    });
+
+    it("types the field as a number, and as a dependency the workflow must satisfy", () => {
+      const dueWait = waitForSignal<Bag>()({
+        name: "w",
+        signal: approvalSignal,
+        provides: ["approval"],
+        timeoutAt: "dueAt",
+      });
+      expectTypeOf(dueWait.needs).toEqualTypeOf<readonly ["dueAt"]>();
+      expectTypeOf(awaitApproval.needs).toEqualTypeOf<readonly ["sentAt"]>();
+      waitForSignal<Bag>()({
+        name: "w",
+        signal: approvalSignal,
+        provides: ["approval"],
+        // @ts-expect-error -- a deadline is epoch milliseconds, and sentAt is a string
+        timeoutAt: "sentAt",
+      });
+      // @ts-expect-error -- nothing requires or provides the deadline field the wait needs
+      expect(() => createWorkflow<Bag>("due").requires("requestId").build([dueWait])).toThrow();
+    });
   });
 
   it.each([
@@ -503,6 +602,232 @@ describe("builder", () => {
     );
   });
 
+  describe("loop boundaries", () => {
+    const looping = () =>
+      baseWorkflow()
+        .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+        .continueAsNew("again", {
+          afterStep: verify,
+          resumeAt: "awaiting-approval",
+          when: "verified",
+          carry: { scratch: "sentAt" },
+        });
+
+    it("records a loop boundary, which may follow the last batch", () => {
+      expect(looping().stageBoundaries?.[1]).toEqual({
+        name: "again",
+        afterStep: "verify",
+        resumeAt: "awaiting-approval",
+        when: "verified",
+        carry: { scratch: "sentAt" },
+      });
+    });
+
+    it("threads the loop into the plan", () => {
+      expect(generateWorkflowPlan(looping()).stageBoundaries?.[1]).toEqual({
+        name: "again",
+        afterBatch: 2,
+        initialVersioningBehavior: "AUTO_UPGRADE",
+        resumeAt: "awaiting-approval",
+        when: "verified",
+        carry: { scratch: "sentAt" },
+      });
+    });
+
+    it("needs both resumeAt and when", () => {
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", { afterStep: verify, resumeAt: "awaiting-approval" }),
+      ).toThrow("names no when field");
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", { afterStep: awaitApproval, when: "verified" }),
+      ).toThrow("without resumeAt");
+    });
+
+    it("rejects a loop that resumes at itself or at an unknown stage", () => {
+      expect(() =>
+        baseWorkflow().continueAsNew("again", { afterStep: verify, resumeAt: "again", when: "verified" }),
+      ).toThrow("does not come before it");
+      // The builder checks each boundary as it is added, so a later stage is unknown then.
+      expect(() =>
+        baseWorkflow().continueAsNew("again", { afterStep: verify, resumeAt: "nowhere", when: "verified" }),
+      ).toThrow('resumes at unknown stage "nowhere"');
+    });
+
+    it("rejects a loop that resumes at a stage that does not come before it", () => {
+      const wf = {
+        ...baseWorkflow(),
+        stageBoundaries: [
+          { name: "first", afterStep: "sendRequest", resumeAt: "later", when: "sentAt" },
+          { name: "later", afterStep: "awaitApproval" },
+        ],
+      };
+      expect(() => generateWorkflowPlan(wf)).toThrow("does not come before it");
+    });
+
+    it("rejects a loop whose field no step in the loop provides, carried or not", () => {
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", { afterStep: awaitApproval, resumeAt: "awaiting-approval", when: "verified" }),
+      ).toThrow('decides on field "verified"');
+      // Carried, it would be read before the carry applies and so decide a pass late.
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", {
+            afterStep: verify,
+            resumeAt: "awaiting-approval",
+            when: "requestId" as never,
+            carry: { requestId: "verified" as never },
+          }),
+      ).toThrow('decides on field "requestId"');
+    });
+
+    it("rejects a carry whose source nothing before the boundary provides", () => {
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", {
+            afterStep: verify,
+            resumeAt: "awaiting-approval",
+            when: "verified",
+            carry: { scratch: "nope" as never },
+          }),
+      ).toThrow('carries field "scratch" from "nope"');
+    });
+
+    it("rejects a carry into a field a step reads before the stage, which never reruns", () => {
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", {
+            afterStep: verify,
+            resumeAt: "awaiting-approval",
+            when: "verified",
+            carry: { requestId: "sentAt" },
+          }),
+      ).toThrow('step "sendRequest" reads before stage "awaiting-approval"');
+    });
+
+    it("rejects a carry of a field the loop provides again, or named __proto__", () => {
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", {
+            afterStep: verify,
+            resumeAt: "awaiting-approval",
+            when: "verified",
+            carry: { approval: "sentAt" as never },
+          }),
+      ).toThrow('carries field "approval"');
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", {
+            afterStep: verify,
+            resumeAt: "awaiting-approval",
+            when: "verified",
+            carry: { ["__proto__"]: "sentAt" } as never,
+          }),
+      ).toThrow('cannot carry a field named "__proto__"');
+    });
+
+    it("rejects loops that overlap, and accepts one nested in another", () => {
+      interface LoopBag {
+        id: string;
+        a: string;
+        b: string;
+        c: string;
+        d: string;
+        x: boolean;
+        y: boolean;
+      }
+      const sa = step<LoopBag>()({
+        name: "sa",
+        needs: ["id"],
+        provides: ["a"],
+        run: async () => ({ a: "a" }),
+      });
+      const sb = step<LoopBag>()({
+        name: "sb",
+        needs: ["a"],
+        provides: ["b", "x"],
+        run: async () => ({ b: "b", x: false }),
+      });
+      const sc = step<LoopBag>()({
+        name: "sc",
+        needs: ["b"],
+        provides: ["c", "y"],
+        run: async () => ({ c: "c", y: false }),
+      });
+      const sd = step<LoopBag>()({
+        name: "sd",
+        needs: ["c"],
+        provides: ["d"],
+        run: async () => ({ d: "d" }),
+      });
+      const staged = () =>
+        createWorkflow<LoopBag>("loops")
+          .requires("id")
+          .build([sa, sb, sc, sd])
+          .continueAsNew("s1", { afterStep: sa })
+          .continueAsNew("s2", { afterStep: sb });
+      expect(() =>
+        staged()
+          .continueAsNew("l1", { afterStep: sc, resumeAt: "s1", when: "x" })
+          .continueAsNew("l2", { afterStep: sd, resumeAt: "s2", when: "y" }),
+      ).toThrow('loops "l1" and "l2" overlap');
+      expect(() =>
+        staged()
+          .continueAsNew("l1", { afterStep: sc, resumeAt: "s2", when: "y" })
+          .continueAsNew("l2", { afterStep: sd, resumeAt: "s1", when: "x" }),
+      ).not.toThrow();
+    });
+
+    it("types a carry source by its target, and a loop's field as either boolean", () => {
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          .continueAsNew("again", {
+            afterStep: verify,
+            resumeAt: "awaiting-approval",
+            when: "verified",
+            // @ts-expect-error -- a boolean field cannot carry into a string one
+            carry: { scratch: "verified" },
+          }),
+      ).not.toThrow();
+      expect(() =>
+        baseWorkflow()
+          .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+          // @ts-expect-error -- a loop decides on a boolean field, and sentAt is a string
+          .continueAsNew("again", { afterStep: verify, resumeAt: "awaiting-approval", when: "sentAt" }),
+      ).toThrow();
+      // One typed as a single literal could never change.
+      expectTypeOf<
+        BooleanField<{
+          a: boolean;
+          b: true;
+          c: false;
+          d: string;
+          e?: boolean;
+          f: boolean | string;
+          g: unknown;
+          h: boolean | null;
+        }>
+      >().toEqualTypeOf<"a" | "e" | "h">();
+    });
+
+    it("still rejects an ordinary boundary after the last batch", () => {
+      expect(() => baseWorkflow().continueAsNew("end", { afterStep: verify })).toThrow(
+        "follows the last batch",
+      );
+    });
+  });
+
   it("rejects a duplicate stage name", () => {
     expect(() =>
       baseWorkflow()
@@ -817,6 +1142,14 @@ describe("sync execution", () => {
     });
     expect(result.error).toBeUndefined();
     expect(result.bag.verified).toBe(true);
+  });
+
+  it("fails a workflow with a loop boundary in its result, as it does a wait", async () => {
+    const looping = baseWorkflow()
+      .continueAsNew("awaiting-approval", { afterStep: sendRequest })
+      .continueAsNew("again", { afterStep: verify, resumeAt: "awaiting-approval", when: "verified" });
+    const result = await testComposer.runSyncWorkflow(looping, { requestId: "r" });
+    expect(result.error?.message).toContain('loop stage boundary ("again")');
   });
 
   it("fails a signal wait with an error naming async execution", async () => {

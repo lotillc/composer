@@ -247,12 +247,29 @@ export interface StageBoundary {
    * runs waiting to resume at it.
    */
   aliases?: string[];
+  /**
+   * Makes this a loop boundary: the next run resumes after the earlier stage named here
+   * instead of after this one, re-running the steps between. Taken only while the bag
+   * field `when` is `true`; otherwise the run goes on past the boundary.
+   */
+  resumeAt?: string;
+  /** Bag field that must be `true` for the loop to be taken. Required with `resumeAt`. */
+  when?: string;
+  /**
+   * Bag fields set for the next iteration, each from a field of this one: the next run's
+   * `stepIndex` from this run's `nextStepIndex`, say. Lets an iteration update a field
+   * the loop body needs, which a step cannot provide without an ordering cycle.
+   */
+  carry?: Record<string, string>;
 }
 
 /**
  * Options for declaring a stage boundary on a workflow.
  */
-export interface StageBoundaryOptions<S extends Step<any, any, any, any, any>> {
+export interface StageBoundaryOptions<
+  S extends Step<any, any, any, any, any>,
+  Bag extends Record<string, any> = Record<string, any>,
+> {
   /** Step reference whose batch ends the stage. */
   afterStep: S;
   /** Defaults to `AUTO_UPGRADE`. */
@@ -263,7 +280,41 @@ export interface StageBoundaryOptions<S extends Step<any, any, any, any, any>> {
    * removing one whose in-flight runs should continue from here instead.
    */
   aliases?: readonly string[];
+  /**
+   * The name of an earlier stage to resume after instead of this one, which makes this a
+   * loop boundary. The steps between run again in the next iteration; what they produced
+   * this time is dropped from the bag, and what came before them is kept. Requires `when`.
+   */
+  resumeAt?: string;
+  /**
+   * Boolean bag field that must be `true` for the loop to be taken; a step in the loop must
+   * provide it. Any other value lets the run go on past the boundary, in this same run.
+   */
+  when?: BooleanField<Bag>;
+  /**
+   * Bag fields set for the next iteration, each from a field of this one. A target may be
+   * an initial field, which steps cannot provide, so an iteration can advance a counter
+   * or an index the loop body reads. No step before `resumeAt` may read a target.
+   */
+  carry?: { [Target in keyof Bag & string]?: FieldsAssignableTo<Bag, Bag[Target]> };
 }
+
+/**
+ * The bag fields that can hold either boolean and nothing else but null or undefined: a field
+ * typed only `true` could never change, and only a value of exactly `true` takes a loop.
+ */
+export type BooleanField<Bag> = {
+  [K in keyof Bag & string]: [boolean] extends [Bag[K]]
+    ? [NonNullable<Bag[K]>] extends [boolean]
+      ? K
+      : never
+    : never;
+}[keyof Bag & string];
+
+/** The bag fields whose value a field of type `Value` could take. */
+export type FieldsAssignableTo<Bag, Value> = {
+  [K in keyof Bag & string]: Bag[K] extends Value ? K : never;
+}[keyof Bag & string];
 
 /**
  * IMMUTABILITY PROTECTION FEATURE FLAG
@@ -507,15 +558,25 @@ export type WorkflowBuilder<
    *
    * Checkpoints must come no later than the first boundary. Ignored in sync mode.
    *
+   * With `resumeAt`, the boundary is a loop: while the bag field `when` is `true`, the
+   * next run resumes after that earlier stage and runs the steps between again, with
+   * `carry` setting fields for the next iteration. Otherwise the run goes on past it.
+   *
    * @example
    * ```typescript
    * .continueAsNew("awaiting-approval", { afterStep: sendRequestStep })
    * .continueAsNew("verifying", { afterStep: awaitApproval })
+   * .continueAsNew("next-step", {
+   *   afterStep: decideNext,
+   *   resumeAt: "awaiting-approval",
+   *   when: "escalate",
+   *   carry: { stepIndex: "nextStepIndex" },
+   * })
    * ```
    */
   continueAsNew<S extends Steps[number]>(
     name: string,
-    options: StageBoundaryOptions<S>,
+    options: StageBoundaryOptions<S, Bag>,
   ): WorkflowBuilder<Bag, RequiredInitial, ConfiguredValues, Steps, CheckpointNames>;
 
   /**
@@ -781,7 +842,7 @@ function workflow<
 
       continueAsNew<S extends Steps[number]>(
         stageName: string,
-        options: StageBoundaryOptions<S>,
+        options: StageBoundaryOptions<S, Bag>,
       ): WorkflowBuilder<Bag, RequiredInitial, ConfiguredValues, Steps, CurrentCheckpointNames> {
         assertValidName("Stage", stageName);
         for (const alias of options.aliases ?? []) assertValidName("Stage", alias);
@@ -790,7 +851,6 @@ function workflow<
             `Duplicate stage name "${stageName}". Stage names must be unique within a workflow.`,
           );
         }
-
         const stepName = options.afterStep.name;
         const resolvedStepName = resolveStepReference(steps, options.afterStep);
         if (!resolvedStepName) {
@@ -808,6 +868,12 @@ function workflow<
             initialVersioningBehavior: options.initialVersioningBehavior,
           }),
           ...(options.aliases && options.aliases.length > 0 && { aliases: [...options.aliases] }),
+          ...(options.resumeAt !== undefined && { resumeAt: options.resumeAt }),
+          ...(options.when !== undefined && { when: options.when }),
+          ...(options.carry &&
+            Object.keys(options.carry).length > 0 && {
+              carry: { ...options.carry } as Record<string, string>,
+            }),
         };
         const newWf = { ...currentWf, stageBoundaries: [...currentBoundaries, boundary] };
         // Fail where the workflow is defined, not when a worker first plans it.
@@ -1541,6 +1607,16 @@ export async function runSyncWorkflow<
 
     // Validate that no step has duplicate entries in needs/provides arrays
     assertNoDuplicatesInStepArrays(wf.steps);
+
+    // A loop reruns its body through continue-as-new, which only a Temporal run has; running
+    // the body once would be a different workflow. Fails like a wait node does here.
+    const loop = wf.stageBoundaries?.find((boundary) => boundary.resumeAt !== undefined);
+    if (loop) {
+      throw new Error(
+        `Workflow "${wf.name}" has a loop stage boundary ("${loop.name}"), which only Temporal ` +
+          `(runAsyncWorkflow or startAsyncWorkflow) can run.`,
+      );
+    }
 
     // Plan workflow execution using topological sort
     // This validates dependencies, detects cycles, and organizes steps into parallel execution batches

@@ -35,6 +35,7 @@ import {
   CONTINUATION_TOO_LARGE_CODE,
   UNKNOWN_CHECKPOINT_CODE,
   INVALID_SIGNAL_WAIT_CODE,
+  LOOP_CARRY_MISSING_CODE,
   SIGNAL_WAIT_TIMEOUT_CODE,
   STEP_NOT_READY_CODE,
   STEP_POLL_TIMEOUT_CODE,
@@ -434,6 +435,55 @@ function receiveSignal(
   inbox.queues.set(signalName, queue);
 }
 
+/** When a wait ends if no signal comes, read once as the wait begins. */
+interface WaitDeadline {
+  atMs: number;
+  /** How the wait was bounded, for its timeout failure: "within 21 days" or "by <instant>". */
+  bound: string;
+}
+
+function invalidSignalWait(wait: SignalWaitBatchEntry, message: string) {
+  // `waitForSignal` rejects what it can where the wait is defined; a hand-built plan, or a
+  // bag field, can still carry it. Fail the node, not the workflow task, so it reaches
+  // onError rather than retrying forever.
+  return wf.ApplicationFailure.create({
+    type: INVALID_SIGNAL_WAIT_CODE,
+    message: `Signal wait "${wait.name}": ${message}`,
+    details: [{ code: INVALID_SIGNAL_WAIT_CODE, data: { stepName: wait.name } }],
+    nonRetryable: true,
+  });
+}
+
+/**
+ * The wait's deadline: the instant its `timeoutAt` field holds, its static `timeout` from
+ * now, or none. A resumed run reads the same instant from the carried bag, not a new "now".
+ */
+function resolveWaitDeadline(
+  wait: SignalWaitBatchEntry,
+  bag: Record<string, unknown>,
+): WaitDeadline | undefined {
+  if (wait.timeoutAtField !== undefined) {
+    const at = bag[wait.timeoutAtField];
+    // Epoch milliseconds from 1973 to 5138: a value outside is in seconds or microseconds.
+    if (typeof at !== "number" || !(at >= 1e11 && at < 1e14)) {
+      throw invalidSignalWait(
+        wait,
+        `field "${wait.timeoutAtField}" must hold an instant in epoch milliseconds, got ` +
+          (typeof at === "number" ? String(at) : `a value of type ${typeof at}`),
+      );
+    }
+    return { atMs: at, bound: `by ${new Date(at).toISOString()}` };
+  }
+  if (wait.timeout !== undefined) {
+    const timeoutMs = durationToMs(wait.timeout);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw invalidSignalWait(wait, `timeout must be a positive duration, got ${wait.timeout}`);
+    }
+    return { atMs: Date.now() + timeoutMs, bound: `within ${wait.timeout}` };
+  }
+  return undefined;
+}
+
 /**
  * Waits for the next payload of `wait.signalName` and returns the node's output.
  *
@@ -444,31 +494,20 @@ function receiveSignal(
 async function runSignalWait(
   wait: SignalWaitBatchEntry,
   inbox: SignalInbox,
+  bag: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const hasPending = () => (inbox.queues.get(wait.signalName)?.length ?? 0) > 0;
-  const timeoutMs = wait.timeout === undefined ? undefined : durationToMs(wait.timeout);
-  if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
-    // `waitForSignal` rejects this where the wait is defined; a hand-built plan can still
-    // carry it. Fail the node, not the workflow task, so it reaches onError rather than
-    // retrying forever.
-    throw wf.ApplicationFailure.create({
-      type: INVALID_SIGNAL_WAIT_CODE,
-      message: `Signal wait "${wait.name}": timeout must be a positive duration, got ${wait.timeout}`,
-      details: [{ code: INVALID_SIGNAL_WAIT_CODE, data: { stepName: wait.name } }],
-      nonRetryable: true,
-    });
-  }
-  const deadlineMs = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
+  const deadline = resolveWaitDeadline(wait, bag);
 
   for (;;) {
     if (hasPending()) {
       return { [wait.provides]: inbox.queues.get(wait.signalName)!.shift() };
     }
-    if (deadlineMs === undefined) {
+    if (deadline === undefined) {
       await wf.condition(hasPending);
       continue;
     }
-    const remainingMs = deadlineMs - Date.now();
+    const remainingMs = deadline.atMs - Date.now();
     if (remainingMs > 0 && (await wf.condition(hasPending, remainingMs))) continue;
 
     if (wait.hasTimeoutValue) {
@@ -480,11 +519,17 @@ async function runSignalWait(
     }
     throw wf.ApplicationFailure.create({
       type: SIGNAL_WAIT_TIMEOUT_CODE,
-      message: `Signal wait "${wait.name}" got no "${wait.signalName}" signal within ${wait.timeout}`,
+      message: `Signal wait "${wait.name}" got no "${wait.signalName}" signal ${deadline.bound}`,
       details: [
         {
           code: SIGNAL_WAIT_TIMEOUT_CODE,
-          data: { stepName: wait.name, signalName: wait.signalName, timeout: wait.timeout },
+          data: {
+            stepName: wait.name,
+            signalName: wait.signalName,
+            ...(wait.timeoutAtField !== undefined
+              ? { timeoutAt: deadline.atMs }
+              : { timeout: wait.timeout }),
+          },
         },
       ],
       nonRetryable: true,
@@ -713,6 +758,8 @@ export interface SignalWaitBatchEntry {
   provides: string;
   /** Bound on the wait; unset means no limit */
   timeout?: DurationString;
+  /** Bag field holding the instant the wait ends at, in epoch ms; set instead of `timeout` */
+  timeoutAtField?: string;
   /** Field value on timeout, when `hasTimeoutValue` */
   timeoutValue?: unknown;
   /** Without a timeout value, a timeout fails the node */
@@ -733,6 +780,12 @@ export interface StageBoundaryPlanEntry {
   initialVersioningBehavior?: StageInitialVersioningBehavior;
   /** Earlier names of this stage; a continuation carrying one resumes here */
   aliases?: string[];
+  /** A loop: the earlier stage the next run resumes after, while `when` is true */
+  resumeAt?: string;
+  /** Bag field that must be `true` for the loop to be taken */
+  when?: string;
+  /** Next-iteration fields, each from a field of this iteration */
+  carry?: Record<string, string>;
 }
 
 /**
@@ -1135,7 +1188,7 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
             waitingOn.add(wait.signalName);
             showDetails();
             try {
-              const output = await runSignalWait(wait, inbox);
+              const output = await runSignalWait(wait, inbox, bag);
               return { stepName: wait.name, output };
             } finally {
               waitingOn.delete(wait.signalName);
@@ -1321,9 +1374,10 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
       }
 
       const boundary = plan.stageBoundaries?.find((b) => b.afterBatch === batchIndex);
-      if (boundary) {
+      if (boundary && boundaryTaken(boundary, bag, plan.name)) {
         await continueAtStage(
           boundary,
+          plan,
           input,
           bag,
           completedSteps,
@@ -1349,6 +1403,21 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
   return temporalWorkflow;
 }
 
+/** An ordinary boundary is always taken; a loop only while its field reads exactly `true`. */
+function boundaryTaken(
+  boundary: StageBoundaryPlanEntry,
+  bag: Record<string, unknown>,
+  workflowName: string,
+): boolean {
+  if (boundary.resumeAt === undefined) return true;
+  if (boundary.when === undefined) {
+    // Only a hand-built plan lacks it; the builder refuses one. Fail the task, as an unknown
+    // stage does, so a fixed build picks the run up where it is.
+    throw new Error(`Workflow "${workflowName}": loop stage "${boundary.name}" names no when field`);
+  }
+  return bag[boundary.when] === true;
+}
+
 /**
  * Ends the run at a stage boundary and continues as new, carrying the bag, the steps that
  * already ran, and any unconsumed signals into the next run.
@@ -1357,6 +1426,7 @@ export function createWorkflowFunction(plan: WorkflowPlan) {
  */
 async function continueAtStage(
   boundary: StageBoundaryPlanEntry,
+  plan: WorkflowPlan,
   input: WorkflowInput,
   bag: Record<string, any>,
   completedSteps: Set<string>,
@@ -1365,14 +1435,65 @@ async function continueAtStage(
 ): Promise<never> {
   await wf.condition(wf.allHandlersFinished);
 
+  // A loop resumes after an earlier stage and runs the body between again, so the body's
+  // outputs and its names are dropped: the next iteration provides them afresh.
+  let stage = boundary.name;
+  const bodyFields = new Set<string>();
+  const bodyNames = new Set<string>();
+  if (boundary.resumeAt !== undefined) {
+    const target = plan.stageBoundaries?.find((b) => b.name === boundary.resumeAt);
+    if (!target) {
+      // The builder refuses this; a hand-built plan can carry it. Fail the task, retried
+      // until a build whose plan is whole runs it, rather than resume somewhere else.
+      throw new Error(
+        `Workflow "${plan.name}": stage "${boundary.name}" resumes at unknown stage ` +
+          `"${boundary.resumeAt}"`,
+      );
+    }
+    stage = target.name;
+    // The body: the batches after the stage resumed at, up to this boundary. A field whose
+    // provider comes later (set by an error handler, say) is not the loop's to drop.
+    plan.batches.forEach((batch, index) => {
+      if (index <= target.afterBatch || index > boundary.afterBatch) return;
+      for (const step of batch.steps) {
+        bodyNames.add(step.name);
+        for (const field of step.provides) bodyFields.add(field);
+      }
+      for (const fanOut of batch.fanOuts ?? []) {
+        bodyNames.add(fanOut.name);
+        for (const field of fanOut.provides) bodyFields.add(field);
+      }
+      for (const wait of batch.signalWaits ?? []) {
+        bodyNames.add(wait.name);
+        bodyFields.add(wait.provides);
+      }
+    });
+  }
+
   // Initial data travels in `initialData`; the continuation holds produced fields, plus any
   // initial field the workflow changed (an error handler can), which would otherwise revert.
   // Field and signal names are the author's and the sender's, so these records have no
   // prototype: a name like `__proto__` must land as data, not hit an inherited setter.
   const carried: Record<string, unknown> = Object.create(null);
   for (const [field, value] of Object.entries(bag)) {
+    if (bodyFields.has(field)) continue;
     if (Object.hasOwn(input.initialData, field) && value === input.initialData[field]) continue;
     setOwn(carried, field, value);
+  }
+  // What the next iteration reads in place of this one's values, initial fields included.
+  for (const [target, source] of Object.entries(boundary.carry ?? {})) {
+    // Skipped, the target would keep this iteration's value, or revert to the initial one,
+    // and the next iteration would run on it: a loop that could repeat itself without end. An
+    // undefined value is skipped too, since the continuation's JSON drops it.
+    if (!Object.hasOwn(bag, source) || bag[source] === undefined) {
+      throw workflowFailure(
+        LOOP_CARRY_MISSING_CODE,
+        `Stage "${boundary.name}" of workflow "${wf.workflowInfo().workflowType}" carries ` +
+          `field "${target}" from "${source}", which is not in the bag or is undefined.`,
+        { stage: boundary.name, field: target, source },
+      );
+    }
+    setOwn(carried, target, bag[source]);
   }
 
   const signals: Record<string, CarriedSignal[]> = Object.create(null);
@@ -1383,6 +1504,7 @@ async function continueAtStage(
   wf.log.info("Stage complete; continuing as new", {
     workflowId: wf.workflowInfo().workflowId,
     stage: boundary.name,
+    ...(boundary.resumeAt !== undefined && { resumesAt: stage }),
     carriedKeys: Object.keys(carried),
     initialVersioningBehavior: boundary.initialVersioningBehavior,
   });
@@ -1392,9 +1514,9 @@ async function continueAtStage(
     ...rest,
     continuation: {
       version: CONTINUATION_VERSION,
-      stage: boundary.name,
+      stage,
       bag: carried,
-      completedSteps: [...completedSteps],
+      completedSteps: [...completedSteps].filter((name) => !bodyNames.has(name)),
       signals,
       ...(inbox.seenKeys.length > 0 && { seenSignalKeys: [...inbox.seenKeys] }),
     },

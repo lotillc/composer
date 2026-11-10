@@ -10,7 +10,7 @@
 
 import type { WorkflowExecutionStatusName } from "@temporalio/client";
 import type { DataConverter } from "@temporalio/common";
-import type { ActivityInterceptorsFactory } from "@temporalio/worker";
+import type { ActivityInterceptorsFactory, WorkerOptions } from "@temporalio/worker";
 import type { ScheduleDefinition } from "./async/schedule/define-schedule.js";
 import type {
   ReplayWorkflowHistoriesOptions,
@@ -196,6 +196,16 @@ export interface TemporalConfig {
   interceptors?: ComposerWorkerInterceptors;
 
   /**
+   * Error types that fail a workflow execution instead of its workflow task, by workflow
+   * type (`"*"` for all), passed to the workflow workers. Temporal's default retries a failed
+   * task forever, so a run on a build that cannot replay its history stays open;
+   * `{ "*": ["NondeterminismError"] }` fails it instead, for an alarm to see and an operator
+   * to restart. That includes a run a newer build advanced, after a rollback. Temporal marks
+   * the option experimental.
+   */
+  workflowFailureErrorTypes?: WorkflowFailureErrorTypes;
+
+  /**
    * Most bytes a staged workflow may carry into its next run, measured as the UTF-8 JSON
    * the default payload converter writes. Over it, the workflow fails with
    * `COMPOSER_CONTINUATION_TOO_LARGE` instead of continuing as new. Defaults to 1,500,000,
@@ -319,6 +329,9 @@ export interface SignalAsyncWorkflowOptions {
 
 /** What a start does when a workflow with the same ID is already running. */
 export type IfRunning = "fail" | "useExisting";
+
+/** Temporal's `workflowFailureErrorTypes` worker option: error type names by workflow type. */
+export type WorkflowFailureErrorTypes = NonNullable<WorkerOptions["workflowFailureErrorTypes"]>;
 
 /**
  * Sync-only Composer instance.

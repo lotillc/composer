@@ -29,6 +29,12 @@ export interface ResolvedStageBoundary {
   initialVersioningBehavior: StageInitialVersioningBehavior;
   /** Earlier names a resuming run may carry instead of `name`. */
   aliases?: string[];
+  /** For a loop boundary: the earlier stage the next run resumes after. */
+  resumeAt?: string;
+  /** For a loop boundary: the bag field that must be `true` for the loop to be taken. */
+  when?: string;
+  /** For a loop boundary: next-iteration fields, each from a field of this iteration. */
+  carry?: Record<string, string>;
 }
 
 /** Fields a workflow starts with: what the caller must pass plus configured values. */
@@ -71,7 +77,8 @@ export function resolveStageBoundaries(
           `which is not in the workflow`,
       );
     }
-    if (afterBatch === batches.length - 1) {
+    // A loop boundary may end the workflow's last batch: not taken, the run just finishes.
+    if (afterBatch === batches.length - 1 && boundary.resumeAt === undefined) {
       throw new Error(
         `${prefix}: stage "${boundary.name}" follows the last batch, so nothing would run ` +
           `after it. Remove the boundary or move it to an earlier step.`,
@@ -82,6 +89,9 @@ export function resolveStageBoundaries(
       afterBatch,
       initialVersioningBehavior: boundary.initialVersioningBehavior ?? "AUTO_UPGRADE",
       ...(boundary.aliases && boundary.aliases.length > 0 && { aliases: [...boundary.aliases] }),
+      ...(boundary.resumeAt !== undefined && { resumeAt: boundary.resumeAt }),
+      ...(boundary.when !== undefined && { when: boundary.when }),
+      ...(boundary.carry && Object.keys(boundary.carry).length > 0 && { carry: { ...boundary.carry } }),
     };
   });
 
@@ -126,6 +136,100 @@ export function resolveStageBoundaries(
         `${prefix}: checkpoint "${checkpoint.name}" comes after stage "${firstBoundary.name}". ` +
           `Checkpoints must be reached before the first continue-as-new.`,
       );
+    }
+  }
+
+  // A loop resumes after an earlier stage and runs the batches between, its body, again.
+  const byName = new Map(resolved.map((boundary) => [boundary.name, boundary]));
+  const loops: { name: string; from: number; to: number }[] = [];
+  for (const boundary of resolved) {
+    if (boundary.resumeAt === undefined) {
+      if (boundary.when !== undefined || boundary.carry !== undefined) {
+        throw new Error(
+          `${prefix}: stage "${boundary.name}" sets when or carry without resumeAt, which ` +
+            `only a loop boundary takes`,
+        );
+      }
+      continue;
+    }
+    const target = byName.get(boundary.resumeAt);
+    if (!target) {
+      throw new Error(
+        `${prefix}: stage "${boundary.name}" resumes at unknown stage "${boundary.resumeAt}". ` +
+          `Known stages: [${[...byName.keys()].join(", ")}]`,
+      );
+    }
+    if (target.afterBatch >= boundary.afterBatch) {
+      throw new Error(
+        `${prefix}: stage "${boundary.name}" resumes at stage "${boundary.resumeAt}", which ` +
+          `does not come before it. A loop resumes at an earlier stage.`,
+      );
+    }
+    const when = boundary.when;
+    if (when === undefined) {
+      throw new Error(
+        `${prefix}: stage "${boundary.name}" resumes at stage "${boundary.resumeAt}" but names ` +
+          `no when field to decide the loop on`,
+      );
+    }
+    const before = batches.slice(0, target.afterBatch + 1).flat();
+    const body = batches.slice(target.afterBatch + 1, boundary.afterBatch + 1).flat();
+    const bodyProvides = (field: string) =>
+      body.some((step) => step.provides.some((provided: unknown) => String(provided) === field));
+    // Read before any carry applies, so only a field the body provides can change per pass.
+    if (!bodyProvides(when)) {
+      throw new Error(
+        `${prefix}: stage "${boundary.name}" decides on field "${when}", which no step after ` +
+          `stage "${target.name}" provides, so it could not change from one pass to the next`,
+      );
+    }
+    const available = new Set<string>(initialFields);
+    for (const step of [...before, ...body]) {
+      for (const field of step.provides) available.add(String(field));
+    }
+    for (const [field, source] of Object.entries(boundary.carry ?? {})) {
+      // The plan reaches the workflow bundle as an object literal, where this key sets the
+      // prototype instead of naming a field: the carry would vanish.
+      if (field === "__proto__") {
+        throw new Error(
+          `${prefix}: stage "${boundary.name}" cannot carry a field named "__proto__"`,
+        );
+      }
+      if (!available.has(source)) {
+        throw new Error(
+          `${prefix}: stage "${boundary.name}" carries field "${field}" from "${source}", which ` +
+            `nothing before it provides. Available fields: [${[...available].join(", ")}]`,
+        );
+      }
+      if (bodyProvides(field)) {
+        throw new Error(
+          `${prefix}: stage "${boundary.name}" carries field "${field}", which a step after ` +
+            `stage "${target.name}" provides again; carry only fields from before that stage`,
+        );
+      }
+      // A step before the stage runs once, so the next pass would never read the carried value.
+      const reader = before.find((step) =>
+        step.needs.some((need: unknown) => String(need) === field),
+      );
+      if (reader) {
+        throw new Error(
+          `${prefix}: stage "${boundary.name}" carries field "${field}", which step ` +
+            `"${reader.name}" reads before stage "${target.name}" and so never again. Give that ` +
+            `step a need on a field provided after the stage, which moves it into the loop.`,
+        );
+      }
+    }
+    loops.push({ name: boundary.name, from: target.afterBatch, to: boundary.afterBatch });
+  }
+  // Overlapping loops would each rerun part of the other's body without the steps that decide it.
+  for (const a of loops) {
+    for (const b of loops) {
+      if (a.from < b.from && b.from < a.to && a.to < b.to) {
+        throw new Error(
+          `${prefix}: loops "${a.name}" and "${b.name}" overlap; a loop must lie wholly ` +
+            `inside another or apart from it`,
+        );
+      }
     }
   }
 

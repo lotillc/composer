@@ -29,6 +29,7 @@ type WorkerCreateOptions = {
   maxConcurrentWorkflowTaskExecutions: number;
   dataConverter?: DataConverter;
   interceptors?: { workflowModules?: string[] };
+  workflowFailureErrorTypes?: Record<string, string[]>;
 };
 
 const mockConnect = vi.hoisted(() => vi.fn<(options: ConnectionOptions) => Promise<MockConnection>>());
@@ -271,13 +272,24 @@ describe("Workflow Workers", () => {
       });
     });
 
-    it("should omit both keys when neither seam is configured", async () => {
+    it("should forward workflowFailureErrorTypes to the worker", async () => {
+      await createWorkflowWorkers(
+        createTestConfig({ workflowFailureErrorTypes: { "*": ["NondeterminismError"] } }),
+      );
+
+      expect(mockWorkerCreate.mock.calls[0]?.[0].workflowFailureErrorTypes).toEqual({
+        "*": ["NondeterminismError"],
+      });
+    });
+
+    it("should omit the seams and the failure types when none is configured", async () => {
       await createWorkflowWorkers(createTestConfig());
 
       const options = mockWorkerCreate.mock.calls[0]?.[0];
       expect(options).toBeDefined();
       expect(options).not.toHaveProperty("dataConverter");
       expect(options).not.toHaveProperty("interceptors");
+      expect(options).not.toHaveProperty("workflowFailureErrorTypes");
     });
 
     // Activity interceptor factories run in the activity worker's process; this worker
